@@ -39,6 +39,7 @@ function MoveFlowContent() {
   const [lastMove, setLastMove] = useState<LastMove | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isReversing, setIsReversing] = useState(false);
+  const [showMobileConfirm, setShowMobileConfirm] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -98,6 +99,7 @@ function MoveFlowContent() {
     setProductId(products[0]?.id);
     setQuantity(1);
     setLastMove(null);
+    setShowMobileConfirm(false);
     setMessage(null);
   }
 
@@ -111,6 +113,7 @@ function MoveFlowContent() {
     setMessage(null);
 
     try {
+      setShowMobileConfirm(false);
       const movementId = await createStockMovement({
         productId: product.id,
         fromLocationId: from.id,
@@ -195,7 +198,7 @@ function MoveFlowContent() {
       {message ? <p className="mb-4 rounded-2xl bg-warmRed/10 px-4 py-3 text-base font-bold text-warmRed">{message}</p> : null}
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_22rem] xl:grid-cols-[minmax(0,1fr)_25rem]">
-        <div className="space-y-5 lg:space-y-7">
+        <div className="space-y-5 pb-36 lg:space-y-7 lg:pb-0">
           <FlowStep title="Hvor flytter du fra?" label="Fra">
             <LocationPicker locations={locations} selectedId={fromId} onSelect={chooseFrom} testIdPrefix="from-location" />
           </FlowStep>
@@ -227,21 +230,67 @@ function MoveFlowContent() {
         </div>
       </div>
 
-      <div className="fixed inset-x-3 bottom-20 z-10 rounded-[1.5rem] border border-line bg-macro p-3 shadow-soft lg:hidden">
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-sm font-bold text-pantone140">Du er ved at flytte</p>
-            <p className="truncate text-base font-bold text-ink">
-              {product?.name ?? "Ikke valgt endnu"} · {quantity.toLocaleString("da-DK")} {product?.unit ?? "kasser"}
-            </p>
-          </div>
-          <p className="shrink-0 text-sm font-bold text-muted">{from && to ? "Klar" : "Mangler valg"}</p>
-        </div>
-        <PrimaryButton data-testid="confirm-move-mobile" disabled={!canSave} onClick={saveMovement}>
-          {isSaving ? "Gemmer..." : "Ja, flyt varer"}
+      <div className="fixed inset-x-3 bottom-[calc(5rem+env(safe-area-inset-bottom))] z-10 rounded-[1.5rem] border border-line bg-macro p-3 shadow-soft lg:hidden">
+        <PrimaryButton data-testid="continue-move-mobile" disabled={!canSave} onClick={() => setShowMobileConfirm(true)}>
+          Fortsæt
         </PrimaryButton>
       </div>
+
+      {showMobileConfirm ? (
+        <MobileConfirmSheet
+          toName={to?.name}
+          productName={product?.name}
+          quantity={quantity}
+          unit={product?.unit ?? "kasser"}
+          isSaving={isSaving}
+          onCancel={() => setShowMobileConfirm(false)}
+          onConfirm={saveMovement}
+        />
+      ) : null}
     </AppShell>
+  );
+}
+
+function MobileConfirmSheet({
+  toName,
+  productName,
+  quantity,
+  unit,
+  isSaving,
+  onCancel,
+  onConfirm,
+}: {
+  toName?: string;
+  productName?: string;
+  quantity: number;
+  unit: string;
+  isSaving: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-30 flex items-end bg-ink/35 px-3 pb-[calc(1rem+env(safe-area-inset-bottom))] lg:hidden">
+      <section className="w-full rounded-[1.75rem] bg-macro p-5 shadow-soft">
+        <p className="text-sm font-bold uppercase tracking-wide text-pantone140">Bekræft</p>
+        <h2 className="mt-1 text-2xl font-bold text-ink">Du er ved at flytte</h2>
+        <p className="mt-4 rounded-2xl bg-soft p-4 text-xl font-bold text-ink">
+          {productName ?? "Ikke valgt endnu"} · {quantity.toLocaleString("da-DK")} {unit}
+        </p>
+        <p className="mt-3 text-base font-bold text-muted">Til: {toName ?? "Ikke valgt endnu"}</p>
+        <div className="mt-5 grid grid-cols-2 gap-3">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="min-h-14 rounded-2xl border border-line bg-macro px-4 py-3 text-lg font-bold text-pantone140"
+          >
+            Annuller
+          </button>
+          <PrimaryButton data-testid="confirm-move-mobile" disabled={isSaving} onClick={onConfirm}>
+            {isSaving ? "Gemmer..." : "Ja, flyt varer"}
+          </PrimaryButton>
+        </div>
+      </section>
+    </div>
   );
 }
 
