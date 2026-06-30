@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { AppShell } from "@/components/backevent/app-shell";
 import { BackButton } from "@/components/backevent/buttons";
-import { getLocationsAdmin, getProductsAdmin } from "@/lib/backevent/data";
+import { getLocationsAdmin, getProductsAdmin, updateProduct } from "@/lib/backevent/data";
 import type { Location, Product, ProductTrackingMode } from "@/lib/backevent/types";
 
 type MockOnlinePosProduct = {
@@ -36,6 +36,12 @@ type SaleResult = {
   litersPerHour: number | null;
   warnings: string[];
   excluded: boolean;
+};
+
+type ProductMatch = {
+  mockProduct: MockOnlinePosProduct;
+  product?: Product;
+  matchType: "manual" | "name" | "none";
 };
 
 const mockOnlinePosProducts: MockOnlinePosProduct[] = [
@@ -86,6 +92,8 @@ const mockOnlinePosSales: MockOnlinePosSale[] = [
 export default function OnlinePosTestPage() {
   const [locations, setLocations] = useState<Location[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
+  const [selectedProductIds, setSelectedProductIds] = useState<Record<string, string>>({});
+  const [savingProductId, setSavingProductId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -119,23 +127,59 @@ export default function OnlinePosTestPage() {
     () => mockOnlinePosSales.map((sale) => calculateSaleResult(sale, products, locations)),
     [locations, products],
   );
-  const productMatches = useMemo(
-    () =>
-      mockOnlinePosProducts.map((mockProduct) => ({
-        mockProduct,
-        product: findMatchingProduct(mockProduct, products),
-      })),
-    [products],
-  );
+  const productMatches = useMemo(() => mockOnlinePosProducts.map((mockProduct) => findProductMatch(mockProduct, products)), [products]);
+  const duplicateOnlinePosIds = useMemo(() => getDuplicateOnlinePosIds(products), [products]);
   const stockDrawResults = saleResults.filter((result) => result.trackingMode === "inventory" && !result.excluded);
   const flowResults = saleResults.filter((result) => result.trackingMode === "flow" && !result.excluded);
-  const warnings = saleResults.flatMap((result) =>
-    result.warnings.map((warning) => ({
-      id: `${result.sale.id}-${warning}`,
-      sale: result.sale,
-      warning,
+  const warnings = [
+    ...saleResults.flatMap((result) =>
+      result.warnings.map((warning) => ({
+        id: `${result.sale.id}-${warning}`,
+        text: `${warning}: ${result.sale.barName} / ${result.sale.productName}`,
+      })),
+    ),
+    ...duplicateOnlinePosIds.map((duplicate) => ({
+      id: `duplicate-${duplicate.onlineposProductId}`,
+      text: `Flere BackEvent varer bruger samme OnlinePOS ID: ${duplicate.onlineposProductId} (${duplicate.productNames.join(", ")})`,
     })),
-  );
+  ];
+
+  async function handleSaveMatch(mockProduct: MockOnlinePosProduct) {
+    const suggestedProductId = findProductMatch(mockProduct, products).product?.id ?? "";
+    const selectedProductId = selectedProductIds[mockProduct.id] ?? suggestedProductId;
+    const product = products.find((item) => item.id === selectedProductId);
+
+    if (!product) {
+      setMessage("Vælg en BackEvent vare først.");
+      return;
+    }
+
+    setSavingProductId(mockProduct.id);
+    setMessage(null);
+
+    try {
+      await updateProduct(product.id, {
+        name: product.name,
+        unit: product.unit,
+        trackingMode: product.trackingMode ?? "inventory",
+        onlineposProductId: mockProduct.id,
+        onlineposName: mockProduct.name,
+        salesUnitQuantity: product.salesUnitQuantity ?? 1,
+        litersPerSale: product.litersPerSale ?? null,
+        unitsPerCase: product.unitsPerCase ?? null,
+        active: product.active ?? true,
+        sortOrder: product.sortOrder ?? 999,
+      });
+      const refreshedProducts = await getProductsAdmin();
+      setProducts(refreshedProducts);
+      setSelectedProductIds((current) => ({ ...current, [mockProduct.id]: product.id }));
+      setMessage("Match gemt.");
+    } catch {
+      setMessage("Match kunne ikke gemmes lige nu.");
+    } finally {
+      setSavingProductId(null);
+    }
+  }
 
   return (
     <AppShell adminOnly>
@@ -220,17 +264,43 @@ export default function OnlinePosTestPage() {
                   <th className="py-2 pr-3">OnlinePOS vare</th>
                   <th className="py-2 pr-3">BackEvent vare</th>
                   <th className="py-2 pr-3">Lagerstyring</th>
-                  <th className="py-2">Status</th>
+                  <th className="py-2 pr-3">Status</th>
+                  <th className="py-2">Handling</th>
                 </tr>
               </thead>
               <tbody>
-                {productMatches.map(({ mockProduct, product }) => (
+                {productMatches.map(({ mockProduct, product, matchType }) => (
                   <tr key={mockProduct.id} className="border-b border-line/70 last:border-0">
                     <td className="py-2 pr-3 font-bold text-ink">{mockProduct.name}</td>
-                    <td className="py-2 pr-3 text-muted">{product?.name ?? "Ikke matchet"}</td>
+                    <td className="py-2 pr-3">
+                      <select
+                        value={selectedProductIds[mockProduct.id] ?? product?.id ?? ""}
+                        onChange={(event) =>
+                          setSelectedProductIds((current) => ({ ...current, [mockProduct.id]: event.target.value }))
+                        }
+                        className="min-h-10 w-full rounded-xl border border-line bg-macro px-3 py-2 text-sm font-bold text-ink"
+                      >
+                        <option value="">Vælg BackEvent vare</option>
+                        {products.map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.name}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
                     <td className="py-2 pr-3 text-muted">{trackingModeLabel(product?.trackingMode ?? mockProduct.fallbackTrackingMode)}</td>
+                    <td className="py-2 pr-3">
+                      <MatchStatusPill matchType={matchType} />
+                    </td>
                     <td className="py-2">
-                      {product ? <StatusPill tone="ok">Matchet</StatusPill> : <StatusPill tone="warning">Mangler mapping</StatusPill>}
+                      <button
+                        type="button"
+                        onClick={() => handleSaveMatch(mockProduct)}
+                        disabled={savingProductId !== null || !(selectedProductIds[mockProduct.id] ?? product?.id)}
+                        className="min-h-10 rounded-xl bg-pantone139 px-3 py-2 text-sm font-bold text-ink transition hover:bg-pantone139/90 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {savingProductId === mockProduct.id ? "Gemmer..." : "Gem match"}
+                      </button>
                     </td>
                   </tr>
                 ))}
@@ -306,9 +376,9 @@ export default function OnlinePosTestPage() {
         <CompactPanel title="Advarsler" icon={AlertTriangle}>
           {warnings.length > 0 ? (
             <div className="grid gap-2 md:grid-cols-2">
-              {warnings.map(({ id, sale, warning }) => (
+              {warnings.map(({ id, text }) => (
                 <div key={id} className="rounded-2xl border border-warmRed/20 bg-warmRed/10 px-4 py-3 text-sm font-bold text-warmRed">
-                  {warning}: {sale.barName} / {sale.productName}
+                  {text}
                 </div>
               ))}
             </div>
@@ -355,9 +425,22 @@ function StatusPill({ children, tone }: { children: ReactNode; tone: "ok" | "war
   );
 }
 
+function MatchStatusPill({ matchType }: { matchType: ProductMatch["matchType"] }) {
+  if (matchType === "manual") {
+    return <StatusPill tone="ok">Matchet manuelt</StatusPill>;
+  }
+
+  if (matchType === "name") {
+    return <StatusPill tone="warning">Matchet på navn</StatusPill>;
+  }
+
+  return <StatusPill tone="warning">Ikke matchet</StatusPill>;
+}
+
 function calculateSaleResult(sale: MockOnlinePosSale, products: Product[], locations: Location[]): SaleResult {
   const mockProduct = mockOnlinePosProducts.find((product) => normalize(product.name) === normalize(sale.productName));
-  const product = mockProduct ? findMatchingProduct(mockProduct, products) : undefined;
+  const productMatch = mockProduct ? findProductMatch(mockProduct, products) : undefined;
+  const product = productMatch?.product;
   const location = findMatchingBarLocation(sale.barName, locations);
   const sourceLocation = location?.sourceLocationId
     ? locations.find((item) => item.id === location.sourceLocationId)
@@ -434,15 +517,38 @@ function calculateSaleResult(sale: MockOnlinePosSale, products: Product[], locat
   };
 }
 
-function findMatchingProduct(mockProduct: MockOnlinePosProduct, products: Product[]) {
+function findProductMatch(mockProduct: MockOnlinePosProduct, products: Product[]): ProductMatch {
+  const manualMatch = findManualProductMatch(mockProduct, products);
+
+  if (manualMatch) {
+    return { mockProduct, product: manualMatch, matchType: "manual" };
+  }
+
+  const nameMatch = findNameProductMatch(mockProduct, products);
+
+  if (nameMatch) {
+    return { mockProduct, product: nameMatch, matchType: "name" };
+  }
+
+  return { mockProduct, matchType: "none" };
+}
+
+function findManualProductMatch(mockProduct: MockOnlinePosProduct, products: Product[]) {
+  return products.find(
+    (product) =>
+      normalize(product.onlineposProductId ?? "") === normalize(mockProduct.id) ||
+      normalize(product.onlineposName ?? "") === normalize(mockProduct.name),
+  );
+}
+
+function findNameProductMatch(mockProduct: MockOnlinePosProduct, products: Product[]) {
   const productName = normalize(mockProduct.name);
   const baseName = normalize(stripSalesSize(mockProduct.name));
 
   return products.find((product) => {
-    const candidates = [product.name, product.onlineposName, product.onlineposProductId].filter(Boolean).map((value) => normalize(String(value)));
+    const candidates = [product.name].filter(Boolean).map((value) => normalize(String(value)));
     return candidates.some(
       (candidate) =>
-        candidate === normalize(mockProduct.id) ||
         candidate === productName ||
         candidate === baseName ||
         productName.startsWith(candidate) ||
@@ -450,6 +556,28 @@ function findMatchingProduct(mockProduct: MockOnlinePosProduct, products: Produc
         candidate.startsWith(baseName),
     );
   });
+}
+
+function getDuplicateOnlinePosIds(products: Product[]) {
+  const grouped = products.reduce<Record<string, Product[]>>((groups, product) => {
+    const onlineposProductId = product.onlineposProductId?.trim();
+
+    if (!onlineposProductId) {
+      return groups;
+    }
+
+    return {
+      ...groups,
+      [onlineposProductId]: [...(groups[onlineposProductId] ?? []), product],
+    };
+  }, {});
+
+  return Object.entries(grouped)
+    .filter(([, groupedProducts]) => groupedProducts.length > 1)
+    .map(([onlineposProductId, groupedProducts]) => ({
+      onlineposProductId,
+      productNames: groupedProducts.map((product) => product.name),
+    }));
 }
 
 function findMatchingBarLocation(barName: string, locations: Location[]) {
