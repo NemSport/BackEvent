@@ -9,6 +9,7 @@ import {
   PackageSearch,
   PackagePlus,
   PencilLine,
+  PlugZap,
   QrCode,
   Repeat,
   Settings,
@@ -51,6 +52,7 @@ function controlCards(discrepancyCount: number) {
     { href: "/admin/driftstjek", title: "Driftstjek", description: "Se om systemet er klar", icon: ListChecks },
     { href: "/admin/rapport", title: "Afvigelser", description: `${discrepancyCount} kræver tjek`, icon: AlertTriangle },
     { href: "/admin/rapport", title: "Forbrugsrapport", description: "Forbrug pr. sted og vare", icon: BarChart3 },
+    { href: "/admin/onlinepos-test", title: "OnlinePOS test", description: "Mock salg og mapping", icon: PlugZap },
     { href: "/admin/eksport", title: "Eksport", description: "CSV og backup", icon: Download },
   ];
 }
