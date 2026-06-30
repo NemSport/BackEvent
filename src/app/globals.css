@@ -1,0 +1,46 @@
+@import "tailwindcss";
+
+@theme {
+  --color-macro: #ffffff;
+  --color-warmRed: #e7352b;
+  --color-pantone139: #fcc146;
+  --color-pantone140: #814f12;
+  --color-ink: #1f2933;
+  --color-soft: #fff9eb;
+  --color-line: #eadfcf;
+  --color-muted: #667085;
+  --color-ok: #2f7d48;
+  --shadow-soft: 0 16px 40px rgba(129, 79, 18, 0.12);
+}
+
+:root {
+  color: #1f2933;
+  background: #ffffff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(252, 193, 70, 0.2), transparent 32rem),
+    #ffffff;
+  color: #1f2933;
+}
+
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:focus-visible,
+a:focus-visible {
+  outline: 3px solid rgba(129, 79, 18, 0.35);
+  outline-offset: 3px;
+}
