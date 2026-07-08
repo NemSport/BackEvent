@@ -97,17 +97,6 @@ export async function GET() {
 }
 
 function getHealthTarget(): HealthTarget | null {
-  if (process.env.ONLINEPOS_REPORTS_TOKEN) {
-    return {
-      url: `${(process.env.ONLINEPOS_REPORTS_BASE_URL || defaultReportsBaseUrl).replace(/\/$/, "")}/reports/getSalesPerProduct`,
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${process.env.ONLINEPOS_REPORTS_TOKEN}`,
-      },
-      authMode: "reports-token",
-    };
-  }
-
   if (process.env.ONLINEPOS_TOKEN && process.env.ONLINEPOS_FIRMAID) {
     return {
       url: `${(process.env.ONLINEPOS_BASE_URL || defaultOnlinePosBaseUrl).replace(/\/$/, "")}/exportSales/v20`,
@@ -117,6 +106,17 @@ function getHealthTarget(): HealthTarget | null {
         firmaid: process.env.ONLINEPOS_FIRMAID,
       },
       authMode: "legacy-token-firmaid",
+    };
+  }
+
+  if (process.env.ONLINEPOS_REPORTS_TOKEN) {
+    return {
+      url: `${(process.env.ONLINEPOS_REPORTS_BASE_URL || defaultReportsBaseUrl).replace(/\/$/, "")}/reports/getSalesPerProduct`,
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${process.env.ONLINEPOS_REPORTS_TOKEN}`,
+      },
+      authMode: "reports-token",
     };
   }
 
