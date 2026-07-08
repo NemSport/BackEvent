@@ -1,39 +1,39 @@
 import { NextResponse } from "next/server";
 
-type AuthMode = "rest-bearer-token" | "missing-env";
-
 type HealthResponse = {
   ok: boolean;
   onlineposReachable: boolean;
   status: number | null;
   message: string;
-  authMode: AuthMode;
-  hasReportsToken: boolean;
-  hasLegacyToken: boolean;
-  hasFirmaId: boolean;
-  testedUrlHostOnly: string | null;
+  authMode: "oauth-client-credentials";
+  tokenRequestStatus: number | null;
+  reportRequestStatus: number | null;
+  testedUrlHostOnly: string;
+  hasClientId: boolean;
+  hasClientSecret: boolean;
 };
 
-type HealthTarget = {
-  url: string;
-  headers: Record<string, string>;
-  authMode: Exclude<AuthMode, "missing-env">;
+type TokenResponse = {
+  access_token?: string;
 };
 
 const restBaseUrl = "https://rest.onlinepos.dk";
+const tokenUrl = `${restBaseUrl}/auth/token`;
+const reportUrl = `${restBaseUrl}/reports/getSalesPerProduct`;
 const timeoutMs = 8000;
 
 export async function GET() {
-  const target = getHealthTarget();
+  const hasClientId = Boolean(process.env.ONLINEPOS_CLIENT_ID);
+  const hasClientSecret = Boolean(process.env.ONLINEPOS_CLIENT_SECRET);
 
-  if (!target) {
+  if (!hasClientId || !hasClientSecret) {
     return jsonHealth({
       ok: false,
       onlineposReachable: false,
       status: null,
-      message: "OnlinePOS Reports API key mangler",
-      authMode: "missing-env",
-      testedUrlHostOnly: null,
+      message: "OnlinePOS client credentials mangler",
+      tokenRequestStatus: null,
+      reportRequestStatus: null,
     });
   }
 
@@ -41,45 +41,92 @@ export async function GET() {
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(target.url, {
-      method: "GET",
-      headers: target.headers,
+    const tokenResponse = await fetch(tokenUrl, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        client_id: process.env.ONLINEPOS_CLIENT_ID,
+        client_secret: process.env.ONLINEPOS_CLIENT_SECRET,
+      }),
       cache: "no-store",
       signal: controller.signal,
     });
-    const responseMessage = safeResponseMessage(await response.text());
+    const tokenText = await tokenResponse.text();
+    const tokenMessage = safeResponseMessage(tokenText);
 
-    clearTimeout(timeout);
+    if (!tokenResponse.ok) {
+      clearTimeout(timeout);
 
-    if (response.status === 401 || response.status === 403) {
       return jsonHealth({
         ok: false,
         onlineposReachable: true,
-        status: response.status,
-        message: responseMessage || "OnlinePOS afviser Bearer token",
-        authMode: target.authMode,
-        testedUrlHostOnly: hostOnly(target.url),
+        status: tokenResponse.status,
+        message: tokenMessage || tokenFailureMessage(tokenResponse.status),
+        tokenRequestStatus: tokenResponse.status,
+        reportRequestStatus: null,
       });
     }
 
-    if (!response.ok) {
+    const accessToken = parseAccessToken(tokenText);
+
+    if (!accessToken) {
+      clearTimeout(timeout);
+
       return jsonHealth({
         ok: false,
         onlineposReachable: true,
-        status: response.status,
-        message: responseMessage || "OnlinePOS svarede uventet",
-        authMode: target.authMode,
-        testedUrlHostOnly: hostOnly(target.url),
+        status: tokenResponse.status,
+        message: "OnlinePOS token response manglede access_token",
+        tokenRequestStatus: tokenResponse.status,
+        reportRequestStatus: null,
+      });
+    }
+
+    const reportResponse = await fetch(reportUrl, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    const reportMessage = safeResponseMessage(await reportResponse.text());
+
+    clearTimeout(timeout);
+
+    if (reportResponse.status === 400 || reportResponse.status === 401 || reportResponse.status === 403) {
+      return jsonHealth({
+        ok: false,
+        onlineposReachable: true,
+        status: reportResponse.status,
+        message: reportMessage || reportFailureMessage(reportResponse.status),
+        tokenRequestStatus: tokenResponse.status,
+        reportRequestStatus: reportResponse.status,
+      });
+    }
+
+    if (!reportResponse.ok) {
+      return jsonHealth({
+        ok: false,
+        onlineposReachable: true,
+        status: reportResponse.status,
+        message: reportMessage || "OnlinePOS report endpoint svarede uventet",
+        tokenRequestStatus: tokenResponse.status,
+        reportRequestStatus: reportResponse.status,
       });
     }
 
     return jsonHealth({
       ok: true,
       onlineposReachable: true,
-      status: response.status,
-      message: responseMessage || "OnlinePOS svarer",
-      authMode: target.authMode,
-      testedUrlHostOnly: hostOnly(target.url),
+      status: reportResponse.status,
+      message: reportMessage || "OnlinePOS OAuth og report endpoint svarer",
+      tokenRequestStatus: tokenResponse.status,
+      reportRequestStatus: reportResponse.status,
     });
   } catch (error) {
     clearTimeout(timeout);
@@ -89,42 +136,49 @@ export async function GET() {
       onlineposReachable: false,
       status: null,
       message: error instanceof Error && error.name === "AbortError" ? "OnlinePOS kald timeout" : "OnlinePOS kan ikke nås",
-      authMode: target.authMode,
-      testedUrlHostOnly: hostOnly(target.url),
+      tokenRequestStatus: null,
+      reportRequestStatus: null,
     });
   }
 }
 
-function getHealthTarget(): HealthTarget | null {
-  if (!process.env.ONLINEPOS_REPORTS_TOKEN) {
-    return null;
-  }
-
-  return {
-    url: `${restBaseUrl}/reports/getSalesPerProduct`,
-    headers: {
-      Accept: "application/json",
-      Authorization: `Bearer ${process.env.ONLINEPOS_REPORTS_TOKEN}`,
-    },
-    authMode: "rest-bearer-token",
-  };
-}
-
-function jsonHealth(body: Omit<HealthResponse, "hasReportsToken" | "hasLegacyToken" | "hasFirmaId">) {
+function jsonHealth(body: Omit<HealthResponse, "authMode" | "testedUrlHostOnly" | "hasClientId" | "hasClientSecret">) {
   return NextResponse.json({
     ...body,
-    hasReportsToken: Boolean(process.env.ONLINEPOS_REPORTS_TOKEN),
-    hasLegacyToken: Boolean(process.env.ONLINEPOS_TOKEN),
-    hasFirmaId: Boolean(process.env.ONLINEPOS_FIRMAID),
+    authMode: "oauth-client-credentials",
+    testedUrlHostOnly: "rest.onlinepos.dk",
+    hasClientId: Boolean(process.env.ONLINEPOS_CLIENT_ID),
+    hasClientSecret: Boolean(process.env.ONLINEPOS_CLIENT_SECRET),
   } satisfies HealthResponse);
 }
 
-function hostOnly(url: string) {
+function parseAccessToken(text: string) {
   try {
-    return new URL(url).host;
+    const json = JSON.parse(text) as TokenResponse;
+    return typeof json.access_token === "string" && json.access_token ? json.access_token : null;
   } catch {
     return null;
   }
+}
+
+function tokenFailureMessage(status: number) {
+  if (status === 401) {
+    return "OnlinePOS afviser client credentials";
+  }
+
+  return "OnlinePOS token request fejlede";
+}
+
+function reportFailureMessage(status: number) {
+  if (status === 400) {
+    return "OnlinePOS report request mangler eller afviser parametre";
+  }
+
+  if (status === 401 || status === 403) {
+    return "OnlinePOS report endpoint afviser access token";
+  }
+
+  return "OnlinePOS report endpoint fejlede";
 }
 
 function safeResponseMessage(text: string) {
