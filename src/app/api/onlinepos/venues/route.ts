@@ -9,6 +9,7 @@ type VenuesResponse = {
   hasClientId: boolean;
   hasClientSecret: boolean;
   hasConcern: boolean;
+  hasVenueId: boolean;
   venueCount: number;
   venues: SafeVenue[];
 };
@@ -97,6 +98,12 @@ export async function GET() {
 
     const url = new URL(venuesUrl);
     url.searchParams.set("concern", process.env.ONLINEPOS_CONCERN ?? "");
+    url.searchParams.set("country_code", "DK");
+    url.searchParams.set("status", "all");
+
+    if (process.env.ONLINEPOS_VENUE_ID) {
+      url.searchParams.set("venue_id", JSON.stringify([process.env.ONLINEPOS_VENUE_ID]));
+    }
 
     const venuesResponse = await fetch(url, {
       method: "GET",
@@ -148,12 +155,13 @@ export async function GET() {
   }
 }
 
-function jsonVenues(body: Omit<VenuesResponse, "hasClientId" | "hasClientSecret" | "hasConcern">) {
+function jsonVenues(body: Omit<VenuesResponse, "hasClientId" | "hasClientSecret" | "hasConcern" | "hasVenueId">) {
   return NextResponse.json({
     ...body,
     hasClientId: Boolean(process.env.ONLINEPOS_CLIENT_ID),
     hasClientSecret: Boolean(process.env.ONLINEPOS_CLIENT_SECRET),
     hasConcern: Boolean(process.env.ONLINEPOS_CONCERN),
+    hasVenueId: Boolean(process.env.ONLINEPOS_VENUE_ID),
   } satisfies VenuesResponse);
 }
 
