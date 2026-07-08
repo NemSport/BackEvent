@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-type AuthMode = "reports-token" | "legacy-token-firmaid" | "missing-env";
+type AuthMode = "rest-bearer-token" | "missing-env";
 
 type HealthResponse = {
   ok: boolean;
@@ -20,8 +20,7 @@ type HealthTarget = {
   authMode: Exclude<AuthMode, "missing-env">;
 };
 
-const defaultOnlinePosBaseUrl = "https://api.onlinepos.dk/api";
-const defaultReportsBaseUrl = "https://rest.onlinepos.dk";
+const restBaseUrl = "https://rest.onlinepos.dk";
 const timeoutMs = 8000;
 
 export async function GET() {
@@ -32,7 +31,7 @@ export async function GET() {
       ok: false,
       onlineposReachable: false,
       status: null,
-      message: "OnlinePOS API key mangler",
+      message: "OnlinePOS Reports API key mangler",
       authMode: "missing-env",
       testedUrlHostOnly: null,
     });
@@ -57,7 +56,7 @@ export async function GET() {
         ok: false,
         onlineposReachable: true,
         status: response.status,
-        message: responseMessage || "OnlinePOS afviser API key",
+        message: responseMessage || "OnlinePOS afviser Bearer token",
         authMode: target.authMode,
         testedUrlHostOnly: hostOnly(target.url),
       });
@@ -97,30 +96,18 @@ export async function GET() {
 }
 
 function getHealthTarget(): HealthTarget | null {
-  if (process.env.ONLINEPOS_TOKEN && process.env.ONLINEPOS_FIRMAID) {
-    return {
-      url: `${(process.env.ONLINEPOS_BASE_URL || defaultOnlinePosBaseUrl).replace(/\/$/, "")}/exportSales/v20`,
-      headers: {
-        Accept: "application/json",
-        token: process.env.ONLINEPOS_TOKEN,
-        firmaid: process.env.ONLINEPOS_FIRMAID,
-      },
-      authMode: "legacy-token-firmaid",
-    };
+  if (!process.env.ONLINEPOS_REPORTS_TOKEN) {
+    return null;
   }
 
-  if (process.env.ONLINEPOS_REPORTS_TOKEN) {
-    return {
-      url: `${(process.env.ONLINEPOS_REPORTS_BASE_URL || defaultReportsBaseUrl).replace(/\/$/, "")}/reports/getSalesPerProduct`,
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${process.env.ONLINEPOS_REPORTS_TOKEN}`,
-      },
-      authMode: "reports-token",
-    };
-  }
-
-  return null;
+  return {
+    url: `${restBaseUrl}/reports/getSalesPerProduct`,
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${process.env.ONLINEPOS_REPORTS_TOKEN}`,
+    },
+    authMode: "rest-bearer-token",
+  };
 }
 
 function jsonHealth(body: Omit<HealthResponse, "hasReportsToken" | "hasLegacyToken" | "hasFirmaId">) {
