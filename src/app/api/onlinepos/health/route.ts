@@ -11,6 +11,7 @@ type HealthResponse = {
   testedUrlHostOnly: string;
   hasClientId: boolean;
   hasClientSecret: boolean;
+  hasTarget: boolean;
 };
 
 type TokenResponse = {
@@ -25,13 +26,14 @@ const timeoutMs = 8000;
 export async function GET() {
   const hasClientId = Boolean(process.env.ONLINEPOS_CLIENT_ID);
   const hasClientSecret = Boolean(process.env.ONLINEPOS_CLIENT_SECRET);
+  const hasTarget = Boolean(process.env.ONLINEPOS_TARGET);
 
-  if (!hasClientId || !hasClientSecret) {
+  if (!hasClientId || !hasClientSecret || !hasTarget) {
     return jsonHealth({
       ok: false,
       onlineposReachable: false,
       status: null,
-      message: "OnlinePOS client credentials mangler",
+      message: missingEnvMessage({ hasClientId, hasClientSecret, hasTarget }),
       tokenRequestStatus: null,
       reportRequestStatus: null,
     });
@@ -85,7 +87,7 @@ export async function GET() {
       });
     }
 
-    const reportResponse = await fetch(reportUrl, {
+    const reportResponse = await fetch(reportUrlWithTarget(), {
       method: "GET",
       headers: {
         Accept: "application/json",
@@ -98,7 +100,7 @@ export async function GET() {
 
     clearTimeout(timeout);
 
-    if (reportResponse.status === 400 || reportResponse.status === 401 || reportResponse.status === 403) {
+    if ([400, 401, 403, 422].includes(reportResponse.status)) {
       return jsonHealth({
         ok: false,
         onlineposReachable: true,
@@ -142,14 +144,23 @@ export async function GET() {
   }
 }
 
-function jsonHealth(body: Omit<HealthResponse, "authMode" | "testedUrlHostOnly" | "hasClientId" | "hasClientSecret">) {
+function jsonHealth(
+  body: Omit<HealthResponse, "authMode" | "testedUrlHostOnly" | "hasClientId" | "hasClientSecret" | "hasTarget">,
+) {
   return NextResponse.json({
     ...body,
     authMode: "oauth-client-credentials",
     testedUrlHostOnly: "rest.onlinepos.dk",
     hasClientId: Boolean(process.env.ONLINEPOS_CLIENT_ID),
     hasClientSecret: Boolean(process.env.ONLINEPOS_CLIENT_SECRET),
+    hasTarget: Boolean(process.env.ONLINEPOS_TARGET),
   } satisfies HealthResponse);
+}
+
+function reportUrlWithTarget() {
+  const url = new URL(reportUrl);
+  url.searchParams.set("target", process.env.ONLINEPOS_TARGET ?? "");
+  return url;
 }
 
 function parseAccessToken(text: string) {
@@ -174,11 +185,33 @@ function reportFailureMessage(status: number) {
     return "OnlinePOS report request mangler eller afviser parametre";
   }
 
+  if (status === 422) {
+    return "OnlinePOS report request afviser target eller parametre";
+  }
+
   if (status === 401 || status === 403) {
     return "OnlinePOS report endpoint afviser access token";
   }
 
   return "OnlinePOS report endpoint fejlede";
+}
+
+function missingEnvMessage({
+  hasClientId,
+  hasClientSecret,
+  hasTarget,
+}: {
+  hasClientId: boolean;
+  hasClientSecret: boolean;
+  hasTarget: boolean;
+}) {
+  const missing = [
+    !hasClientId ? "ONLINEPOS_CLIENT_ID" : null,
+    !hasClientSecret ? "ONLINEPOS_CLIENT_SECRET" : null,
+    !hasTarget ? "ONLINEPOS_TARGET" : null,
+  ].filter(Boolean);
+
+  return `OnlinePOS env mangler: ${missing.join(", ")}`;
 }
 
 function safeResponseMessage(text: string) {
