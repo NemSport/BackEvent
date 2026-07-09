@@ -201,13 +201,13 @@ export default function OnlinePosMappingPage() {
 
       {preview ? <SummaryCards preview={preview} /> : null}
 
-      <section className="mt-5 overflow-hidden rounded-[1.5rem] border border-line bg-macro shadow-soft">
-        <div className="hidden grid-cols-[0.9fr_1.4fr_0.9fr_0.9fr_1fr_0.9fr_0.7fr_0.8fr_0.8fr] gap-3 border-b border-line bg-soft px-4 py-3 text-xs font-bold uppercase tracking-wide text-muted 2xl:grid">
-          <span>OnlinePOS ID</span>
+      <section className="mt-5 max-h-[72vh] overflow-auto rounded-[1.25rem] border border-line bg-macro shadow-soft">
+        <div className="sticky top-0 z-10 hidden grid-cols-[5.5rem_minmax(14rem,2fr)_8rem_7rem_minmax(12rem,1.25fr)_9rem_5.5rem_7rem_8.5rem] gap-2 border-b border-line bg-soft px-3 py-2 text-[0.68rem] font-bold uppercase tracking-wide text-muted 2xl:grid">
+          <span>ID</span>
           <span>Vare</span>
           <span>Gruppe</span>
           <span>Type</span>
-          <span>BackEvent vare</span>
+          <span>Vare</span>
           <span>Handling</span>
           <span>Faktor</span>
           <span>Status</span>
@@ -267,18 +267,18 @@ function MappingRow({
   onSave: () => void;
 }) {
   return (
-    <article className="grid gap-3 px-4 py-4 text-sm font-medium text-ink 2xl:grid-cols-[0.9fr_1.4fr_0.9fr_0.9fr_1fr_0.9fr_0.7fr_0.8fr_0.8fr] 2xl:items-center">
-      <span className="font-bold text-muted">{product.onlinepos_product_id ?? "-"}</span>
-      <div>
-        <p className="font-bold">{product.onlinepos_product_name ?? "Ukendt vare"}</p>
+    <article className="grid gap-3 px-4 py-4 text-sm font-medium text-ink 2xl:grid-cols-[5.5rem_minmax(14rem,2fr)_8rem_7rem_minmax(12rem,1.25fr)_9rem_5.5rem_7rem_8.5rem] 2xl:items-center 2xl:gap-2 2xl:px-3 2xl:py-1.5 2xl:text-xs">
+      <span className="truncate font-bold text-muted" title={String(product.onlinepos_product_id ?? "-")}>{product.onlinepos_product_id ?? "-"}</span>
+      <div className="min-w-0">
+        <p className="truncate font-bold" title={product.onlinepos_product_name ?? "Ukendt vare"}>{product.onlinepos_product_name ?? "Ukendt vare"}</p>
         <p className="text-xs text-muted 2xl:hidden">{product.onlinepos_product_group_name ?? "-"} · {lineTypeLabel(product.lineType)}</p>
       </div>
-      <span className="hidden 2xl:block">{product.onlinepos_product_group_name ?? "-"}</span>
-      <span className="rounded-xl bg-soft px-3 py-2 text-xs font-bold text-pantone140">{lineTypeLabel(product.lineType)}</span>
+      <span className="hidden truncate 2xl:block" title={product.onlinepos_product_group_name ?? "-"}>{product.onlinepos_product_group_name ?? "-"}</span>
+      <span className="w-fit rounded-lg bg-soft px-2 py-1 text-[0.68rem] font-bold text-pantone140 2xl:max-w-full 2xl:truncate" title={lineTypeLabel(product.lineType)}>{lineTypeLabel(product.lineType)}</span>
       <select
         value={draft.backeventInventoryItemId}
         onChange={(event) => onDraft({ ...draft, backeventInventoryItemId: event.target.value })}
-        className="min-h-10 rounded-xl border border-line bg-macro px-3 py-2 font-bold outline-none focus:border-pantone140"
+        className="min-h-10 rounded-xl border border-line bg-macro px-3 py-2 font-bold outline-none focus:border-pantone140 2xl:min-h-8 2xl:rounded-lg 2xl:px-2 2xl:py-1 2xl:text-xs"
       >
         <option value="">Ingen valgt</option>
         {inventoryProducts.map((item) => (
@@ -288,7 +288,7 @@ function MappingRow({
       <select
         value={draft.mappingAction}
         onChange={(event) => onDraft({ ...draft, mappingAction: event.target.value as MappingAction })}
-        className="min-h-10 rounded-xl border border-line bg-macro px-3 py-2 font-bold outline-none focus:border-pantone140"
+        className="min-h-10 rounded-xl border border-line bg-macro px-3 py-2 font-bold outline-none focus:border-pantone140 2xl:min-h-8 2xl:rounded-lg 2xl:px-2 2xl:py-1 2xl:text-xs"
       >
         {mappingActions.map((action) => (
           <option key={action.value} value={action.value}>{action.label}</option>
@@ -297,22 +297,22 @@ function MappingRow({
       <input
         value={draft.conversionFactor}
         onChange={(event) => onDraft({ ...draft, conversionFactor: event.target.value })}
-        className="min-h-10 rounded-xl border border-line bg-macro px-3 py-2 font-bold outline-none focus:border-pantone140"
+        className="min-h-10 rounded-xl border border-line bg-macro px-3 py-2 font-bold outline-none focus:border-pantone140 2xl:min-h-8 2xl:rounded-lg 2xl:px-2 2xl:py-1 2xl:text-xs"
         inputMode="decimal"
       />
       <select
         value={draft.status}
         onChange={(event) => onDraft({ ...draft, status: event.target.value as MappingStatus })}
-        className="min-h-10 rounded-xl border border-line bg-macro px-3 py-2 font-bold outline-none focus:border-pantone140"
+        className="min-h-10 rounded-xl border border-line bg-macro px-3 py-2 font-bold outline-none focus:border-pantone140 2xl:min-h-8 2xl:rounded-lg 2xl:px-2 2xl:py-1 2xl:text-xs"
       >
-        <option value="unmapped">Ikke godkendt</option>
+        <option value="unmapped">Afventer</option>
         <option value="approved">Godkendt</option>
       </select>
-      <div className="flex flex-wrap items-center gap-2">
-        <button type="button" onClick={onSave} className="rounded-xl bg-pantone139 px-3 py-2 text-sm font-bold text-ink">
+      <div className="flex flex-wrap items-center gap-2 2xl:flex-nowrap 2xl:gap-1.5">
+        <button type="button" onClick={onSave} className="rounded-xl bg-pantone139 px-3 py-2 text-sm font-bold text-ink 2xl:rounded-lg 2xl:px-2.5 2xl:py-1.5 2xl:text-xs">
           Gem
         </button>
-        <span className={`rounded-xl px-3 py-2 text-xs font-bold ${product.canAffectInventory ? "bg-green-100 text-green-800" : "bg-soft text-muted"}`}>
+        <span className={`rounded-xl px-3 py-2 text-xs font-bold 2xl:rounded-lg 2xl:px-2 2xl:py-1 2xl:text-[0.68rem] ${product.canAffectInventory ? "bg-green-50 text-green-700" : "bg-soft text-muted"}`}>
           {product.canAffectInventory ? "Kan trække" : "Trækker ikke"}
         </span>
       </div>
