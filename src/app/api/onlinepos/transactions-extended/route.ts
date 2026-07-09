@@ -6,13 +6,12 @@ type TransactionsResponse = {
   message: string;
   tokenRequestStatus: number | null;
   transactionsRequestStatus: number | null;
-  hasClientId: boolean;
-  hasClientSecret: boolean;
-  hasVenueId: boolean;
   searchMode: "receipt_number" | "receipt_range" | "datetime" | "default-last-24h";
   datetimeMode: "query" | "default-last-24h" | "not-used";
+  pageRequested: string | null;
   transactionCount: number;
   pagination: Record<string, unknown> | null;
+  hasMorePages: boolean;
   sample: SafeTransactionSample | null;
   discoveredFields: {
     hasCashRegister: boolean;
@@ -31,8 +30,12 @@ type TokenResponse = {
 
 type SafeTransactionSample = {
   transaction_id: string | number | null;
+  receipt_number: string | number | null;
   datetime: string | null;
-  cash_register: string | number | null;
+  cash_register: {
+    id: string | number | null;
+    name: string | null;
+  } | null;
   lineCount: number;
   firstLines: SafeTransactionLine[];
 };
@@ -70,8 +73,10 @@ export async function GET(request: Request) {
       transactionsRequestStatus: null,
       searchMode: transactionQuery.searchMode,
       datetimeMode: transactionQuery.datetimeMode,
+      pageRequested: transactionQuery.pageRequested,
       transactionCount: 0,
       pagination: null,
+      hasMorePages: false,
       sample: null,
       discoveredFields: emptyDiscoveredFields(),
     });
@@ -107,8 +112,10 @@ export async function GET(request: Request) {
         transactionsRequestStatus: null,
         searchMode: transactionQuery.searchMode,
         datetimeMode: transactionQuery.datetimeMode,
+        pageRequested: transactionQuery.pageRequested,
         transactionCount: 0,
         pagination: null,
+        hasMorePages: false,
         sample: null,
         discoveredFields: emptyDiscoveredFields(),
       });
@@ -126,8 +133,10 @@ export async function GET(request: Request) {
         transactionsRequestStatus: null,
         searchMode: transactionQuery.searchMode,
         datetimeMode: transactionQuery.datetimeMode,
+        pageRequested: transactionQuery.pageRequested,
         transactionCount: 0,
         pagination: null,
+        hasMorePages: false,
         sample: null,
         discoveredFields: emptyDiscoveredFields(),
       });
@@ -156,8 +165,10 @@ export async function GET(request: Request) {
         transactionsRequestStatus: transactionsResponse.status,
         searchMode: transactionQuery.searchMode,
         datetimeMode: transactionQuery.datetimeMode,
+        pageRequested: transactionQuery.pageRequested,
         transactionCount: 0,
         pagination: null,
+        hasMorePages: false,
         sample: null,
         discoveredFields: emptyDiscoveredFields(),
       });
@@ -173,8 +184,10 @@ export async function GET(request: Request) {
       transactionsRequestStatus: transactionsResponse.status,
       searchMode: transactionQuery.searchMode,
       datetimeMode: transactionQuery.datetimeMode,
+      pageRequested: transactionQuery.pageRequested,
       transactionCount: parsed.transactions.length,
       pagination: parsed.pagination,
+      hasMorePages: hasMorePages(parsed.pagination),
       sample: buildSample(parsed.transactions[0] ?? null),
       discoveredFields: discoverFields(parsed.transactions),
     });
@@ -188,28 +201,24 @@ export async function GET(request: Request) {
       transactionsRequestStatus: null,
       searchMode: transactionQuery.searchMode,
       datetimeMode: transactionQuery.datetimeMode,
+      pageRequested: transactionQuery.pageRequested,
       transactionCount: 0,
       pagination: null,
+      hasMorePages: false,
       sample: null,
       discoveredFields: emptyDiscoveredFields(),
     });
   }
 }
 
-function jsonTransactions(
-  body: Omit<TransactionsResponse, "hasClientId" | "hasClientSecret" | "hasVenueId">,
-) {
-  return NextResponse.json({
-    ...body,
-    hasClientId: Boolean(process.env.ONLINEPOS_CLIENT_ID),
-    hasClientSecret: Boolean(process.env.ONLINEPOS_CLIENT_SECRET),
-    hasVenueId: Boolean(process.env.ONLINEPOS_VENUE_ID),
-  } satisfies TransactionsResponse);
+function jsonTransactions(body: TransactionsResponse) {
+  return NextResponse.json(body);
 }
 
 function transactionsUrlWithQuery(transactionQuery: {
   searchMode: TransactionsResponse["searchMode"];
   datetimeMode: TransactionsResponse["datetimeMode"];
+  pageRequested: string | null;
   params: Record<string, string>;
 }) {
   const url = new URL(transactionsUrl);
@@ -225,6 +234,7 @@ function transactionsUrlWithQuery(transactionQuery: {
 function getTransactionQuery(request: Request): {
   searchMode: TransactionsResponse["searchMode"];
   datetimeMode: TransactionsResponse["datetimeMode"];
+  pageRequested: string | null;
   params: Record<string, string>;
 } {
   const url = new URL(request.url);
@@ -233,36 +243,41 @@ function getTransactionQuery(request: Request): {
   const receiptNumberTo = url.searchParams.get("receipt_number_to");
   const datetimeFrom = url.searchParams.get("datetime_from");
   const datetimeTo = url.searchParams.get("datetime_to");
+  const page = url.searchParams.get("page");
+
+  const providedParams = {
+    ...(datetimeFrom ? { datetime_from: datetimeFrom } : {}),
+    ...(datetimeTo ? { datetime_to: datetimeTo } : {}),
+    ...(receiptNumber ? { receipt_number: receiptNumber } : {}),
+    ...(receiptNumberFrom ? { receipt_number_from: receiptNumberFrom } : {}),
+    ...(receiptNumberTo ? { receipt_number_to: receiptNumberTo } : {}),
+    ...(page ? { page } : {}),
+  };
 
   if (receiptNumber) {
     return {
       searchMode: "receipt_number",
-      datetimeMode: "not-used",
-      params: {
-        receipt_number: receiptNumber,
-      },
+      datetimeMode: datetimeFrom || datetimeTo ? "query" : "not-used",
+      pageRequested: page,
+      params: providedParams,
     };
   }
 
   if (receiptNumberFrom || receiptNumberTo) {
     return {
       searchMode: "receipt_range",
-      datetimeMode: "not-used",
-      params: {
-        ...(receiptNumberFrom ? { receipt_number_from: receiptNumberFrom } : {}),
-        ...(receiptNumberTo ? { receipt_number_to: receiptNumberTo } : {}),
-      },
+      datetimeMode: datetimeFrom || datetimeTo ? "query" : "not-used",
+      pageRequested: page,
+      params: providedParams,
     };
   }
 
-  if (datetimeFrom && datetimeTo) {
+  if (datetimeFrom || datetimeTo) {
     return {
       searchMode: "datetime",
       datetimeMode: "query",
-      params: {
-        datetime_from: datetimeFrom,
-        datetime_to: datetimeTo,
-      },
+      pageRequested: page,
+      params: providedParams,
     };
   }
 
@@ -272,9 +287,11 @@ function getTransactionQuery(request: Request): {
   return {
     searchMode: "default-last-24h",
     datetimeMode: "default-last-24h",
+    pageRequested: page,
     params: {
       datetime_from: from.toISOString(),
       datetime_to: now.toISOString(),
+      ...(page ? { page } : {}),
     },
   };
 }
@@ -292,7 +309,7 @@ function parseTransactions(text: string) {
   try {
     const json = JSON.parse(text) as unknown;
     return {
-      transactions: findRows(json),
+      transactions: findTransactions(json),
       pagination: findPagination(json),
     };
   } catch {
@@ -312,11 +329,30 @@ function buildSample(transaction: Record<string, unknown> | null): SafeTransacti
 
   return {
     transaction_id: pickScalarField(transaction, ["transaction_id", "transactionId", "id"]),
+    receipt_number: pickScalarField(transaction, ["receipt_number", "receiptNumber"]),
     datetime: stringifyValue(pickField(transaction, ["datetime", "dateTime", "created_at", "createdAt", "time"])),
-    cash_register: pickScalarField(transaction, ["cash_register", "cashRegister", "cash_register_id", "register", "register_id"]),
+    cash_register: toSafeCashRegister(pickField(transaction, ["cash_register", "cashRegister"])),
     lineCount: lines.length,
     firstLines: lines.slice(0, 5).map(toSafeLine),
   };
+}
+
+function toSafeCashRegister(value: unknown): SafeTransactionSample["cash_register"] {
+  if (isRecord(value)) {
+    return {
+      id: pickScalarField(value, ["id", "cash_register_id", "cashRegisterId"]),
+      name: stringifyValue(pickField(value, ["name", "cash_register_name", "cashRegisterName"])),
+    };
+  }
+
+  if (typeof value === "string" || typeof value === "number") {
+    return {
+      id: value,
+      name: null,
+    };
+  }
+
+  return null;
 }
 
 function toSafeLine(line: Record<string, unknown>): SafeTransactionLine {
@@ -363,38 +399,23 @@ function emptyDiscoveredFields(): TransactionsResponse["discoveredFields"] {
   };
 }
 
-function findRows(value: unknown): Record<string, unknown>[] {
-  if (Array.isArray(value)) {
-    return value.filter(isRecord);
-  }
-
+function findTransactions(value: unknown): Record<string, unknown>[] {
   if (!isRecord(value)) {
     return [];
   }
 
-  for (const key of ["transactions", "transactionExtended", "data", "items", "result", "results"]) {
-    const child = value[key];
-    if (Array.isArray(child)) {
-      return child.filter(isRecord);
-    }
-
-    if (isRecord(child)) {
-      const nested = findRows(child);
-      if (nested.length > 0) {
-        return nested;
-      }
-    }
+  if (Array.isArray(value.data)) {
+    return value.data.filter(isRecord);
   }
 
   return [];
 }
 
 function findTransactionLines(transaction: Record<string, unknown>): Record<string, unknown>[] {
-  for (const key of ["lines", "line_items", "lineItems", "products", "sales", "items"]) {
-    const child = transaction[key];
-    if (Array.isArray(child)) {
-      return child.filter(isRecord);
-    }
+  const lines = transaction.lines;
+
+  if (Array.isArray(lines)) {
+    return lines.filter(isRecord);
   }
 
   return [];
@@ -405,7 +426,7 @@ function findPagination(value: unknown): Record<string, unknown> | null {
     return null;
   }
 
-  const pagination = pickField(value, ["pagination", "page", "paging", "meta"]);
+  const pagination = pickField(value, ["pagination"]);
   if (isRecord(pagination)) {
     return sanitizePagination(pagination);
   }
@@ -415,10 +436,50 @@ function findPagination(value: unknown): Record<string, unknown> | null {
 }
 
 function sanitizePagination(value: Record<string, unknown>) {
-  const allowed = ["page", "per_page", "limit", "offset", "total", "total_count", "next", "previous", "cursor"];
+  const allowed = [
+    "page",
+    "currentpage",
+    "perpage",
+    "lastpage",
+    "nextpage",
+    "previouspage",
+    "limit",
+    "offset",
+    "total",
+    "totalcount",
+    "next",
+    "previous",
+    "cursor",
+    "hasmore",
+    "hasmorepages",
+  ];
   return Object.fromEntries(
     Object.entries(value).filter(([key, item]) => allowed.includes(normalizeKey(key)) && isSafeScalar(item)),
   );
+}
+
+function hasMorePages(pagination: Record<string, unknown> | null) {
+  if (!pagination) {
+    return false;
+  }
+
+  const direct = pickField(pagination, ["has_more", "has_more_pages"]);
+  if (typeof direct === "boolean") {
+    return direct;
+  }
+
+  const next = pickField(pagination, ["next", "next_page", "cursor"]);
+  if (typeof next === "string") {
+    return next.trim().length > 0;
+  }
+
+  if (typeof next === "number") {
+    return next > 0;
+  }
+
+  const currentPage = numberValue(pickField(pagination, ["page", "current_page"]));
+  const lastPage = numberValue(pickField(pagination, ["last_page"]));
+  return currentPage !== null && lastPage !== null ? currentPage < lastPage : false;
 }
 
 function pickField(row: Record<string, unknown>, keys: string[]) {
@@ -461,6 +522,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isSafeScalar(value: unknown) {
   return ["string", "number", "boolean"].includes(typeof value) || value === null;
+}
+
+function numberValue(value: unknown) {
+  if (typeof value === "number") {
+    return value;
+  }
+
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
 }
 
 function tokenFailureMessage(status: number) {
