@@ -9,6 +9,7 @@ type TransactionsBasicResponse = {
   tokenRequestStatus: number | null;
   transactionsRequestStatus: number | null;
   searchMode: SearchMode;
+  extendedViewModeTried: ExtendedViewMode | null;
   pageRequested: string | null;
   transactionCount: number;
   pagination: SafePagination;
@@ -35,6 +36,8 @@ type SafePagination = {
 type TokenResponse = {
   access_token?: string;
 };
+
+type ExtendedViewMode = "1" | "true" | "none";
 
 type SafeTransactionSample = {
   transaction_id: string | number | null;
@@ -80,6 +83,7 @@ export async function GET(request: Request) {
       tokenRequestStatus: null,
       transactionsRequestStatus: null,
       searchMode: transactionQuery.searchMode,
+      extendedViewModeTried: null,
       pageRequested: transactionQuery.pageRequested,
       transactionCount: 0,
       pagination: emptyPagination(),
@@ -118,6 +122,7 @@ export async function GET(request: Request) {
         tokenRequestStatus: tokenResponse.status,
         transactionsRequestStatus: null,
         searchMode: transactionQuery.searchMode,
+        extendedViewModeTried: null,
         pageRequested: transactionQuery.pageRequested,
         transactionCount: 0,
         pagination: emptyPagination(),
@@ -138,6 +143,7 @@ export async function GET(request: Request) {
         tokenRequestStatus: tokenResponse.status,
         transactionsRequestStatus: null,
         searchMode: transactionQuery.searchMode,
+        extendedViewModeTried: null,
         pageRequested: transactionQuery.pageRequested,
         transactionCount: 0,
         pagination: emptyPagination(),
@@ -147,16 +153,9 @@ export async function GET(request: Request) {
       });
     }
 
-    const transactionsResponse = await fetch(transactionsUrlWithQuery(transactionQuery), {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${accessToken}`,
-      },
-      cache: "no-store",
-      signal: controller.signal,
-    });
-    const transactionsText = await transactionsResponse.text();
+    const transactionsResult = await fetchTransactions(accessToken, transactionQuery, controller.signal);
+    const transactionsResponse = transactionsResult.response;
+    const transactionsText = transactionsResult.text;
     const transactionsMessage = safeResponseMessage(transactionsText);
 
     clearTimeout(timeout);
@@ -169,6 +168,7 @@ export async function GET(request: Request) {
         tokenRequestStatus: tokenResponse.status,
         transactionsRequestStatus: transactionsResponse.status,
         searchMode: transactionQuery.searchMode,
+        extendedViewModeTried: transactionsResult.extendedViewMode,
         pageRequested: transactionQuery.pageRequested,
         transactionCount: 0,
         pagination: emptyPagination(),
@@ -187,6 +187,7 @@ export async function GET(request: Request) {
       tokenRequestStatus: tokenResponse.status,
       transactionsRequestStatus: transactionsResponse.status,
       searchMode: transactionQuery.searchMode,
+      extendedViewModeTried: transactionsResult.extendedViewMode,
       pageRequested: transactionQuery.pageRequested,
       transactionCount: parsed.transactions.length,
       pagination: parsed.pagination,
@@ -203,6 +204,7 @@ export async function GET(request: Request) {
       tokenRequestStatus: null,
       transactionsRequestStatus: null,
       searchMode: transactionQuery.searchMode,
+      extendedViewModeTried: null,
       pageRequested: transactionQuery.pageRequested,
       transactionCount: 0,
       pagination: emptyPagination(),
@@ -221,16 +223,69 @@ function transactionsUrlWithQuery(transactionQuery: {
   searchMode: SearchMode;
   pageRequested: string | null;
   params: Record<string, string>;
-}) {
+}, extendedViewMode: ExtendedViewMode) {
   const url = new URL(transactionsUrl);
   url.searchParams.set("venue", process.env.ONLINEPOS_VENUE_ID ?? "");
-  url.searchParams.set("extended_view", "true");
+
+  if (extendedViewMode !== "none") {
+    url.searchParams.set("extended_view", extendedViewMode);
+  }
 
   Object.entries(transactionQuery.params).forEach(([key, value]) => {
     url.searchParams.set(key, value);
   });
 
   return url;
+}
+
+async function fetchTransactions(
+  accessToken: string,
+  transactionQuery: {
+    searchMode: SearchMode;
+    pageRequested: string | null;
+    params: Record<string, string>;
+  },
+  signal: AbortSignal,
+): Promise<{
+  response: Response;
+  text: string;
+  extendedViewMode: ExtendedViewMode;
+}> {
+  const modes: ExtendedViewMode[] = ["1", "true", "none"];
+  let lastResult: {
+    response: Response;
+    text: string;
+    extendedViewMode: ExtendedViewMode;
+  } | null = null;
+
+  for (const extendedViewMode of modes) {
+    const response = await fetch(transactionsUrlWithQuery(transactionQuery, extendedViewMode), {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      cache: "no-store",
+      signal,
+    });
+    const text = await response.text();
+
+    lastResult = {
+      response,
+      text,
+      extendedViewMode,
+    };
+
+    if (!isExtendedViewValidationError(response.status, text)) {
+      return lastResult;
+    }
+  }
+
+  if (!lastResult) {
+    throw new Error("OnlinePOS extended_view modes mangler");
+  }
+
+  return lastResult;
 }
 
 function getTransactionQuery(request: Request): {
@@ -546,4 +601,8 @@ function containsSensitiveOnlinePosData(text: string) {
   return /payment_data|applied_card_number|applied_card_name|clerk_name|clerk_number|card_campaign_id|discount_family_id|business_number|access_token|client_secret|client_id|notes/i.test(
     text,
   );
+}
+
+function isExtendedViewValidationError(status: number, text: string) {
+  return status === 422 && /extended[_\s-]?view/i.test(text);
 }
