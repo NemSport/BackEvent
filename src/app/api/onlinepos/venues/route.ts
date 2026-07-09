@@ -101,7 +101,7 @@ export async function GET() {
     url.searchParams.set("concern", process.env.ONLINEPOS_CONCERN ?? "");
     url.searchParams.set("country_code", "DK");
     url.searchParams.set("status", "all");
-    url.searchParams.set("venue_id", JSON.stringify([process.env.ONLINEPOS_VENUE_ID ?? ""]));
+    url.searchParams.append("venue_id[]", process.env.ONLINEPOS_VENUE_ID ?? "");
 
     const venuesResponse = await fetch(url, {
       method: "GET",

@@ -163,7 +163,7 @@ function jsonHealth(
 function reportUrlWithVenueScope() {
   const url = new URL(reportUrl);
   url.searchParams.set("concern", process.env.ONLINEPOS_CONCERN ?? "");
-  url.searchParams.set("venue_id", JSON.stringify([process.env.ONLINEPOS_VENUE_ID ?? ""]));
+  url.searchParams.append("venue_id[]", process.env.ONLINEPOS_VENUE_ID ?? "");
   return url;
 }
 

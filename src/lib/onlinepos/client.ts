@@ -307,7 +307,7 @@ function buildReportsSalesPerProductPath(paramMode: OnlinePosReportsParamMode, d
   const url = new URL(`${defaultReportsBaseUrl}/reports/getSalesPerProduct`);
   const range = getIsoDateRange(date);
   url.searchParams.set("concern", process.env.ONLINEPOS_CONCERN ?? "");
-  url.searchParams.set("venue_id", JSON.stringify([process.env.ONLINEPOS_VENUE_ID ?? ""]));
+  url.searchParams.append("venue_id[]", process.env.ONLINEPOS_VENUE_ID ?? "");
 
   if (paramMode === "from_to_iso") {
     url.searchParams.set("from", range.from);
