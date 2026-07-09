@@ -11,8 +11,9 @@ type HealthResponse = {
   testedUrlHostOnly: string;
   hasClientId: boolean;
   hasClientSecret: boolean;
-  hasConcern: boolean;
   hasVenueId: boolean;
+  hasTimeFilter: boolean;
+  salesRowCount: number;
 };
 
 type TokenResponse = {
@@ -22,22 +23,23 @@ type TokenResponse = {
 const restBaseUrl = "https://rest.onlinepos.dk";
 const tokenUrl = `${restBaseUrl}/auth/token`;
 const reportUrl = `${restBaseUrl}/reports/getSalesPerProduct`;
+const timeFilter = "Last7Days";
 const timeoutMs = 8000;
 
 export async function GET() {
   const hasClientId = Boolean(process.env.ONLINEPOS_CLIENT_ID);
   const hasClientSecret = Boolean(process.env.ONLINEPOS_CLIENT_SECRET);
-  const hasConcern = Boolean(process.env.ONLINEPOS_CONCERN);
   const hasVenueId = Boolean(process.env.ONLINEPOS_VENUE_ID);
 
-  if (!hasClientId || !hasClientSecret || !hasConcern || !hasVenueId) {
+  if (!hasClientId || !hasClientSecret || !hasVenueId) {
     return jsonHealth({
       ok: false,
       onlineposReachable: false,
       status: null,
-      message: missingEnvMessage({ hasClientId, hasClientSecret, hasConcern, hasVenueId }),
+      message: missingEnvMessage({ hasClientId, hasClientSecret, hasVenueId }),
       tokenRequestStatus: null,
       reportRequestStatus: null,
+      salesRowCount: 0,
     });
   }
 
@@ -71,6 +73,7 @@ export async function GET() {
         message: tokenMessage || tokenFailureMessage(tokenResponse.status),
         tokenRequestStatus: tokenResponse.status,
         reportRequestStatus: null,
+        salesRowCount: 0,
       });
     }
 
@@ -86,10 +89,11 @@ export async function GET() {
         message: "OnlinePOS token response manglede access_token",
         tokenRequestStatus: tokenResponse.status,
         reportRequestStatus: null,
+        salesRowCount: 0,
       });
     }
 
-    const reportResponse = await fetch(reportUrlWithVenueScope(), {
+    const reportResponse = await fetch(reportUrlWithVenueAndFilter(), {
       method: "GET",
       headers: {
         Accept: "application/json",
@@ -98,7 +102,8 @@ export async function GET() {
       cache: "no-store",
       signal: controller.signal,
     });
-    const reportMessage = safeResponseMessage(await reportResponse.text());
+    const reportText = await reportResponse.text();
+    const reportMessage = safeResponseMessage(reportText);
 
     clearTimeout(timeout);
 
@@ -110,6 +115,7 @@ export async function GET() {
         message: reportMessage || reportFailureMessage(reportResponse.status),
         tokenRequestStatus: tokenResponse.status,
         reportRequestStatus: reportResponse.status,
+        salesRowCount: 0,
       });
     }
 
@@ -121,6 +127,7 @@ export async function GET() {
         message: reportMessage || "OnlinePOS report endpoint svarede uventet",
         tokenRequestStatus: tokenResponse.status,
         reportRequestStatus: reportResponse.status,
+        salesRowCount: 0,
       });
     }
 
@@ -128,9 +135,10 @@ export async function GET() {
       ok: true,
       onlineposReachable: true,
       status: reportResponse.status,
-      message: reportMessage || "OnlinePOS OAuth og report endpoint svarer",
+      message: "Sales per product fetched",
       tokenRequestStatus: tokenResponse.status,
       reportRequestStatus: reportResponse.status,
+      salesRowCount: getSalesRowCount(reportText),
     });
   } catch (error) {
     clearTimeout(timeout);
@@ -142,12 +150,16 @@ export async function GET() {
       message: error instanceof Error && error.name === "AbortError" ? "OnlinePOS kald timeout" : "OnlinePOS kan ikke nås",
       tokenRequestStatus: null,
       reportRequestStatus: null,
+      salesRowCount: 0,
     });
   }
 }
 
 function jsonHealth(
-  body: Omit<HealthResponse, "authMode" | "testedUrlHostOnly" | "hasClientId" | "hasClientSecret" | "hasConcern" | "hasVenueId">,
+  body: Omit<
+    HealthResponse,
+    "authMode" | "testedUrlHostOnly" | "hasClientId" | "hasClientSecret" | "hasVenueId" | "hasTimeFilter"
+  >,
 ) {
   return NextResponse.json({
     ...body,
@@ -155,15 +167,17 @@ function jsonHealth(
     testedUrlHostOnly: "rest.onlinepos.dk",
     hasClientId: Boolean(process.env.ONLINEPOS_CLIENT_ID),
     hasClientSecret: Boolean(process.env.ONLINEPOS_CLIENT_SECRET),
-    hasConcern: Boolean(process.env.ONLINEPOS_CONCERN),
     hasVenueId: Boolean(process.env.ONLINEPOS_VENUE_ID),
+    hasTimeFilter: true,
   } satisfies HealthResponse);
 }
 
-function reportUrlWithVenueScope() {
+function reportUrlWithVenueAndFilter() {
   const url = new URL(reportUrl);
-  url.searchParams.set("concern", process.env.ONLINEPOS_CONCERN ?? "");
-  url.searchParams.append("venue_id[]", process.env.ONLINEPOS_VENUE_ID ?? "");
+  url.searchParams.set("venue", process.env.ONLINEPOS_VENUE_ID ?? "");
+  url.searchParams.set("predefined_filter", timeFilter);
+  url.searchParams.set("sorting", "DESC");
+  url.searchParams.set("sorting_base", "revenue");
   return url;
 }
 
@@ -173,6 +187,15 @@ function parseAccessToken(text: string) {
     return typeof json.access_token === "string" && json.access_token ? json.access_token : null;
   } catch {
     return null;
+  }
+}
+
+function getSalesRowCount(text: string) {
+  try {
+    const json = JSON.parse(text) as { data?: { sales?: unknown } };
+    return Array.isArray(json.data?.sales) ? json.data.sales.length : 0;
+  } catch {
+    return 0;
   }
 }
 
@@ -190,7 +213,7 @@ function reportFailureMessage(status: number) {
   }
 
   if (status === 422) {
-    return "OnlinePOS report request afviser concern, venue eller parametre";
+    return "OnlinePOS report request afviser venue eller parametre";
   }
 
   if (status === 401 || status === 403) {
@@ -203,18 +226,15 @@ function reportFailureMessage(status: number) {
 function missingEnvMessage({
   hasClientId,
   hasClientSecret,
-  hasConcern,
   hasVenueId,
 }: {
   hasClientId: boolean;
   hasClientSecret: boolean;
-  hasConcern: boolean;
   hasVenueId: boolean;
 }) {
   const missing = [
     !hasClientId ? "ONLINEPOS_CLIENT_ID" : null,
     !hasClientSecret ? "ONLINEPOS_CLIENT_SECRET" : null,
-    !hasConcern ? "ONLINEPOS_CONCERN" : null,
     !hasVenueId ? "ONLINEPOS_VENUE_ID" : null,
   ].filter(Boolean);
 
