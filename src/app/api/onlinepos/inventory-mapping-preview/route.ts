@@ -6,9 +6,31 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 type LineType = "modifier_stock_item" | "deposit_fee" | "deposit_return" | "container_product" | "stock_item" | "unknown";
 type MappingAction = "consume_stock" | "ignore" | "deposit_fee" | "deposit_return" | "container_only";
 type MappingStatus = "unmapped" | "approved";
+type ErrorStep =
+  | "missing_datetime"
+  | "missing_env"
+  | "token_request"
+  | "token_parse"
+  | "transactions_request"
+  | "parse_products_empty"
+  | "unexpected_error"
+  | null;
 
 type InventoryMappingPreviewResponse = {
   ok: boolean;
+  status: number | null;
+  message: string;
+  tokenRequestStatus: number | null;
+  transactionsRequestStatus: number | null;
+  datetimeMode: "query";
+  pageRequested: string | null;
+  transactionCount: number;
+  lineCount: number;
+  pagination: SafePagination;
+  hasMorePages: boolean;
+  productCountBeforeMapping: number;
+  mappingCount: number;
+  errorStep: ErrorStep;
   summary: {
     totalProducts: number;
     approvedMappings: number;
@@ -68,6 +90,19 @@ export async function GET(request: Request) {
     return jsonPreview(
       {
         ok: false,
+        status: 400,
+        message: "Missing datetime_from or datetime_to",
+        tokenRequestStatus: null,
+        transactionsRequestStatus: null,
+        datetimeMode: "query",
+        pageRequested: new URL(request.url).searchParams.get("page"),
+        transactionCount: 0,
+        lineCount: 0,
+        pagination: emptyPagination(),
+        hasMorePages: false,
+        productCountBeforeMapping: 0,
+        mappingCount: 0,
+        errorStep: "missing_datetime",
         summary: emptySummary(),
         products: [],
       },
@@ -82,6 +117,19 @@ export async function GET(request: Request) {
   if (!hasClientId || !hasClientSecret || !hasVenueId) {
     return jsonPreview({
       ok: false,
+      status: null,
+      message: missingEnvMessage({ hasClientId, hasClientSecret, hasVenueId }),
+      tokenRequestStatus: null,
+      transactionsRequestStatus: null,
+      datetimeMode: "query",
+      pageRequested: transactionQuery.pageRequested,
+      transactionCount: 0,
+      lineCount: 0,
+      pagination: emptyPagination(),
+      hasMorePages: false,
+      productCountBeforeMapping: 0,
+      mappingCount: 0,
+      errorStep: "missing_env",
       summary: emptySummary(),
       products: [],
     });
@@ -105,11 +153,25 @@ export async function GET(request: Request) {
       signal: controller.signal,
     });
     const tokenText = await tokenResponse.text();
+    const tokenMessage = safeResponseMessage(tokenText);
 
     if (!tokenResponse.ok) {
       clearTimeout(timeout);
       return jsonPreview({
         ok: false,
+        status: tokenResponse.status,
+        message: tokenMessage || tokenFailureMessage(tokenResponse.status),
+        tokenRequestStatus: tokenResponse.status,
+        transactionsRequestStatus: null,
+        datetimeMode: "query",
+        pageRequested: transactionQuery.pageRequested,
+        transactionCount: 0,
+        lineCount: 0,
+        pagination: emptyPagination(),
+        hasMorePages: false,
+        productCountBeforeMapping: 0,
+        mappingCount: 0,
+        errorStep: "token_request",
         summary: emptySummary(),
         products: [],
       });
@@ -121,6 +183,19 @@ export async function GET(request: Request) {
       clearTimeout(timeout);
       return jsonPreview({
         ok: false,
+        status: tokenResponse.status,
+        message: "OnlinePOS token response manglede access_token",
+        tokenRequestStatus: tokenResponse.status,
+        transactionsRequestStatus: null,
+        datetimeMode: "query",
+        pageRequested: transactionQuery.pageRequested,
+        transactionCount: 0,
+        lineCount: 0,
+        pagination: emptyPagination(),
+        hasMorePages: false,
+        productCountBeforeMapping: 0,
+        mappingCount: 0,
+        errorStep: "token_parse",
         summary: emptySummary(),
         products: [],
       });
@@ -136,23 +211,74 @@ export async function GET(request: Request) {
       signal: controller.signal,
     });
     const transactionsText = await transactionsResponse.text();
+    const transactionsMessage = safeResponseMessage(transactionsText);
 
     clearTimeout(timeout);
 
     if (!transactionsResponse.ok || containsSensitiveOnlinePosData(transactionsText)) {
       return jsonPreview({
         ok: false,
+        status: transactionsResponse.status,
+        message: transactionsMessage || transactionsFailureMessage(transactionsResponse.status),
+        tokenRequestStatus: tokenResponse.status,
+        transactionsRequestStatus: transactionsResponse.status,
+        datetimeMode: "query",
+        pageRequested: transactionQuery.pageRequested,
+        transactionCount: 0,
+        lineCount: 0,
+        pagination: emptyPagination(),
+        hasMorePages: false,
+        productCountBeforeMapping: 0,
+        mappingCount: 0,
+        errorStep: "transactions_request",
         summary: emptySummary(),
         products: [],
       });
     }
 
     const parsed = parseTransactions(transactionsText);
+    const allLines = parsed.transactions.flatMap(findTransactionLines);
+    const productCountBeforeMapping = countDistinctClassifiedProducts(allLines);
     const backeventProducts = await getBackeventProducts();
     const products = buildMappingProducts(parsed.transactions, backeventProducts);
+    const mappingCount = products.filter((product) => product.mappingStatus === "approved").length;
+
+    if (products.length === 0) {
+      return jsonPreview({
+        ok: false,
+        status: transactionsResponse.status,
+        message: "Transactions fetched, but no products could be parsed",
+        tokenRequestStatus: tokenResponse.status,
+        transactionsRequestStatus: transactionsResponse.status,
+        datetimeMode: "query",
+        pageRequested: transactionQuery.pageRequested,
+        transactionCount: parsed.transactions.length,
+        lineCount: allLines.length,
+        pagination: parsed.pagination,
+        hasMorePages: hasMorePages(parsed.pagination),
+        productCountBeforeMapping,
+        mappingCount,
+        errorStep: "parse_products_empty",
+        summary: emptySummary(),
+        products: [],
+      });
+    }
 
     return jsonPreview({
       ok: true,
+      status: transactionsResponse.status,
+      message: "Inventory mapping preview fetched",
+      tokenRequestStatus: tokenResponse.status,
+      transactionsRequestStatus: transactionsResponse.status,
+      datetimeMode: "query",
+      pageRequested: transactionQuery.pageRequested,
+      transactionCount: parsed.transactions.length,
+      lineCount: allLines.length,
+      pagination: parsed.pagination,
+      hasMorePages: hasMorePages(parsed.pagination),
+      productCountBeforeMapping,
+      mappingCount,
+      errorStep: null,
       summary: buildSummary(products),
       products,
     });
@@ -160,6 +286,19 @@ export async function GET(request: Request) {
     clearTimeout(timeout);
     return jsonPreview({
       ok: false,
+      status: null,
+      message: "OnlinePOS kan ikke nås",
+      tokenRequestStatus: null,
+      transactionsRequestStatus: null,
+      datetimeMode: "query",
+      pageRequested: transactionQuery.pageRequested,
+      transactionCount: 0,
+      lineCount: 0,
+      pagination: emptyPagination(),
+      hasMorePages: false,
+      productCountBeforeMapping: 0,
+      mappingCount: 0,
+      errorStep: "unexpected_error",
       summary: emptySummary(),
       products: [],
     });
@@ -185,6 +324,7 @@ function transactionsUrlWithQuery(transactionQuery: {
 }
 
 function getTransactionQuery(request: Request): {
+  pageRequested: string | null;
   params: Record<string, string>;
 } | null {
   const url = new URL(request.url);
@@ -197,6 +337,7 @@ function getTransactionQuery(request: Request): {
   }
 
   return {
+    pageRequested: page,
     params: {
       datetime_from: datetimeFrom,
       datetime_to: datetimeTo,
@@ -256,6 +397,24 @@ function buildMappingProducts(transactions: Record<string, unknown>[], backevent
   });
 
   return Array.from(lineMap.values()).map((line) => toMappingProduct(line, backeventProducts));
+}
+
+function countDistinctClassifiedProducts(lines: Record<string, unknown>[]) {
+  const keys = new Set<string>();
+
+  lines.forEach((line) => {
+    const classified = toClassifiedLine(line);
+    keys.add(
+      [
+        classified.onlineposProductId ?? "unknown",
+        classified.onlineposProductName ?? "",
+        classified.onlineposProductGroupName ?? "",
+        classified.lineType,
+      ].join(":"),
+    );
+  });
+
+  return keys.size;
 }
 
 function toMappingProduct(line: ClassifiedLine, backeventProducts: Product[]): MappingPreviewProduct {
@@ -487,6 +646,12 @@ function emptyPagination(): SafePagination {
   };
 }
 
+function hasMorePages(pagination: SafePagination) {
+  const currentPage = numberValue(pagination.current_page);
+  const lastPage = numberValue(pagination.last_page);
+  return currentPage !== null && lastPage !== null ? currentPage < lastPage : false;
+}
+
 function pickField(row: Record<string, unknown>, keys: string[]) {
   const entries = Object.entries(row);
 
@@ -519,6 +684,71 @@ function normalizeKey(value: string) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function numberValue(value: unknown) {
+  if (typeof value === "number") {
+    return value;
+  }
+
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+}
+
+function tokenFailureMessage(status: number) {
+  if (status === 401) {
+    return "OnlinePOS afviser client credentials";
+  }
+
+  return "OnlinePOS token request fejlede";
+}
+
+function transactionsFailureMessage(status: number) {
+  if (status === 401 || status === 403) {
+    return "OnlinePOS transactions endpoint afviser access token";
+  }
+
+  if (status === 400 || status === 422) {
+    return "OnlinePOS transactions request afviser venue eller dato";
+  }
+
+  return "OnlinePOS transactions endpoint fejlede";
+}
+
+function missingEnvMessage({
+  hasClientId,
+  hasClientSecret,
+  hasVenueId,
+}: {
+  hasClientId: boolean;
+  hasClientSecret: boolean;
+  hasVenueId: boolean;
+}) {
+  const missing = [
+    !hasClientId ? "ONLINEPOS_CLIENT_ID" : null,
+    !hasClientSecret ? "ONLINEPOS_CLIENT_SECRET" : null,
+    !hasVenueId ? "ONLINEPOS_VENUE_ID" : null,
+  ].filter(Boolean);
+
+  return `OnlinePOS env mangler: ${missing.join(", ")}`;
+}
+
+function safeResponseMessage(text: string) {
+  if (containsSensitiveOnlinePosData(text)) {
+    return "OnlinePOS svarede, men body er skjult af hensyn til følsomme data";
+  }
+
+  return text
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 500);
 }
 
 function containsSensitiveOnlinePosData(text: string) {
