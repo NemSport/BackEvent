@@ -12,6 +12,7 @@ type InventoryConsumptionPreviewResponse = {
   lineCount: number;
   pagination: SafePagination;
   hasMorePages: boolean;
+  summary: ConsumptionSummary;
   groups: ConsumptionGroup[];
 };
 
@@ -28,6 +29,19 @@ type ConsumptionProduct = {
   product_group_name: string | null;
   quantity_sold: number;
   revenue: number;
+  lineType: LineType;
+  inventoryRelevant: boolean;
+  needsMapping: boolean;
+};
+
+type LineType = "modifier_stock_item" | "deposit_fee" | "deposit_return" | "container_product" | "stock_item";
+
+type ConsumptionSummary = {
+  totalProducts: number;
+  inventoryRelevantProducts: number;
+  modifierProducts: number;
+  depositProducts: number;
+  unknownProducts: number;
 };
 
 type SafePagination = {
@@ -66,6 +80,7 @@ export async function GET(request: Request) {
         lineCount: 0,
         pagination: emptyPagination(),
         hasMorePages: false,
+        summary: emptySummary(),
         groups: [],
       },
       400,
@@ -85,6 +100,7 @@ export async function GET(request: Request) {
       lineCount: 0,
       pagination: emptyPagination(),
       hasMorePages: false,
+      summary: emptySummary(),
       groups: [],
     });
   }
@@ -123,6 +139,7 @@ export async function GET(request: Request) {
         lineCount: 0,
         pagination: emptyPagination(),
         hasMorePages: false,
+        summary: emptySummary(),
         groups: [],
       });
     }
@@ -143,6 +160,7 @@ export async function GET(request: Request) {
         lineCount: 0,
         pagination: emptyPagination(),
         hasMorePages: false,
+        summary: emptySummary(),
         groups: [],
       });
     }
@@ -174,6 +192,7 @@ export async function GET(request: Request) {
         lineCount: 0,
         pagination: emptyPagination(),
         hasMorePages: false,
+        summary: emptySummary(),
         groups: [],
       });
     }
@@ -194,6 +213,7 @@ export async function GET(request: Request) {
       lineCount: allLines.length,
       pagination: parsed.pagination,
       hasMorePages: hasMorePages(parsed.pagination),
+      summary: buildSummary(groups),
       groups,
     });
   } catch (error) {
@@ -210,6 +230,7 @@ export async function GET(request: Request) {
       lineCount: 0,
       pagination: emptyPagination(),
       hasMorePages: false,
+      summary: emptySummary(),
       groups: [],
     });
   }
@@ -327,13 +348,87 @@ function aggregateConsumption(transactions: Record<string, unknown>[]) {
 }
 
 function toConsumptionProduct(line: Record<string, unknown>): ConsumptionProduct {
+  const productName = stringifyValue(pickField(line, ["product_name", "productName", "productname", "name"]));
+  const productGroupName = stringifyValue(pickField(line, ["product_group_name", "productGroupName", "productgroupname"]));
+  const classification = classifyLine(productName, productGroupName);
+
   return {
     product_id: pickScalarField(line, ["product_id", "productId", "productid"]),
-    product_name: stringifyValue(pickField(line, ["product_name", "productName", "productname", "name"])),
+    product_name: productName,
     product_group_id: pickScalarField(line, ["product_group_id", "productGroupId", "productgroupid"]),
-    product_group_name: stringifyValue(pickField(line, ["product_group_name", "productGroupName", "productgroupname"])),
+    product_group_name: productGroupName,
     quantity_sold: numberValue(pickField(line, ["quantity", "qty", "count", "amount"])) ?? 0,
     revenue: numberValue(pickField(line, ["net_price", "netPrice", "netprice", "price", "gross_price", "grossPrice"])) ?? 0,
+    ...classification,
+  };
+}
+
+function classifyLine(
+  productName: string | null,
+  productGroupName: string | null,
+): Pick<ConsumptionProduct, "lineType" | "inventoryRelevant" | "needsMapping"> {
+  const name = (productName ?? "").toLocaleUpperCase("da-DK");
+  const group = (productGroupName ?? "").trim();
+  const groupUpper = group.toLocaleUpperCase("da-DK");
+
+  if (groupUpper.startsWith("MSG -")) {
+    return {
+      lineType: "modifier_stock_item",
+      inventoryRelevant: true,
+      needsMapping: false,
+    };
+  }
+
+  if (name.includes("GEBYR") && (name.includes("KRUS") || name.includes("KANDE"))) {
+    return {
+      lineType: "deposit_fee",
+      inventoryRelevant: false,
+      needsMapping: false,
+    };
+  }
+
+  if (name.includes("RETUR") && (name.includes("KRUS") || name.includes("KANDE"))) {
+    return {
+      lineType: "deposit_return",
+      inventoryRelevant: false,
+      needsMapping: false,
+    };
+  }
+
+  if (["DRINKS", "SODAVAND"].includes(groupUpper)) {
+    return {
+      lineType: "container_product",
+      inventoryRelevant: false,
+      needsMapping: true,
+    };
+  }
+
+  return {
+    lineType: "stock_item",
+    inventoryRelevant: true,
+    needsMapping: true,
+  };
+}
+
+function buildSummary(groups: ConsumptionGroup[]): ConsumptionSummary {
+  const products = groups.flatMap((group) => group.products);
+
+  return {
+    totalProducts: products.length,
+    inventoryRelevantProducts: products.filter((product) => product.inventoryRelevant).length,
+    modifierProducts: products.filter((product) => product.lineType === "modifier_stock_item").length,
+    depositProducts: products.filter((product) => product.lineType === "deposit_fee" || product.lineType === "deposit_return").length,
+    unknownProducts: products.filter((product) => product.lineType === "stock_item").length,
+  };
+}
+
+function emptySummary(): ConsumptionSummary {
+  return {
+    totalProducts: 0,
+    inventoryRelevantProducts: 0,
+    modifierProducts: 0,
+    depositProducts: 0,
+    unknownProducts: 0,
   };
 }
 
