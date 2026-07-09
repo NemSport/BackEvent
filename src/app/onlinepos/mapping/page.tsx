@@ -226,10 +226,10 @@ export default function OnlinePosMappingPage() {
           onlineposProductGroupName: product.onlinepos_product_group_name,
           lineType: product.lineType,
           backeventInventoryItemId: draft.components[0]?.backeventInventoryItemId || draft.backeventInventoryItemId || null,
-          conversionFactor: draft.components[0]?.conversionFactor ? Number(draft.components[0].conversionFactor) : draft.conversionFactor ? Number(draft.conversionFactor) : null,
+          conversionFactor: parseDecimalInput(draft.components[0]?.conversionFactor || draft.conversionFactor),
           components: draft.components.map((component, index) => ({
             backeventInventoryItemId: component.backeventInventoryItemId || null,
-            conversionFactor: component.conversionFactor ? Number(component.conversionFactor) : null,
+            conversionFactor: parseDecimalInput(component.conversionFactor),
             sortOrder: index,
           })),
           mappingAction: draft.mappingAction,
@@ -616,13 +616,16 @@ function MappingRow({
                 <option key={item.id} value={item.id}>{item.name}</option>
               ))}
             </select>
-            <input
-              value={component.conversionFactor}
-              onChange={(event) => updateComponent(index, { ...component, conversionFactor: event.target.value })}
-              className="min-h-10 rounded-xl border border-line bg-macro px-3 py-2 font-bold outline-none focus:border-pantone140 xl:min-h-7 xl:rounded-lg xl:px-1.5 xl:py-0.5 xl:text-xs"
-              inputMode="decimal"
-              aria-label="Faktor"
-            />
+            <div className="flex min-w-0 items-center overflow-hidden rounded-xl border border-line bg-macro focus-within:border-pantone140 xl:rounded-lg">
+              <input
+                value={component.conversionFactor}
+                onChange={(event) => updateComponent(index, { ...component, conversionFactor: event.target.value })}
+                className="min-h-10 min-w-0 flex-1 bg-transparent px-3 py-2 font-bold outline-none xl:min-h-7 xl:px-1.5 xl:py-0.5 xl:text-xs"
+                inputMode="decimal"
+                aria-label="Forbrug pr. salg"
+              />
+              <span className="shrink-0 px-2 text-[0.65rem] font-bold text-muted">{consumptionUnitLabel(component.backeventInventoryItemId, inventoryProducts)}</span>
+            </div>
             <button
               type="button"
               onClick={() => removeComponent(index)}
@@ -823,7 +826,7 @@ function mappingSortValue(product: PreviewProduct, draft: DraftMapping, inventor
   if (key === "lineType") return lineTypeLabel(product.lineType);
   if (key === "selectedProduct") return inventoryProducts.find((item) => item.id === draft.components[0]?.backeventInventoryItemId)?.name;
   if (key === "mappingAction") return mappingActionLabel(draft.mappingAction);
-  if (key === "conversionFactor") return draft.components[0]?.conversionFactor.trim() ? Number(draft.components[0].conversionFactor) : null;
+  if (key === "conversionFactor") return parseDecimalInput(draft.components[0]?.conversionFactor ?? "");
   return statusLabel(draft.status);
 }
 
@@ -886,11 +889,28 @@ function applySavedMappingToPreview(preview: PreviewResponse, mapping: SavedMapp
 }
 
 function hasValidDraftComponents(components: DraftComponent[]) {
-  return components.length > 0 && components.every((component) => component.backeventInventoryItemId && component.conversionFactor.trim());
+  return components.length > 0 && components.every((component) => component.backeventInventoryItemId && parseDecimalInput(component.conversionFactor) !== null);
 }
 
 function hasValidMappingComponents(components: MappingComponent[]) {
   return components.length > 0 && components.every((component) => component.backeventInventoryItemId && component.conversionFactor !== null);
+}
+
+function parseDecimalInput(value: string | number | null | undefined) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (!value?.trim()) {
+    return null;
+  }
+
+  const parsed = Number(value.trim().replace(",", "."));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function consumptionUnitLabel(productId: string, products: Product[]) {
+  return products.find((product) => product.id === productId)?.consumptionUnitLabel ?? "";
 }
 
 function productKey(product: PreviewProduct) {

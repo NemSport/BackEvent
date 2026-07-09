@@ -273,7 +273,7 @@ function ProductModal({ product, onClose, onSave }: { product?: Product; onClose
         <div className="mt-3 grid gap-3 md:grid-cols-2">
           <Input label="OnlinePOS ID" value={onlineposProductId} onChange={setOnlineposProductId} />
           <Input label="OnlinePOS navn" value={onlineposName} onChange={setOnlineposName} />
-          <Input label="Salgsantal" value={salesUnitQuantity} onChange={setSalesUnitQuantity} />
+          <Input label="Forbrug pr. salg" value={salesUnitQuantity} onChange={setSalesUnitQuantity} />
           <Input label="Liter pr. salg" value={litersPerSale} onChange={setLitersPerSale} />
         </div>
       </details>

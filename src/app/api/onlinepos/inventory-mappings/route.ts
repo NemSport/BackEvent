@@ -377,7 +377,7 @@ function numberOrNull(value: unknown) {
   }
 
   if (typeof value === "string" && value.trim()) {
-    const parsed = Number(value);
+    const parsed = Number(value.trim().replace(",", "."));
     return Number.isFinite(parsed) ? parsed : null;
   }
 
