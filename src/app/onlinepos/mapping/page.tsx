@@ -23,6 +23,8 @@ type PreviewProduct = {
   backeventInventoryItemId: string | null;
   conversionFactor: number | null;
   canAffectInventory: boolean;
+  matchedMappingId?: string | null;
+  matchedBy?: "product_id" | "name" | null;
 };
 
 type PreviewResponse = {
@@ -32,6 +34,15 @@ type PreviewResponse = {
   lineCount: number;
   productCountBeforeMapping: number;
   mappingCount: number;
+  matchedMappingCount: number;
+  mappedProductIds: string[];
+  mappingReadDebug?: {
+    hasUser: boolean;
+    userEmail: string | null;
+    profileRole: string | null;
+    profileActive: boolean | null;
+    readErrorStep: string | null;
+  };
   errorStep: string | null;
   summary: {
     totalProducts: number;
@@ -86,6 +97,10 @@ type DraftMapping = {
   status: MappingStatus;
 };
 
+type SortDirection = "asc" | "desc";
+type MappingSortKey = "productName" | "groupName" | "lineType" | "selectedProduct" | "mappingAction" | "conversionFactor" | "status";
+type MappingSort = { key: MappingSortKey; direction: SortDirection } | null;
+
 const mappingActions: Array<{ value: MappingAction; label: string }> = [
   { value: "consume_stock", label: "Træk lager" },
   { value: "ignore", label: "Ignorer" },
@@ -103,11 +118,17 @@ export default function OnlinePosMappingPage() {
   const [to, setTo] = useState(defaultTo());
   const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [previewDebugLoading, setPreviewDebugLoading] = useState(false);
   const [debugLoading, setDebugLoading] = useState(false);
   const [mappingDebug, setMappingDebug] = useState<MappingDebugResponse | null>(null);
   const [rowDebugs, setRowDebugs] = useState<Record<string, MappingDebugResponse>>({});
   const [rowDebugLoading, setRowDebugLoading] = useState<Record<string, boolean>>({});
+  const [sort, setSort] = useState<MappingSort>(null);
   const inventoryProducts = useMemo(() => products.filter((product) => product.active !== false && product.trackingMode !== "ignore"), [products]);
+  const sortedPreviewProducts = useMemo(
+    () => sortMappingProducts(preview?.products ?? [], sort, drafts, savedMappings, inventoryProducts),
+    [drafts, inventoryProducts, preview?.products, savedMappings, sort],
+  );
 
   useEffect(() => {
     let mounted = true;
@@ -139,16 +160,7 @@ export default function OnlinePosMappingPage() {
     setMessage(null);
 
     try {
-      const headers = await getAuthHeaders();
-      const params = new URLSearchParams({
-        datetime_from: toIso(from),
-        datetime_to: toIso(to),
-      });
-      const response = await fetch(`/api/onlinepos/inventory-mapping-preview?${params.toString()}`, {
-        headers,
-        cache: "no-store",
-      });
-      const data = (await response.json()) as PreviewResponse;
+      const data = await fetchMappingPreview(from, to);
       setPreview(data);
       setDrafts(createDrafts(data.products, savedMappings));
       setMessage(data.ok ? "Produkter hentet fra OnlinePOS" : data.message || "OnlinePOS-preview fejlede");
@@ -156,6 +168,22 @@ export default function OnlinePosMappingPage() {
       setMessage("OnlinePOS-preview kunne ikke hentes.");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function checkPreviewWithMappings() {
+    setPreviewDebugLoading(true);
+    setMessage(null);
+
+    try {
+      const data = await fetchMappingPreview(from, to);
+      setPreview(data);
+      setDrafts(createDrafts(data.products, savedMappings));
+      setMessage(data.ok ? "Preview med mappings hentet" : data.message || "Preview med mappings fejlede");
+    } catch {
+      setMessage("Preview med mappings kunne ikke hentes.");
+    } finally {
+      setPreviewDebugLoading(false);
     }
   }
 
@@ -243,6 +271,20 @@ export default function OnlinePosMappingPage() {
     }
   }
 
+  function toggleSort(key: MappingSortKey) {
+    setSort((current) => {
+      if (current?.key !== key) {
+        return { key, direction: "asc" };
+      }
+
+      if (current.direction === "asc") {
+        return { key, direction: "desc" };
+      }
+
+      return null;
+    });
+  }
+
   return (
     <AppShell adminOnly>
       <BackButton href="/admin" />
@@ -267,22 +309,29 @@ export default function OnlinePosMappingPage() {
 
       {preview ? <SummaryCards preview={preview} /> : null}
 
-      <MappingDebugPanel debug={mappingDebug} loading={debugLoading} onCheck={checkSavedMappings} />
+      <MappingDebugPanel
+        debug={mappingDebug}
+        preview={preview}
+        loading={debugLoading}
+        previewLoading={previewDebugLoading}
+        onCheck={checkSavedMappings}
+        onCheckPreview={checkPreviewWithMappings}
+      />
 
       <section className="mt-5 max-h-[72vh] overflow-auto rounded-[1.25rem] border border-line bg-macro shadow-soft">
         <div className="sticky top-0 z-10 hidden grid-cols-[5.5rem_minmax(14rem,2fr)_8rem_7rem_minmax(12rem,1.25fr)_9rem_5.5rem_7rem_8.5rem] gap-2 border-b border-line bg-soft px-3 py-2 text-[0.68rem] font-bold uppercase tracking-wide text-muted 2xl:grid">
           <span>ID</span>
-          <span>Vare</span>
-          <span>Gruppe</span>
-          <span>Type</span>
-          <span>Vare</span>
-          <span>Handling</span>
-          <span>Faktor</span>
-          <span>Status</span>
+          <SortableMappingHeader label="Vare" sortKey="productName" sort={sort} onSort={toggleSort} />
+          <SortableMappingHeader label="Gruppe" sortKey="groupName" sort={sort} onSort={toggleSort} />
+          <SortableMappingHeader label="Type" sortKey="lineType" sort={sort} onSort={toggleSort} />
+          <SortableMappingHeader label="Valgt vare" sortKey="selectedProduct" sort={sort} onSort={toggleSort} />
+          <SortableMappingHeader label="Handling" sortKey="mappingAction" sort={sort} onSort={toggleSort} />
+          <SortableMappingHeader label="Faktor" sortKey="conversionFactor" sort={sort} onSort={toggleSort} />
+          <SortableMappingHeader label="Status" sortKey="status" sort={sort} onSort={toggleSort} />
           <span>Gem</span>
         </div>
         <div className="divide-y divide-line">
-          {(preview?.products ?? []).map((product) => (
+          {sortedPreviewProducts.map((product) => (
             <MappingRow
               key={productKey(product)}
               product={product}
@@ -300,6 +349,27 @@ export default function OnlinePosMappingPage() {
         </div>
       </section>
     </AppShell>
+  );
+}
+
+function SortableMappingHeader({
+  label,
+  sortKey,
+  sort,
+  onSort,
+}: {
+  label: string;
+  sortKey: MappingSortKey;
+  sort: MappingSort;
+  onSort: (key: MappingSortKey) => void;
+}) {
+  const direction = sort?.key === sortKey ? sort.direction : null;
+
+  return (
+    <button type="button" onClick={() => onSort(sortKey)} className="flex min-w-0 items-center gap-1 text-left font-bold uppercase tracking-wide hover:text-ink">
+      <span className="truncate">{label}</span>
+      {direction ? <span aria-hidden="true">{direction === "asc" ? "↑" : "↓"}</span> : null}
+    </button>
   );
 }
 
@@ -326,13 +396,23 @@ function SummaryCards({ preview }: { preview: PreviewResponse }) {
 
 function MappingDebugPanel({
   debug,
+  preview,
   loading,
+  previewLoading,
   onCheck,
+  onCheckPreview,
 }: {
   debug: MappingDebugResponse | null;
+  preview: PreviewResponse | null;
   loading: boolean;
+  previewLoading: boolean;
   onCheck: () => void;
+  onCheckPreview: () => void;
 }) {
+  const kildevand = preview?.products.find(
+    (product) => normalizeOnlinePosId(product.onlinepos_product_id) === "23300358" || normalizeName(product.onlinepos_product_name) === "kildevand",
+  );
+
   return (
     <section className="mt-4 rounded-[1.25rem] border border-line bg-macro p-4 shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -340,15 +420,54 @@ function MappingDebugPanel({
           <h2 className="text-base font-bold text-ink">Mapping debug</h2>
           <p className="text-xs font-bold text-muted">Viser gemte rækker fra Supabase for din login-session.</p>
         </div>
-        <button
-          type="button"
-          onClick={onCheck}
-          disabled={loading}
-          className="rounded-lg bg-pantone139 px-3 py-2 text-xs font-bold text-ink disabled:opacity-60"
-        >
-          {loading ? "Tjekker..." : "Tjek gemte mappings"}
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={onCheck}
+            disabled={loading}
+            className="rounded-lg bg-pantone139 px-3 py-2 text-xs font-bold text-ink disabled:opacity-60"
+          >
+            {loading ? "Tjekker..." : "Tjek gemte mappings"}
+          </button>
+          <button
+            type="button"
+            onClick={onCheckPreview}
+            disabled={previewLoading}
+            className="rounded-lg border border-line bg-macro px-3 py-2 text-xs font-bold text-muted disabled:opacity-60"
+          >
+            {previewLoading ? "Tjekker..." : "Tjek preview med mappings"}
+          </button>
+        </div>
       </div>
+
+      {preview ? (
+        <div className="mt-3 rounded-xl bg-soft p-3 text-xs font-bold text-muted">
+          <div className="grid gap-2 sm:grid-cols-4">
+            <span>mappingCount: {preview.mappingCount}</span>
+            <span>matchedMappingCount: {preview.matchedMappingCount}</span>
+            <span>mappedProductIds: {preview.mappedProductIds?.join(", ") || "-"}</span>
+            <span>readErrorStep: {preview.mappingReadDebug?.readErrorStep ?? "-"}</span>
+          </div>
+          <div className="mt-2 grid gap-2 sm:grid-cols-4">
+            <span>hasUser: {String(preview.mappingReadDebug?.hasUser ?? false)}</span>
+            <span>userEmail: {preview.mappingReadDebug?.userEmail ?? "-"}</span>
+            <span>role: {preview.mappingReadDebug?.profileRole ?? "-"}</span>
+            <span>active: {String(preview.mappingReadDebug?.profileActive ?? "-")}</span>
+          </div>
+          {kildevand ? (
+            <div className="mt-3 rounded-lg bg-macro p-2">
+              <p className="text-ink">Kildevand</p>
+              <p>
+                status: {kildevand.mappingStatus} · action: {kildevand.mappingAction} · factor: {kildevand.conversionFactor ?? "-"} · kan trække:{" "}
+                {String(kildevand.canAffectInventory)} · matchedBy: {kildevand.matchedBy ?? "-"}
+              </p>
+              <p>mappingId: {kildevand.matchedMappingId ?? "-"} · vare: {kildevand.backeventInventoryItemId ?? "-"}</p>
+            </div>
+          ) : (
+            <p className="mt-2">Kildevand ikke fundet i preview.</p>
+          )}
+        </div>
+      ) : null}
 
       {debug ? (
         <div className="mt-3 rounded-xl bg-soft p-3 text-xs font-bold text-muted">
@@ -517,6 +636,20 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+async function fetchMappingPreview(from: string, to: string): Promise<PreviewResponse> {
+  const params = new URLSearchParams({
+    datetime_from: toIso(from),
+    datetime_to: toIso(to),
+  });
+
+  const response = await fetch(`/api/onlinepos/inventory-mapping-preview?${params.toString()}`, {
+    headers: await getAuthHeaders(),
+    cache: "no-store",
+  });
+
+  return (await response.json()) as PreviewResponse;
+}
+
 async function fetchSavedMappings(): Promise<SavedMapping[]> {
   const response = await fetch("/api/onlinepos/inventory-mappings", {
     headers: await getAuthHeaders(),
@@ -571,6 +704,39 @@ function createDraft(product: PreviewProduct, saved?: SavedMapping): DraftMappin
   };
 }
 
+function sortMappingProducts(
+  products: PreviewProduct[],
+  sort: MappingSort,
+  drafts: Record<string, DraftMapping>,
+  mappings: SavedMapping[],
+  inventoryProducts: Product[],
+) {
+  if (!sort) {
+    return products;
+  }
+
+  return [...products].sort((a, b) => {
+    const aDraft = drafts[productKey(a)] ?? createDraft(a, findSavedMapping(a, mappings));
+    const bDraft = drafts[productKey(b)] ?? createDraft(b, findSavedMapping(b, mappings));
+
+    return compareSortValues(
+      mappingSortValue(a, aDraft, inventoryProducts, sort.key),
+      mappingSortValue(b, bDraft, inventoryProducts, sort.key),
+      sort.direction,
+    );
+  });
+}
+
+function mappingSortValue(product: PreviewProduct, draft: DraftMapping, inventoryProducts: Product[], key: MappingSortKey) {
+  if (key === "productName") return product.onlinepos_product_name;
+  if (key === "groupName") return product.onlinepos_product_group_name;
+  if (key === "lineType") return lineTypeLabel(product.lineType);
+  if (key === "selectedProduct") return inventoryProducts.find((item) => item.id === draft.backeventInventoryItemId)?.name;
+  if (key === "mappingAction") return mappingActionLabel(draft.mappingAction);
+  if (key === "conversionFactor") return draft.conversionFactor.trim() ? Number(draft.conversionFactor) : null;
+  return statusLabel(draft.status);
+}
+
 function findSavedMapping(product: PreviewProduct, mappings: SavedMapping[]) {
   const productId = normalizeOnlinePosId(product.onlinepos_product_id);
 
@@ -598,7 +764,11 @@ function applySavedMappingToPreview(preview: PreviewResponse, mapping: SavedMapp
       return product;
     }
 
-    const canAffectInventory = mapping.status === "approved" && mapping.mappingAction === "consume_stock";
+    const canAffectInventory =
+      mapping.status === "approved" &&
+      mapping.mappingAction === "consume_stock" &&
+      Boolean(mapping.backeventInventoryItemId) &&
+      mapping.conversionFactor !== null;
     return {
       ...product,
       mappingStatus: mapping.status,
@@ -687,4 +857,33 @@ function lineTypeLabel(type: LineType) {
   if (type === "container_product") return "Container-vare";
   if (type === "unknown") return "Ukendt";
   return "Lagervare";
+}
+
+function mappingActionLabel(action: MappingAction) {
+  return mappingActions.find((item) => item.value === action)?.label ?? action;
+}
+
+function statusLabel(status: MappingStatus) {
+  if (status === "approved") return "Godkendt";
+  return "Afventer";
+}
+
+function compareSortValues(a: string | number | null | undefined, b: string | number | null | undefined, direction: SortDirection) {
+  const aEmpty = isEmptySortValue(a);
+  const bEmpty = isEmptySortValue(b);
+
+  if (aEmpty || bEmpty) {
+    if (aEmpty && bEmpty) return 0;
+    return aEmpty ? 1 : -1;
+  }
+
+  const result = typeof a === "number" && typeof b === "number"
+    ? a - b
+    : String(a).localeCompare(String(b), "da-DK", { numeric: true, sensitivity: "base" });
+
+  return direction === "asc" ? result : -result;
+}
+
+function isEmptySortValue(value: string | number | null | undefined) {
+  return value === null || value === undefined || (typeof value === "string" && value.trim() === "");
 }

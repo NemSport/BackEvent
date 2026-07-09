@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/backevent/app-shell";
 import { BackButton, PrimaryButton } from "@/components/backevent/buttons";
 import { createProduct, getProductsAdmin, updateProduct } from "@/lib/backevent/data";
@@ -19,11 +19,17 @@ type ProductFormInput = {
   sortOrder?: number;
 };
 
+type SortDirection = "asc" | "desc";
+type ProductSortKey = "name" | "unit" | "trackingMode" | "unitsPerCase" | "salesUnitQuantity" | "litersPerSale" | "onlinepos" | "sortOrder" | "active";
+type ProductSort = { key: ProductSortKey; direction: SortDirection } | null;
+
 export default function AdminProdukterPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isCreating, setIsCreating] = useState(false);
+  const [sort, setSort] = useState<ProductSort>(null);
+  const sortedProducts = useMemo(() => sortProducts(products, sort), [products, sort]);
 
   async function reload() {
     setProducts(await getProductsAdmin());
@@ -72,6 +78,20 @@ export default function AdminProdukterPage() {
     await reload();
   }
 
+  function toggleSort(key: ProductSortKey) {
+    setSort((current) => {
+      if (current?.key !== key) {
+        return { key, direction: "asc" };
+      }
+
+      if (current.direction === "asc") {
+        return { key, direction: "desc" };
+      }
+
+      return null;
+    });
+  }
+
   return (
     <AppShell adminOnly>
       <BackButton href="/admin" />
@@ -98,19 +118,19 @@ export default function AdminProdukterPage() {
 
       <section className="overflow-hidden rounded-[1.5rem] border border-line bg-macro shadow-soft">
         <div className="hidden grid-cols-[1.4fr_0.7fr_0.9fr_0.7fr_0.7fr_0.8fr_1fr_0.7fr_0.6fr_0.7fr] gap-3 border-b border-line bg-soft px-4 py-3 text-xs font-bold uppercase tracking-wide text-muted xl:grid">
-          <span>Navn</span>
-          <span>Enhed</span>
-          <span>Lagerstyring</span>
-          <span>Units/case</span>
-          <span>Salgsantal</span>
-          <span>Liter pr. salg</span>
-          <span>OnlinePOS</span>
-          <span>Sortering</span>
-          <span>Aktiv</span>
+          <SortableHeader label="Navn" sortKey="name" sort={sort} onSort={toggleSort} />
+          <SortableHeader label="Enhed" sortKey="unit" sort={sort} onSort={toggleSort} />
+          <SortableHeader label="Lagerstyring" sortKey="trackingMode" sort={sort} onSort={toggleSort} />
+          <SortableHeader label="Units/case" sortKey="unitsPerCase" sort={sort} onSort={toggleSort} />
+          <SortableHeader label="Salgsantal" sortKey="salesUnitQuantity" sort={sort} onSort={toggleSort} />
+          <SortableHeader label="Liter pr. salg" sortKey="litersPerSale" sort={sort} onSort={toggleSort} />
+          <SortableHeader label="OnlinePOS" sortKey="onlinepos" sort={sort} onSort={toggleSort} />
+          <SortableHeader label="Sortering" sortKey="sortOrder" sort={sort} onSort={toggleSort} />
+          <SortableHeader label="Aktiv" sortKey="active" sort={sort} onSort={toggleSort} />
           <span>Handling</span>
         </div>
         <div className="divide-y divide-line">
-          {products.map((product) => (
+          {sortedProducts.map((product) => (
             <ProductRow key={product.id} product={product} onEdit={() => setEditingProduct(product)} />
           ))}
         </div>
@@ -127,6 +147,27 @@ export default function AdminProdukterPage() {
         />
       ) : null}
     </AppShell>
+  );
+}
+
+function SortableHeader({
+  label,
+  sortKey,
+  sort,
+  onSort,
+}: {
+  label: string;
+  sortKey: ProductSortKey;
+  sort: ProductSort;
+  onSort: (key: ProductSortKey) => void;
+}) {
+  const direction = sort?.key === sortKey ? sort.direction : null;
+
+  return (
+    <button type="button" onClick={() => onSort(sortKey)} className="flex min-w-0 items-center gap-1 text-left font-bold uppercase tracking-wide hover:text-ink">
+      <span className="truncate">{label}</span>
+      {direction ? <span aria-hidden="true">{direction === "asc" ? "↑" : "↓"}</span> : null}
+    </button>
   );
 }
 
@@ -245,4 +286,44 @@ function trackingLabel(mode?: ProductTrackingMode) {
 
 function formatValue(value?: number | null) {
   return value ?? "-";
+}
+
+function sortProducts(products: Product[], sort: ProductSort) {
+  if (!sort) {
+    return products;
+  }
+
+  return [...products].sort((a, b) => compareSortValues(productSortValue(a, sort.key), productSortValue(b, sort.key), sort.direction));
+}
+
+function productSortValue(product: Product, key: ProductSortKey) {
+  if (key === "name") return product.name;
+  if (key === "unit") return product.unit;
+  if (key === "trackingMode") return trackingLabel(product.trackingMode);
+  if (key === "unitsPerCase") return product.unitsPerCase;
+  if (key === "salesUnitQuantity") return product.salesUnitQuantity ?? 1;
+  if (key === "litersPerSale") return product.litersPerSale;
+  if (key === "onlinepos") return product.onlineposName || product.onlineposProductId;
+  if (key === "sortOrder") return product.sortOrder;
+  return product.active === false ? "Nej" : "Ja";
+}
+
+function compareSortValues(a: string | number | null | undefined, b: string | number | null | undefined, direction: SortDirection) {
+  const aEmpty = isEmptySortValue(a);
+  const bEmpty = isEmptySortValue(b);
+
+  if (aEmpty || bEmpty) {
+    if (aEmpty && bEmpty) return 0;
+    return aEmpty ? 1 : -1;
+  }
+
+  const result = typeof a === "number" && typeof b === "number"
+    ? a - b
+    : String(a).localeCompare(String(b), "da-DK", { numeric: true, sensitivity: "base" });
+
+  return direction === "asc" ? result : -result;
+}
+
+function isEmptySortValue(value: string | number | null | undefined) {
+  return value === null || value === undefined || (typeof value === "string" && value.trim() === "");
 }

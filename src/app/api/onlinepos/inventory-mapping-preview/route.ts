@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { headers } from "next/headers";
 import { products as mockProductsSource } from "@/lib/backevent/mock-data";
 import type { Product } from "@/lib/backevent/types";
 import {
@@ -6,6 +7,7 @@ import {
   type OnlinePosMappingAction,
   type OnlinePosMappingStatus,
 } from "@/lib/onlinepos/inventory-mappings";
+import { isSupabaseConfigured } from "@/lib/supabase/is-configured";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 type LineType = "modifier_stock_item" | "deposit_fee" | "deposit_return" | "container_product" | "stock_item" | "unknown";
@@ -38,6 +40,7 @@ type InventoryMappingPreviewResponse = {
   matchedMappingCount: number;
   mappingSource: "supabase";
   mappedProductIds: string[];
+  mappingReadDebug: MappingReadDebug;
   errorStep: ErrorStep;
   summary: {
     totalProducts: number;
@@ -91,6 +94,28 @@ type TokenResponse = {
 type MappingMatch = {
   mapping: OnlinePosInventoryMapping;
   matchedBy: "product_id" | "name";
+};
+
+type MappingReadDebug = {
+  hasUser: boolean;
+  userEmail: string | null;
+  profileRole: string | null;
+  profileActive: boolean | null;
+  readErrorStep: string | null;
+};
+
+type AuthFailureDebug = {
+  hasUser: boolean;
+  profileRole: string | null;
+  profileActive: boolean | null;
+  userEmail: string | null;
+};
+
+type MappingReadResult = {
+  mappings: OnlinePosInventoryMapping[];
+  debug: MappingReadDebug;
+  status?: number;
+  message?: string;
 };
 
 const restBaseUrl = "https://rest.onlinepos.dk";
@@ -270,10 +295,40 @@ export async function GET(request: Request) {
     const allLines = parsed.transactions.flatMap(findTransactionLines);
     const productCountBeforeMapping = countDistinctClassifiedProducts(allLines);
     const accessTokenForData = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
-    const [backeventProducts, savedMappings] = await Promise.all([
+    const [backeventProducts, mappingRead] = await Promise.all([
       getBackeventProducts(accessTokenForData),
-      getSavedMappings(accessTokenForData),
+      getSavedMappings(),
     ]);
+    const savedMappings = mappingRead.mappings;
+
+    if (mappingRead.debug.readErrorStep) {
+      return jsonPreview(
+        {
+          ok: false,
+          status: mappingRead.status ?? transactionsResponse.status,
+          message: mappingRead.message ?? "Mappinger kunne ikke hentes",
+          tokenRequestStatus: tokenResponse.status,
+          transactionsRequestStatus: transactionsResponse.status,
+          datetimeMode: "query",
+          pageRequested: transactionQuery.pageRequested,
+          transactionCount: parsed.transactions.length,
+          lineCount: allLines.length,
+          pagination: parsed.pagination,
+          hasMorePages: hasMorePages(parsed.pagination),
+          productCountBeforeMapping,
+          mappingCount: 0,
+          matchedMappingCount: 0,
+          mappingSource: "supabase",
+          mappedProductIds: [],
+          mappingReadDebug: mappingRead.debug,
+          errorStep: "unexpected_error",
+          summary: emptySummary(),
+          products: [],
+        },
+        mappingRead.status,
+      );
+    }
+
     const products = buildMappingProducts(parsed.transactions, backeventProducts, savedMappings);
     const mappingCount = savedMappings.length;
     const matchedProducts = products.filter((product) => product.matchedMappingId);
@@ -300,6 +355,7 @@ export async function GET(request: Request) {
         matchedMappingCount,
         mappingSource: "supabase",
         mappedProductIds,
+        mappingReadDebug: mappingRead.debug,
         errorStep: "parse_products_empty",
         summary: emptySummary(),
         products: [],
@@ -323,6 +379,7 @@ export async function GET(request: Request) {
       matchedMappingCount,
       mappingSource: "supabase",
       mappedProductIds,
+      mappingReadDebug: mappingRead.debug,
       errorStep: null,
       summary: buildSummary(products),
       products,
@@ -353,8 +410,17 @@ export async function GET(request: Request) {
   }
 }
 
-function jsonPreview(body: InventoryMappingPreviewResponse, status?: number) {
-  return NextResponse.json(body, status ? { status } : undefined);
+function jsonPreview(
+  body: Omit<InventoryMappingPreviewResponse, "mappingReadDebug"> & Partial<Pick<InventoryMappingPreviewResponse, "mappingReadDebug">>,
+  status?: number,
+) {
+  return NextResponse.json(
+    {
+      ...body,
+      mappingReadDebug: body.mappingReadDebug ?? createMappingReadDebug(),
+    },
+    status ? { status } : undefined,
+  );
 }
 
 function transactionsUrlWithQuery(transactionQuery: {
@@ -427,11 +493,42 @@ async function getBackeventProducts(accessToken?: string): Promise<Product[]> {
   }));
 }
 
-async function getSavedMappings(accessToken?: string): Promise<OnlinePosInventoryMapping[]> {
-  const supabase = createSupabaseServerClient(accessToken);
+async function getSavedMappings(): Promise<MappingReadResult> {
+  const access = await ensureAdminAccess();
+
+  if (!access.ok) {
+    return {
+      mappings: [],
+      status: access.status,
+      message: access.error,
+      debug: {
+        hasUser: access.debug.hasUser,
+        userEmail: access.debug.userEmail,
+        profileRole: access.debug.profileRole,
+        profileActive: access.debug.profileActive,
+        readErrorStep: "auth",
+      },
+    };
+  }
+
+  if (!isSupabaseConfigured()) {
+    return {
+      mappings: [],
+      status: 503,
+      message: "Supabase mangler. Mappinger kan ikke hentes.",
+      debug: createMappingReadDebug({ readErrorStep: "missing_supabase" }),
+    };
+  }
+
+  const supabase = createSupabaseServerClient(access.accessToken);
 
   if (!supabase) {
-    return [];
+    return {
+      mappings: [],
+      status: 500,
+      message: "Supabase kunne ikke oprettes.",
+      debug: createMappingReadDebug({ readErrorStep: "supabase_client" }),
+    };
   }
 
   const { data, error } = await supabase
@@ -442,22 +539,42 @@ async function getSavedMappings(accessToken?: string): Promise<OnlinePosInventor
     .order("onlinepos_product_name", { ascending: true });
 
   if (error) {
-    return [];
+    return {
+      mappings: [],
+      status: 500,
+      message: "Mappinger kunne ikke hentes.",
+      debug: {
+        hasUser: true,
+        userEmail: access.userEmail ?? null,
+        profileRole: access.profileRole ?? null,
+        profileActive: access.profileActive ?? null,
+        readErrorStep: "select_mappings",
+      },
+    };
   }
 
-  return data.map((row) => ({
-    id: String(row.id),
-    onlineposProductId: normalizeOnlinePosId(row.onlinepos_product_id),
-    onlineposProductName: stringOrNull(row.onlinepos_product_name),
-    onlineposProductGroupName: stringOrNull(row.onlinepos_product_group_name),
-    lineType: row.line_type,
-    backeventInventoryItemId: stringOrNull(row.backevent_inventory_item_id),
-    conversionFactor: row.conversion_factor === null ? null : Number(row.conversion_factor),
-    mappingAction: row.mapping_action,
-    status: row.status,
-    createdAt: stringOrNull(row.created_at),
-    updatedAt: stringOrNull(row.updated_at),
-  }));
+  return {
+    mappings: data.map((row) => ({
+      id: String(row.id),
+      onlineposProductId: normalizeOnlinePosId(row.onlinepos_product_id),
+      onlineposProductName: stringOrNull(row.onlinepos_product_name),
+      onlineposProductGroupName: stringOrNull(row.onlinepos_product_group_name),
+      lineType: row.line_type,
+      backeventInventoryItemId: stringOrNull(row.backevent_inventory_item_id),
+      conversionFactor: row.conversion_factor === null ? null : Number(row.conversion_factor),
+      mappingAction: row.mapping_action,
+      status: row.status,
+      createdAt: stringOrNull(row.created_at),
+      updatedAt: stringOrNull(row.updated_at),
+    })),
+    debug: {
+      hasUser: true,
+      userEmail: access.userEmail ?? null,
+      profileRole: access.profileRole ?? null,
+      profileActive: access.profileActive ?? null,
+      readErrorStep: null,
+    },
+  };
 }
 
 function buildMappingProducts(
@@ -876,4 +993,86 @@ function containsSensitiveOnlinePosData(text: string) {
   return /payment_data|applied_card_number|applied_card_name|clerk_name|clerk_number|card_campaign_id|discount_family_id|business_number|access_token|client_secret|client_id|notes/i.test(
     text,
   );
+}
+
+async function ensureAdminAccess(): Promise<
+  | { ok: true; accessToken?: string; userEmail: string | null; profileRole: string | null; profileActive: boolean | null }
+  | { ok: false; status: number; error: string; debug: AuthFailureDebug }
+> {
+  if (!isSupabaseConfigured()) {
+    return { ok: true, userEmail: null, profileRole: null, profileActive: null };
+  }
+
+  const authorization = (await headers()).get("authorization");
+
+  if (!authorization) {
+    return { ok: false, status: 401, error: "Du skal være logget ind", debug: createAuthDebug() };
+  }
+
+  const accessToken = authorization.replace(/^Bearer\s+/i, "");
+  const supabase = createSupabaseServerClient(accessToken);
+
+  if (!supabase) {
+    return { ok: true, userEmail: null, profileRole: null, profileActive: null };
+  }
+
+  const {
+    data: { user },
+    error: userError,
+  } = await supabase.auth.getUser(accessToken);
+
+  if (userError || !user) {
+    return {
+      ok: false,
+      status: 401,
+      error: "Du skal være logget ind",
+      debug: createAuthDebug({
+        hasUser: Boolean(user),
+        userEmail: user?.email ?? null,
+      }),
+    };
+  }
+
+  const { data: profile } = await supabase.from("backevent_profiles").select("role,active").eq("id", user.id).maybeSingle();
+
+  if (!profile?.active || profile.role !== "admin") {
+    return {
+      ok: false,
+      status: 403,
+      error: "Kun admin kan gøre dette",
+      debug: createAuthDebug({
+        hasUser: true,
+        profileRole: profile?.role ?? null,
+        profileActive: profile?.active ?? null,
+        userEmail: user.email ?? null,
+      }),
+    };
+  }
+
+  return {
+    ok: true,
+    accessToken,
+    userEmail: user.email ?? null,
+    profileRole: profile.role ?? null,
+    profileActive: profile.active ?? null,
+  };
+}
+
+function createAuthDebug(debug: Partial<AuthFailureDebug> = {}): AuthFailureDebug {
+  return {
+    hasUser: debug.hasUser ?? false,
+    profileRole: debug.profileRole ?? null,
+    profileActive: debug.profileActive ?? null,
+    userEmail: debug.userEmail ?? null,
+  };
+}
+
+function createMappingReadDebug(debug: Partial<MappingReadDebug> = {}): MappingReadDebug {
+  return {
+    hasUser: debug.hasUser ?? false,
+    userEmail: debug.userEmail ?? null,
+    profileRole: debug.profileRole ?? null,
+    profileActive: debug.profileActive ?? null,
+    readErrorStep: debug.readErrorStep ?? null,
+  };
 }
