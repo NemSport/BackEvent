@@ -215,7 +215,7 @@ export async function GET(request: Request) {
 
     clearTimeout(timeout);
 
-    if (!transactionsResponse.ok || containsSensitiveOnlinePosData(transactionsText)) {
+    if (!transactionsResponse.ok) {
       return jsonPreview({
         ok: false,
         status: transactionsResponse.status,
@@ -492,7 +492,7 @@ function toClassifiedLine(line: Record<string, unknown>): ClassifiedLine {
   const productName = stringifyValue(pickField(line, ["product_name", "productName", "productname", "name"]));
   const productGroupId = pickScalarField(line, ["product_group_id", "productGroupId", "productgroupid"]);
   const productGroupName = stringifyValue(pickField(line, ["product_group_name", "productGroupName", "productgroupname"]));
-  const classification = classifyLine(productId, productName, productGroupName);
+  const classification = classifyLine(productName, productGroupName);
 
   return {
     onlineposProductId: productId,
@@ -504,7 +504,6 @@ function toClassifiedLine(line: Record<string, unknown>): ClassifiedLine {
 }
 
 function classifyLine(
-  productId: string | number | null,
   productName: string | null,
   productGroupName: string | null,
 ): Pick<ClassifiedLine, "lineType" | "inventoryRelevant" | "needsMapping"> {
@@ -512,7 +511,7 @@ function classifyLine(
   const group = (productGroupName ?? "").trim();
   const groupUpper = group.toLocaleUpperCase("da-DK");
 
-  if (!productId && !productName && !productGroupName) {
+  if (!productName && !productGroupName) {
     return {
       lineType: "unknown",
       inventoryRelevant: false,
@@ -524,7 +523,7 @@ function classifyLine(
     return {
       lineType: "modifier_stock_item",
       inventoryRelevant: true,
-      needsMapping: true,
+      needsMapping: false,
     };
   }
 
