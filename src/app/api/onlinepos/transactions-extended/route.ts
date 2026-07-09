@@ -9,6 +9,7 @@ type TransactionsResponse = {
   hasClientId: boolean;
   hasClientSecret: boolean;
   hasVenueId: boolean;
+  datetimeMode: "query" | "default-last-24h";
   transactionCount: number;
   pagination: Record<string, unknown> | null;
   sample: SafeTransactionSample | null;
@@ -53,10 +54,11 @@ const tokenUrl = `${restBaseUrl}/auth/token`;
 const transactionsUrl = `${restBaseUrl}/transactionExtended`;
 const timeoutMs = 10000;
 
-export async function GET() {
+export async function GET(request: Request) {
   const hasClientId = Boolean(process.env.ONLINEPOS_CLIENT_ID);
   const hasClientSecret = Boolean(process.env.ONLINEPOS_CLIENT_SECRET);
   const hasVenueId = Boolean(process.env.ONLINEPOS_VENUE_ID);
+  const datetimeWindow = getDatetimeWindow(request);
 
   if (!hasClientId || !hasClientSecret || !hasVenueId) {
     return jsonTransactions({
@@ -65,6 +67,7 @@ export async function GET() {
       message: missingEnvMessage({ hasClientId, hasClientSecret, hasVenueId }),
       tokenRequestStatus: null,
       transactionsRequestStatus: null,
+      datetimeMode: datetimeWindow.mode,
       transactionCount: 0,
       pagination: null,
       sample: null,
@@ -100,6 +103,7 @@ export async function GET() {
         message: tokenMessage || tokenFailureMessage(tokenResponse.status),
         tokenRequestStatus: tokenResponse.status,
         transactionsRequestStatus: null,
+        datetimeMode: datetimeWindow.mode,
         transactionCount: 0,
         pagination: null,
         sample: null,
@@ -117,6 +121,7 @@ export async function GET() {
         message: "OnlinePOS token response manglede access_token",
         tokenRequestStatus: tokenResponse.status,
         transactionsRequestStatus: null,
+        datetimeMode: datetimeWindow.mode,
         transactionCount: 0,
         pagination: null,
         sample: null,
@@ -124,7 +129,7 @@ export async function GET() {
       });
     }
 
-    const transactionsResponse = await fetch(transactionsUrlWithWindow(), {
+    const transactionsResponse = await fetch(transactionsUrlWithWindow(datetimeWindow), {
       method: "GET",
       headers: {
         Accept: "application/json",
@@ -145,6 +150,7 @@ export async function GET() {
         message: transactionsMessage || transactionsFailureMessage(transactionsResponse.status),
         tokenRequestStatus: tokenResponse.status,
         transactionsRequestStatus: transactionsResponse.status,
+        datetimeMode: datetimeWindow.mode,
         transactionCount: 0,
         pagination: null,
         sample: null,
@@ -160,6 +166,7 @@ export async function GET() {
       message: "Transactions fetched",
       tokenRequestStatus: tokenResponse.status,
       transactionsRequestStatus: transactionsResponse.status,
+      datetimeMode: datetimeWindow.mode,
       transactionCount: parsed.transactions.length,
       pagination: parsed.pagination,
       sample: buildSample(parsed.transactions[0] ?? null),
@@ -173,6 +180,7 @@ export async function GET() {
       message: error instanceof Error && error.name === "AbortError" ? "OnlinePOS kald timeout" : "OnlinePOS kan ikke nås",
       tokenRequestStatus: null,
       transactionsRequestStatus: null,
+      datetimeMode: datetimeWindow.mode,
       transactionCount: 0,
       pagination: null,
       sample: null,
@@ -192,14 +200,35 @@ function jsonTransactions(
   } satisfies TransactionsResponse);
 }
 
-function transactionsUrlWithWindow() {
-  const now = new Date();
-  const from = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+function transactionsUrlWithWindow(datetimeWindow: { from: string; to: string; mode: TransactionsResponse["datetimeMode"] }) {
   const url = new URL(transactionsUrl);
   url.searchParams.set("venue", process.env.ONLINEPOS_VENUE_ID ?? "");
-  url.searchParams.set("datetime_from", from.toISOString());
-  url.searchParams.set("datetime_to", now.toISOString());
+  url.searchParams.set("datetime_from", datetimeWindow.from);
+  url.searchParams.set("datetime_to", datetimeWindow.to);
   return url;
+}
+
+function getDatetimeWindow(request: Request): { from: string; to: string; mode: TransactionsResponse["datetimeMode"] } {
+  const url = new URL(request.url);
+  const datetimeFrom = url.searchParams.get("datetime_from");
+  const datetimeTo = url.searchParams.get("datetime_to");
+
+  if (datetimeFrom && datetimeTo) {
+    return {
+      from: datetimeFrom,
+      to: datetimeTo,
+      mode: "query",
+    };
+  }
+
+  const now = new Date();
+  const from = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+  return {
+    from: from.toISOString(),
+    to: now.toISOString(),
+    mode: "default-last-24h",
+  };
 }
 
 function parseAccessToken(text: string) {
