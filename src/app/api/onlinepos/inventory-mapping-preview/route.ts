@@ -1,11 +1,18 @@
 import { NextResponse } from "next/server";
 import { products as mockProductsSource } from "@/lib/backevent/mock-data";
 import type { Product } from "@/lib/backevent/types";
+import {
+  mockOnlinePosInventoryMappings,
+  toMappingIdentity,
+  type OnlinePosInventoryMapping,
+  type OnlinePosMappingAction,
+  type OnlinePosMappingStatus,
+} from "@/lib/onlinepos/inventory-mappings";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 type LineType = "modifier_stock_item" | "deposit_fee" | "deposit_return" | "container_product" | "stock_item" | "unknown";
-type MappingAction = "consume_stock" | "ignore" | "deposit_fee" | "deposit_return" | "container_only";
-type MappingStatus = "unmapped" | "approved";
+type MappingAction = OnlinePosMappingAction;
+type MappingStatus = OnlinePosMappingStatus;
 type ErrorStep =
   | "missing_datetime"
   | "missing_env"
@@ -239,8 +246,12 @@ export async function GET(request: Request) {
     const parsed = parseTransactions(transactionsText);
     const allLines = parsed.transactions.flatMap(findTransactionLines);
     const productCountBeforeMapping = countDistinctClassifiedProducts(allLines);
-    const backeventProducts = await getBackeventProducts();
-    const products = buildMappingProducts(parsed.transactions, backeventProducts);
+    const accessTokenForData = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+    const [backeventProducts, savedMappings] = await Promise.all([
+      getBackeventProducts(accessTokenForData),
+      getSavedMappings(accessTokenForData),
+    ]);
+    const products = buildMappingProducts(parsed.transactions, backeventProducts, savedMappings);
     const mappingCount = products.filter((product) => product.mappingStatus === "approved").length;
 
     if (products.length === 0) {
@@ -346,8 +357,8 @@ function getTransactionQuery(request: Request): {
   };
 }
 
-async function getBackeventProducts(): Promise<Product[]> {
-  const supabase = createSupabaseServerClient();
+async function getBackeventProducts(accessToken?: string): Promise<Product[]> {
+  const supabase = createSupabaseServerClient(accessToken);
 
   if (!supabase) {
     return mockProductsSource;
@@ -379,7 +390,43 @@ async function getBackeventProducts(): Promise<Product[]> {
   }));
 }
 
-function buildMappingProducts(transactions: Record<string, unknown>[], backeventProducts: Product[]) {
+async function getSavedMappings(accessToken?: string): Promise<OnlinePosInventoryMapping[]> {
+  const supabase = createSupabaseServerClient(accessToken);
+
+  if (!supabase) {
+    return mockOnlinePosInventoryMappings;
+  }
+
+  const { data, error } = await supabase
+    .from("onlinepos_inventory_mappings")
+    .select(
+      "id,onlinepos_product_id,onlinepos_product_name,onlinepos_product_group_name,line_type,backevent_inventory_item_id,conversion_factor,mapping_action,status,created_at,updated_at",
+    );
+
+  if (error) {
+    return [];
+  }
+
+  return data.map((row) => ({
+    id: row.id,
+    onlineposProductId: row.onlinepos_product_id,
+    onlineposProductName: row.onlinepos_product_name,
+    onlineposProductGroupName: row.onlinepos_product_group_name,
+    lineType: row.line_type,
+    backeventInventoryItemId: row.backevent_inventory_item_id,
+    conversionFactor: row.conversion_factor === null ? null : Number(row.conversion_factor),
+    mappingAction: row.mapping_action,
+    status: row.status,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+}
+
+function buildMappingProducts(
+  transactions: Record<string, unknown>[],
+  backeventProducts: Product[],
+  savedMappings: OnlinePosInventoryMapping[],
+) {
   const lineMap = new Map<string, ClassifiedLine>();
 
   transactions.flatMap(findTransactionLines).forEach((line) => {
@@ -396,7 +443,7 @@ function buildMappingProducts(transactions: Record<string, unknown>[], backevent
     }
   });
 
-  return Array.from(lineMap.values()).map((line) => toMappingProduct(line, backeventProducts));
+  return Array.from(lineMap.values()).map((line) => toMappingProduct(line, backeventProducts, savedMappings));
 }
 
 function countDistinctClassifiedProducts(lines: Record<string, unknown>[]) {
@@ -417,10 +464,17 @@ function countDistinctClassifiedProducts(lines: Record<string, unknown>[]) {
   return keys.size;
 }
 
-function toMappingProduct(line: ClassifiedLine, backeventProducts: Product[]): MappingPreviewProduct {
-  const mappedProduct = findMappedProduct(line, backeventProducts);
-  const mappingStatus: MappingStatus = mappedProduct ? "approved" : isAutoApprovedLine(line.lineType) ? "approved" : "unmapped";
-  const mappingAction = getMappingAction(line, mappedProduct);
+function toMappingProduct(
+  line: ClassifiedLine,
+  backeventProducts: Product[],
+  savedMappings: OnlinePosInventoryMapping[],
+): MappingPreviewProduct {
+  const savedMapping = findSavedMapping(line, savedMappings);
+  const mappedProduct = savedMapping?.backeventInventoryItemId
+    ? backeventProducts.find((product) => product.id === savedMapping.backeventInventoryItemId)
+    : undefined;
+  const mappingStatus: MappingStatus = savedMapping?.status ?? "unmapped";
+  const mappingAction = savedMapping?.mappingAction ?? getDefaultMappingAction(line);
   const canAffectInventory = mappingStatus === "approved" && mappingAction === "consume_stock";
 
   return {
@@ -432,26 +486,24 @@ function toMappingProduct(line: ClassifiedLine, backeventProducts: Product[]): M
     needsMapping: line.needsMapping,
     mappingStatus,
     mappingAction,
-    backeventInventoryItemId: mappedProduct?.id ?? null,
-    conversionFactor: mappedProduct && mappingAction === "consume_stock" ? mappedProduct.salesUnitQuantity ?? 1 : null,
+    backeventInventoryItemId: savedMapping?.backeventInventoryItemId ?? null,
+    conversionFactor: savedMapping?.conversionFactor ?? (mappedProduct && mappingAction === "consume_stock" ? mappedProduct.salesUnitQuantity ?? 1 : null),
     canAffectInventory,
   };
 }
 
-function findMappedProduct(line: ClassifiedLine, backeventProducts: Product[]) {
-  const onlineposId = stringifyValue(line.onlineposProductId);
-  const onlineposName = line.onlineposProductName?.trim().toLocaleLowerCase("da-DK");
-
-  return backeventProducts.find((product) => {
-    if (onlineposId && product.onlineposProductId && product.onlineposProductId === onlineposId) {
-      return true;
-    }
-
-    return Boolean(onlineposName && product.onlineposName?.trim().toLocaleLowerCase("da-DK") === onlineposName);
+function findSavedMapping(line: ClassifiedLine, savedMappings: OnlinePosInventoryMapping[]) {
+  const identity = toMappingIdentity({
+    onlineposProductId: line.onlineposProductId,
+    onlineposProductName: line.onlineposProductName,
+    onlineposProductGroupName: line.onlineposProductGroupName,
+    lineType: line.lineType,
   });
+
+  return savedMappings.find((mapping) => toMappingIdentity(mapping) === identity);
 }
 
-function getMappingAction(line: ClassifiedLine, mappedProduct: Product | undefined): MappingAction {
+function getDefaultMappingAction(line: ClassifiedLine): MappingAction {
   if (line.lineType === "deposit_fee") {
     return "deposit_fee";
   }
@@ -468,23 +520,7 @@ function getMappingAction(line: ClassifiedLine, mappedProduct: Product | undefin
     return "ignore";
   }
 
-  if (!mappedProduct) {
-    return line.inventoryRelevant ? "consume_stock" : "ignore";
-  }
-
-  if (mappedProduct.trackingMode === "ignore") {
-    return "ignore";
-  }
-
-  if (mappedProduct.trackingMode === "flow") {
-    return "container_only";
-  }
-
-  return "consume_stock";
-}
-
-function isAutoApprovedLine(lineType: LineType) {
-  return lineType === "deposit_fee" || lineType === "deposit_return" || lineType === "unknown";
+  return line.inventoryRelevant ? "consume_stock" : "ignore";
 }
 
 function toClassifiedLine(line: Record<string, unknown>): ClassifiedLine {
@@ -523,7 +559,7 @@ function classifyLine(
     return {
       lineType: "modifier_stock_item",
       inventoryRelevant: true,
-      needsMapping: false,
+      needsMapping: true,
     };
   }
 

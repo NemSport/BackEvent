@@ -13,6 +13,7 @@ import {
   PackageSearch,
   PackagePlus,
   PencilLine,
+  PlugZap,
   QrCode,
   Repeat,
 } from "lucide-react";
@@ -28,6 +29,7 @@ const navItems = [
   { href: "/admin/rettelser", label: "Ret lager", icon: PencilLine, adminOnly: true },
   { href: "/admin/rapport", label: "Rapport", icon: BarChart3, adminOnly: true },
   { href: "/admin/qr", label: "QR-koder", icon: QrCode, adminOnly: true },
+  { href: "/onlinepos/mapping", label: "OnlinePOS", icon: PlugZap, adminOnly: true },
   { href: "/flyt", label: "Flyt", icon: Repeat, adminOnly: false },
   { href: "/lagerstatus", label: "Lager", icon: PackageSearch, adminOnly: false },
   { href: "/aabning", label: "Åbning", icon: ClipboardCheck, adminOnly: false },

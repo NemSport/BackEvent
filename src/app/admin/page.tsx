@@ -53,6 +53,7 @@ function controlCards(discrepancyCount: number) {
     { href: "/admin/driftstjek", title: "Driftstjek", description: "Se om systemet er klar", icon: ListChecks },
     { href: "/admin/rapport", title: "Afvigelser", description: `${discrepancyCount} kræver tjek`, icon: AlertTriangle },
     { href: "/admin/rapport", title: "Forbrugsrapport", description: "Forbrug pr. sted og vare", icon: BarChart3 },
+    { href: "/onlinepos/mapping", title: "OnlinePOS mapping", description: "Godkend lagerpåvirkning", icon: PlugZap },
     { href: "/admin/onlinepos-test", title: "OnlinePOS test", description: "Mock salg og mapping", icon: PlugZap },
     { href: "/admin/onlinepos-probe", title: "OnlinePOS probe", description: "Læs rigtig API read-only", icon: RefreshCw },
     { href: "/admin/eksport", title: "Eksport", description: "CSV og backup", icon: Download },
