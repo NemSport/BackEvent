@@ -4,6 +4,7 @@ import { products as mockProductsSource } from "@/lib/backevent/mock-data";
 import type { Product } from "@/lib/backevent/types";
 import {
   type OnlinePosInventoryMapping,
+  type OnlinePosInventoryMappingComponent,
   type OnlinePosMappingAction,
   type OnlinePosMappingStatus,
 } from "@/lib/onlinepos/inventory-mappings";
@@ -65,6 +66,7 @@ type MappingPreviewProduct = {
   mappingAction: MappingAction;
   backeventInventoryItemId: string | null;
   conversionFactor: number | null;
+  components: OnlinePosInventoryMappingComponent[];
   canAffectInventory: boolean;
   matchedMappingId: string | null;
   matchedBy: "product_id" | "name" | null;
@@ -553,6 +555,8 @@ async function getSavedMappings(): Promise<MappingReadResult> {
     };
   }
 
+  const components = await getMappingComponents(supabase, data.map((row) => String(row.id)));
+
   return {
     mappings: data.map((row) => ({
       id: String(row.id),
@@ -564,6 +568,7 @@ async function getSavedMappings(): Promise<MappingReadResult> {
       conversionFactor: row.conversion_factor === null ? null : Number(row.conversion_factor),
       mappingAction: row.mapping_action,
       status: row.status,
+      components: components.get(String(row.id)) ?? legacyComponents(row),
       createdAt: stringOrNull(row.created_at),
       updatedAt: stringOrNull(row.updated_at),
     })),
@@ -574,6 +579,65 @@ async function getSavedMappings(): Promise<MappingReadResult> {
       profileActive: access.profileActive ?? null,
       readErrorStep: null,
     },
+  };
+}
+
+async function getMappingComponents(
+  supabase: NonNullable<ReturnType<typeof createSupabaseServerClient>>,
+  mappingIds: string[],
+) {
+  const componentsByMapping = new Map<string, OnlinePosInventoryMappingComponent[]>();
+
+  if (mappingIds.length === 0) {
+    return componentsByMapping;
+  }
+
+  const { data, error } = await supabase
+    .from("onlinepos_inventory_mapping_components")
+    .select("id,mapping_id,backevent_inventory_item_id,conversion_factor,sort_order,created_at,updated_at")
+    .in("mapping_id", mappingIds)
+    .order("sort_order", { ascending: true });
+
+  if (error) {
+    return componentsByMapping;
+  }
+
+  data.forEach((row) => {
+    const mappingId = String(row.mapping_id);
+    const current = componentsByMapping.get(mappingId) ?? [];
+    current.push(toComponent(row));
+    componentsByMapping.set(mappingId, current);
+  });
+
+  return componentsByMapping;
+}
+
+function legacyComponents(row: Record<string, unknown>): OnlinePosInventoryMappingComponent[] {
+  const backeventInventoryItemId = stringOrNull(row.backevent_inventory_item_id);
+  const conversionFactor = row.conversion_factor === null ? null : Number(row.conversion_factor);
+
+  if (!backeventInventoryItemId || conversionFactor === null || !Number.isFinite(conversionFactor)) {
+    return [];
+  }
+
+  return [
+    {
+      backeventInventoryItemId,
+      conversionFactor,
+      sortOrder: 0,
+    },
+  ];
+}
+
+function toComponent(row: Record<string, unknown>): OnlinePosInventoryMappingComponent {
+  return {
+    id: stringOrNull(row.id),
+    mappingId: stringOrNull(row.mapping_id),
+    backeventInventoryItemId: stringOrNull(row.backevent_inventory_item_id),
+    conversionFactor: row.conversion_factor === null ? null : Number(row.conversion_factor),
+    sortOrder: numberValue(row.sort_order) ?? 0,
+    createdAt: stringOrNull(row.created_at),
+    updatedAt: stringOrNull(row.updated_at),
   };
 }
 
@@ -636,11 +700,11 @@ function toMappingProduct(
     : mappedProduct && mappingAction === "consume_stock"
       ? mappedProduct.salesUnitQuantity ?? 1
       : null;
+  const components = savedMapping?.components ?? [];
   const canAffectInventory =
     savedMapping?.status === "approved" &&
     savedMapping.mappingAction === "consume_stock" &&
-    Boolean(savedMapping.backeventInventoryItemId) &&
-    savedMapping.conversionFactor !== null;
+    hasValidComponents(components);
 
   return {
     onlinepos_product_id: line.onlineposProductId,
@@ -653,10 +717,15 @@ function toMappingProduct(
     mappingAction,
     backeventInventoryItemId: savedMapping?.backeventInventoryItemId ?? null,
     conversionFactor,
+    components,
     canAffectInventory,
     matchedMappingId: savedMapping?.id ?? null,
     matchedBy: savedMappingMatch?.matchedBy ?? null,
   };
+}
+
+function hasValidComponents(components: OnlinePosInventoryMappingComponent[]) {
+  return components.length > 0 && components.every((component) => component.backeventInventoryItemId && component.conversionFactor !== null);
 }
 
 function findSavedMapping(line: ClassifiedLine, savedMappings: OnlinePosInventoryMapping[]): MappingMatch | null {

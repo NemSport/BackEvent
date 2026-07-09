@@ -4,6 +4,7 @@ import {
   mappingActions,
   mappingStatuses,
   type OnlinePosInventoryMapping,
+  type OnlinePosInventoryMappingComponent,
   type OnlinePosInventoryMappingInput,
   type OnlinePosLineType,
   type OnlinePosMappingAction,
@@ -51,10 +52,20 @@ export async function GET() {
     return NextResponse.json({ ok: false, error: "Mappinger kunne ikke hentes" }, { status: 500 });
   }
 
-  return NextResponse.json({ ok: true, mappings: data.map(toMapping) });
+  const components = await getComponents(supabase!, data.map((row) => String(row.id)));
+
+  return NextResponse.json({ ok: true, mappings: data.map((row) => toMapping(row, components.get(String(row.id)) ?? [])) });
 }
 
 export async function POST(request: Request) {
+  return saveMapping(request);
+}
+
+export async function PUT(request: Request) {
+  return saveMapping(request);
+}
+
+async function saveMapping(request: Request) {
   const access = await ensureAdminAccess();
 
   if (!access.ok) {
@@ -65,6 +76,10 @@ export async function POST(request: Request) {
 
   if (!input) {
     return NextResponse.json({ ok: false, error: "Ugyldig mapping" }, { status: 400 });
+  }
+
+  if (input.status === "approved" && input.mappingAction === "consume_stock" && !hasValidComponents(input.components)) {
+    return NextResponse.json({ ok: false, error: "Godkendt lagertræk kræver mindst én varekomponent" }, { status: 400 });
   }
 
   if (!isSupabaseConfigured()) {
@@ -98,7 +113,80 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, error: "Mapping kunne ikke gemmes" }, { status: 500 });
   }
 
-  return NextResponse.json({ ok: true, mapping: toMapping(data) });
+  const componentSave = await replaceComponents(supabase!, String(data.id), input.components);
+
+  if (!componentSave.ok) {
+    return NextResponse.json({ ok: false, error: "Komponenter kunne ikke gemmes" }, { status: 500 });
+  }
+
+  return NextResponse.json({ ok: true, mapping: toMapping(data, componentSave.components) });
+}
+
+async function getComponents(
+  supabase: NonNullable<ReturnType<typeof createSupabaseServerClient>>,
+  mappingIds: string[],
+) {
+  const componentsByMapping = new Map<string, OnlinePosInventoryMappingComponent[]>();
+
+  if (mappingIds.length === 0) {
+    return componentsByMapping;
+  }
+
+  const { data, error } = await supabase
+    .from("onlinepos_inventory_mapping_components")
+    .select("id,mapping_id,backevent_inventory_item_id,conversion_factor,sort_order,created_at,updated_at")
+    .in("mapping_id", mappingIds)
+    .order("sort_order", { ascending: true });
+
+  if (error) {
+    return componentsByMapping;
+  }
+
+  data.forEach((row) => {
+    const mappingId = String(row.mapping_id);
+    const current = componentsByMapping.get(mappingId) ?? [];
+    current.push(toComponent(row));
+    componentsByMapping.set(mappingId, current);
+  });
+
+  return componentsByMapping;
+}
+
+async function replaceComponents(
+  supabase: NonNullable<ReturnType<typeof createSupabaseServerClient>>,
+  mappingId: string,
+  components: OnlinePosInventoryMappingComponent[],
+): Promise<{ ok: true; components: OnlinePosInventoryMappingComponent[] } | { ok: false }> {
+  const { error: deleteError } = await supabase.from("onlinepos_inventory_mapping_components").delete().eq("mapping_id", mappingId);
+
+  if (deleteError) {
+    return { ok: false };
+  }
+
+  const validComponents = normalizeComponents(components);
+
+  if (validComponents.length === 0) {
+    return { ok: true, components: [] };
+  }
+
+  const { data, error } = await supabase
+    .from("onlinepos_inventory_mapping_components")
+    .insert(
+      validComponents.map((component, index) => ({
+        mapping_id: mappingId,
+        backevent_inventory_item_id: component.backeventInventoryItemId,
+        conversion_factor: component.conversionFactor,
+        sort_order: index,
+      })),
+    )
+    .select("id,mapping_id,backevent_inventory_item_id,conversion_factor,sort_order,created_at,updated_at")
+    .order("sort_order", { ascending: true });
+
+  if (error) {
+    return { ok: false };
+  }
+
+  return { ok: true, components: data.map(toComponent) };
 }
 
 async function findExistingById(supabase: NonNullable<ReturnType<typeof createSupabaseServerClient>>, id: string) {
@@ -165,20 +253,99 @@ function normalizeInput(value: unknown): OnlinePosInventoryMappingInput | null {
     conversionFactor: numberOrNull(input.conversionFactor),
     mappingAction: mappingAction as OnlinePosMappingAction,
     status: status as OnlinePosMappingStatus,
+    components: normalizeComponentsInput(input),
   };
 }
 
-function toMapping(row: Record<string, unknown>): OnlinePosInventoryMapping {
+function normalizeComponentsInput(input: Record<string, unknown>) {
+  if (Array.isArray(input.components)) {
+    return normalizeComponents(input.components);
+  }
+
+  const backeventInventoryItemId = stringOrNull(input.backeventInventoryItemId);
+  const conversionFactor = numberOrNull(input.conversionFactor);
+
+  if (!backeventInventoryItemId || conversionFactor === null) {
+    return [];
+  }
+
+  return [
+    {
+      backeventInventoryItemId,
+      conversionFactor,
+      sortOrder: 0,
+    },
+  ];
+}
+
+function normalizeComponents(values: unknown[]): OnlinePosInventoryMappingComponent[] {
+  return values
+    .map((value, index): OnlinePosInventoryMappingComponent | null => {
+      if (!value || typeof value !== "object") {
+        return null;
+      }
+
+      const component = value as Record<string, unknown>;
+      const backeventInventoryItemId = stringOrNull(component.backeventInventoryItemId);
+      const conversionFactor = numberOrNull(component.conversionFactor);
+
+      if (!backeventInventoryItemId || conversionFactor === null) {
+        return null;
+      }
+
+      return {
+        id: stringOrNull(component.id),
+        mappingId: stringOrNull(component.mappingId),
+        backeventInventoryItemId,
+        conversionFactor,
+        sortOrder: numberOrNull(component.sortOrder) ?? index,
+      };
+    })
+    .filter((component): component is OnlinePosInventoryMappingComponent => Boolean(component));
+}
+
+function hasValidComponents(components: OnlinePosInventoryMappingComponent[]) {
+  return components.length > 0 && components.every((component) => component.backeventInventoryItemId && component.conversionFactor !== null);
+}
+
+function toMapping(row: Record<string, unknown>, components: OnlinePosInventoryMappingComponent[]): OnlinePosInventoryMapping {
+  const legacyBackeventInventoryItemId = stringOrNull(row.backevent_inventory_item_id);
+  const legacyConversionFactor = numberOrNull(row.conversion_factor);
+  const mappedComponents = components.length > 0
+    ? components
+    : legacyBackeventInventoryItemId && legacyConversionFactor !== null
+      ? [
+          {
+            backeventInventoryItemId: legacyBackeventInventoryItemId,
+            conversionFactor: legacyConversionFactor,
+            sortOrder: 0,
+          },
+        ]
+      : [];
+
   return {
     id: String(row.id),
     onlineposProductId: stringOrNull(row.onlinepos_product_id),
     onlineposProductName: stringOrNull(row.onlinepos_product_name),
     onlineposProductGroupName: stringOrNull(row.onlinepos_product_group_name),
     lineType: row.line_type as OnlinePosLineType,
-    backeventInventoryItemId: stringOrNull(row.backevent_inventory_item_id),
-    conversionFactor: numberOrNull(row.conversion_factor),
+    backeventInventoryItemId: legacyBackeventInventoryItemId,
+    conversionFactor: legacyConversionFactor,
     mappingAction: row.mapping_action as OnlinePosMappingAction,
     status: row.status as OnlinePosMappingStatus,
+    components: mappedComponents,
+    createdAt: stringOrNull(row.created_at),
+    updatedAt: stringOrNull(row.updated_at),
+  };
+}
+
+function toComponent(row: Record<string, unknown>): OnlinePosInventoryMappingComponent {
+  return {
+    id: stringOrNull(row.id),
+    mappingId: stringOrNull(row.mapping_id),
+    backeventInventoryItemId: stringOrNull(row.backevent_inventory_item_id),
+    conversionFactor: numberOrNull(row.conversion_factor),
+    sortOrder: numberOrNull(row.sort_order) ?? 0,
     createdAt: stringOrNull(row.created_at),
     updatedAt: stringOrNull(row.updated_at),
   };

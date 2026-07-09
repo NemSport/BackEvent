@@ -9,6 +9,16 @@ export type OnlinePosLineType =
 export type OnlinePosMappingAction = "consume_stock" | "ignore" | "deposit_fee" | "deposit_return" | "container_only";
 export type OnlinePosMappingStatus = "unmapped" | "approved";
 
+export type OnlinePosInventoryMappingComponent = {
+  id?: string | null;
+  mappingId?: string | null;
+  backeventInventoryItemId: string | null;
+  conversionFactor: number | null;
+  sortOrder: number;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+};
+
 export type OnlinePosInventoryMapping = {
   id: string;
   onlineposProductId: string | null;
@@ -19,6 +29,7 @@ export type OnlinePosInventoryMapping = {
   conversionFactor: number | null;
   mappingAction: OnlinePosMappingAction;
   status: OnlinePosMappingStatus;
+  components: OnlinePosInventoryMappingComponent[];
   createdAt?: string | null;
   updatedAt?: string | null;
 };

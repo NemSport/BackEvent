@@ -22,6 +22,7 @@ type PreviewProduct = {
   mappingAction: MappingAction;
   backeventInventoryItemId: string | null;
   conversionFactor: number | null;
+  components: MappingComponent[];
   canAffectInventory: boolean;
   matchedMappingId?: string | null;
   matchedBy?: "product_id" | "name" | null;
@@ -86,13 +87,28 @@ type SavedMapping = {
   lineType: LineType;
   backeventInventoryItemId: string | null;
   conversionFactor: number | null;
+  components: MappingComponent[];
   mappingAction: MappingAction;
   status: MappingStatus;
+};
+
+type MappingComponent = {
+  id?: string | null;
+  mappingId?: string | null;
+  backeventInventoryItemId: string | null;
+  conversionFactor: number | null;
+  sortOrder: number;
+};
+
+type DraftComponent = {
+  backeventInventoryItemId: string;
+  conversionFactor: string;
 };
 
 type DraftMapping = {
   backeventInventoryItemId: string;
   conversionFactor: string;
+  components: DraftComponent[];
   mappingAction: MappingAction;
   status: MappingStatus;
 };
@@ -192,6 +208,11 @@ export default function OnlinePosMappingPage() {
     const draft = drafts[key] ?? createDraft(product, findSavedMapping(product, savedMappings));
     setMessage(null);
 
+    if (draft.status === "approved" && draft.mappingAction === "consume_stock" && !hasValidDraftComponents(draft.components)) {
+      setMessage("Godkendt lagertræk kræver mindst én varekomponent.");
+      return;
+    }
+
     try {
       const response = await fetch("/api/onlinepos/inventory-mappings", {
         method: "POST",
@@ -204,8 +225,13 @@ export default function OnlinePosMappingPage() {
           onlineposProductName: product.onlinepos_product_name,
           onlineposProductGroupName: product.onlinepos_product_group_name,
           lineType: product.lineType,
-          backeventInventoryItemId: draft.backeventInventoryItemId || null,
-          conversionFactor: draft.conversionFactor ? Number(draft.conversionFactor) : null,
+          backeventInventoryItemId: draft.components[0]?.backeventInventoryItemId || draft.backeventInventoryItemId || null,
+          conversionFactor: draft.components[0]?.conversionFactor ? Number(draft.components[0].conversionFactor) : draft.conversionFactor ? Number(draft.conversionFactor) : null,
+          components: draft.components.map((component, index) => ({
+            backeventInventoryItemId: component.backeventInventoryItemId || null,
+            conversionFactor: component.conversionFactor ? Number(component.conversionFactor) : null,
+            sortOrder: index,
+          })),
           mappingAction: draft.mappingAction,
           status: draft.status,
         }),
@@ -552,6 +578,22 @@ function MappingRow({
   debug: MappingDebugResponse | null;
   debugLoading: boolean;
 }) {
+  const components = draft.components.length > 0 ? draft.components : [{ backeventInventoryItemId: draft.backeventInventoryItemId, conversionFactor: draft.conversionFactor }];
+  const canApprove = draft.mappingAction !== "consume_stock" || hasValidDraftComponents(components);
+
+  function updateComponent(index: number, component: DraftComponent) {
+    onDraft({ ...draft, components: components.map((item, itemIndex) => itemIndex === index ? component : item) });
+  }
+
+  function removeComponent(index: number) {
+    const nextComponents = components.filter((_, itemIndex) => itemIndex !== index);
+    onDraft({ ...draft, components: nextComponents.length > 0 ? nextComponents : [{ backeventInventoryItemId: "", conversionFactor: "1" }] });
+  }
+
+  function addComponent() {
+    onDraft({ ...draft, components: [...components, { backeventInventoryItemId: "", conversionFactor: "1" }] });
+  }
+
   return (
     <article className="grid gap-3 px-4 py-4 text-sm font-medium text-ink xl:grid-cols-[4.75rem_minmax(16rem,2.4fr)_7rem_6.5rem_minmax(10rem,1fr)_7.75rem_4.5rem_6.25rem_10rem] xl:items-center xl:gap-1.5 xl:px-2.5 xl:py-1 xl:text-xs">
       <span className="truncate font-bold text-muted" title={String(product.onlinepos_product_id ?? "-")}>{product.onlinepos_product_id ?? "-"}</span>
@@ -561,38 +603,64 @@ function MappingRow({
       </div>
       <span className="hidden truncate xl:block" title={product.onlinepos_product_group_name ?? "-"}>{product.onlinepos_product_group_name ?? "-"}</span>
       <span className="w-fit rounded-lg bg-soft px-2 py-1 text-[0.68rem] font-bold text-pantone140 xl:max-w-full xl:truncate xl:px-1.5 xl:py-0.5 xl:text-[0.65rem]" title={lineTypeLabel(product.lineType)}>{lineTypeLabel(product.lineType)}</span>
-      <select
-        value={draft.backeventInventoryItemId}
-        onChange={(event) => onDraft({ ...draft, backeventInventoryItemId: event.target.value })}
-        className="min-h-10 rounded-xl border border-line bg-macro px-3 py-2 font-bold outline-none focus:border-pantone140 xl:min-h-7 xl:rounded-lg xl:px-1.5 xl:py-0.5 xl:text-xs"
-      >
-        <option value="">Ingen valgt</option>
-        {inventoryProducts.map((item) => (
-          <option key={item.id} value={item.id}>{item.name}</option>
+      <div className="grid gap-1">
+        {components.map((component, index) => (
+          <div key={index} className="grid grid-cols-[minmax(0,1fr)_4.25rem_auto] gap-1">
+            <select
+              value={component.backeventInventoryItemId}
+              onChange={(event) => updateComponent(index, { ...component, backeventInventoryItemId: event.target.value })}
+              className="min-h-10 rounded-xl border border-line bg-macro px-3 py-2 font-bold outline-none focus:border-pantone140 xl:min-h-7 xl:rounded-lg xl:px-1.5 xl:py-0.5 xl:text-xs"
+            >
+              <option value="">Ingen valgt</option>
+              {inventoryProducts.map((item) => (
+                <option key={item.id} value={item.id}>{item.name}</option>
+              ))}
+            </select>
+            <input
+              value={component.conversionFactor}
+              onChange={(event) => updateComponent(index, { ...component, conversionFactor: event.target.value })}
+              className="min-h-10 rounded-xl border border-line bg-macro px-3 py-2 font-bold outline-none focus:border-pantone140 xl:min-h-7 xl:rounded-lg xl:px-1.5 xl:py-0.5 xl:text-xs"
+              inputMode="decimal"
+              aria-label="Faktor"
+            />
+            <button
+              type="button"
+              onClick={() => removeComponent(index)}
+              className="rounded-xl border border-line bg-macro px-2 text-xs font-bold text-muted xl:rounded-lg"
+              aria-label="Fjern komponent"
+            >
+              -
+            </button>
+          </div>
         ))}
-      </select>
+      </div>
       <select
         value={draft.mappingAction}
-        onChange={(event) => onDraft({ ...draft, mappingAction: event.target.value as MappingAction })}
+        onChange={(event) => {
+          const mappingAction = event.target.value as MappingAction;
+          const nextStatus = mappingAction === "consume_stock" && draft.status === "approved" && !hasValidDraftComponents(components) ? "unmapped" : draft.status;
+          onDraft({ ...draft, mappingAction, status: nextStatus });
+        }}
         className="min-h-10 rounded-xl border border-line bg-macro px-3 py-2 font-bold outline-none focus:border-pantone140 xl:min-h-7 xl:rounded-lg xl:px-1.5 xl:py-0.5 xl:text-xs"
       >
         {mappingActions.map((action) => (
           <option key={action.value} value={action.value}>{action.label}</option>
         ))}
       </select>
-      <input
-        value={draft.conversionFactor}
-        onChange={(event) => onDraft({ ...draft, conversionFactor: event.target.value })}
-        className="min-h-10 rounded-xl border border-line bg-macro px-3 py-2 font-bold outline-none focus:border-pantone140 xl:min-h-7 xl:rounded-lg xl:px-1.5 xl:py-0.5 xl:text-xs"
-        inputMode="decimal"
-      />
+      <button
+        type="button"
+        onClick={addComponent}
+        className="min-h-10 rounded-xl border border-line bg-macro px-3 py-2 text-xs font-bold text-muted outline-none hover:border-pantone140 xl:min-h-7 xl:rounded-lg xl:px-1.5 xl:py-0.5"
+      >
+        + komponent
+      </button>
       <select
         value={draft.status}
         onChange={(event) => onDraft({ ...draft, status: event.target.value as MappingStatus })}
         className="min-h-10 rounded-xl border border-line bg-macro px-3 py-2 font-bold outline-none focus:border-pantone140 xl:min-h-7 xl:rounded-lg xl:px-1.5 xl:py-0.5 xl:text-xs"
       >
         <option value="unmapped">Afventer</option>
-        <option value="approved">Godkendt</option>
+        <option value="approved" disabled={!canApprove}>Godkendt</option>
       </select>
       <div className="flex flex-wrap items-center gap-2 xl:flex-nowrap xl:gap-1">
         <button type="button" onClick={onSave} className="rounded-xl bg-pantone139 px-3 py-2 text-sm font-bold text-ink xl:rounded-lg xl:px-2 xl:py-1 xl:text-xs">
@@ -696,12 +764,34 @@ function createDrafts(products: PreviewProduct[], mappings: SavedMapping[]) {
 }
 
 function createDraft(product: PreviewProduct, saved?: SavedMapping): DraftMapping {
+  const components = draftComponentsFromMapping(saved?.components ?? product.components, saved, product);
+
   return {
-    backeventInventoryItemId: saved?.backeventInventoryItemId ?? product.backeventInventoryItemId ?? "",
-    conversionFactor: (saved?.conversionFactor ?? product.conversionFactor ?? 1).toString(),
+    backeventInventoryItemId: components[0]?.backeventInventoryItemId ?? "",
+    conversionFactor: components[0]?.conversionFactor ?? "1",
+    components,
     mappingAction: saved?.mappingAction ?? product.mappingAction,
     status: saved?.status ?? product.mappingStatus,
   };
+}
+
+function draftComponentsFromMapping(components: MappingComponent[] | undefined, saved?: SavedMapping, product?: PreviewProduct): DraftComponent[] {
+  if (components?.length) {
+    return components.map((component) => ({
+      backeventInventoryItemId: component.backeventInventoryItemId ?? "",
+      conversionFactor: (component.conversionFactor ?? 1).toString(),
+    }));
+  }
+
+  const backeventInventoryItemId = saved?.backeventInventoryItemId ?? product?.backeventInventoryItemId ?? "";
+  const conversionFactor = saved?.conversionFactor ?? product?.conversionFactor ?? 1;
+
+  return [
+    {
+      backeventInventoryItemId,
+      conversionFactor: conversionFactor.toString(),
+    },
+  ];
 }
 
 function sortMappingProducts(
@@ -731,9 +821,9 @@ function mappingSortValue(product: PreviewProduct, draft: DraftMapping, inventor
   if (key === "productName") return product.onlinepos_product_name;
   if (key === "groupName") return product.onlinepos_product_group_name;
   if (key === "lineType") return lineTypeLabel(product.lineType);
-  if (key === "selectedProduct") return inventoryProducts.find((item) => item.id === draft.backeventInventoryItemId)?.name;
+  if (key === "selectedProduct") return inventoryProducts.find((item) => item.id === draft.components[0]?.backeventInventoryItemId)?.name;
   if (key === "mappingAction") return mappingActionLabel(draft.mappingAction);
-  if (key === "conversionFactor") return draft.conversionFactor.trim() ? Number(draft.conversionFactor) : null;
+  if (key === "conversionFactor") return draft.components[0]?.conversionFactor.trim() ? Number(draft.components[0].conversionFactor) : null;
   return statusLabel(draft.status);
 }
 
@@ -767,14 +857,14 @@ function applySavedMappingToPreview(preview: PreviewResponse, mapping: SavedMapp
     const canAffectInventory =
       mapping.status === "approved" &&
       mapping.mappingAction === "consume_stock" &&
-      Boolean(mapping.backeventInventoryItemId) &&
-      mapping.conversionFactor !== null;
+      hasValidMappingComponents(mapping.components);
     return {
       ...product,
       mappingStatus: mapping.status,
       mappingAction: mapping.mappingAction,
       backeventInventoryItemId: mapping.backeventInventoryItemId,
       conversionFactor: mapping.conversionFactor,
+      components: mapping.components,
       canAffectInventory,
     };
   });
@@ -793,6 +883,14 @@ function applySavedMappingToPreview(preview: PreviewResponse, mapping: SavedMapp
     },
     products,
   };
+}
+
+function hasValidDraftComponents(components: DraftComponent[]) {
+  return components.length > 0 && components.every((component) => component.backeventInventoryItemId && component.conversionFactor.trim());
+}
+
+function hasValidMappingComponents(components: MappingComponent[]) {
+  return components.length > 0 && components.every((component) => component.backeventInventoryItemId && component.conversionFactor !== null);
 }
 
 function productKey(product: PreviewProduct) {
