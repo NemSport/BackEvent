@@ -161,10 +161,16 @@ export default function OnlinePosMappingPage() {
         throw new Error("save failed");
       }
 
-      const data = (await response.json()) as { mapping: SavedMapping };
-      const nextMappings = upsertMapping(savedMappings, data.mapping);
+      const data = (await response.json()) as { ok?: boolean; error?: string; mapping?: SavedMapping };
+
+      if (!data.ok || !data.mapping) {
+        throw new Error(data.error || "save failed");
+      }
+
+      const savedMapping = data.mapping;
+      const nextMappings = upsertMapping(savedMappings, savedMapping);
       setSavedMappings(nextMappings);
-      setPreview((current) => current ? applySavedMappingToPreview(current, data.mapping) : current);
+      setPreview((current) => current ? applySavedMappingToPreview(current, savedMapping) : current);
       setMessage("Mapping gemt");
     } catch {
       setMessage("Mapping kunne ikke gemmes.");
@@ -350,7 +356,10 @@ async function fetchSavedMappings(): Promise<SavedMapping[]> {
     return [];
   }
 
-  const data = (await response.json()) as { mappings?: SavedMapping[] };
+  const data = (await response.json()) as { ok?: boolean; mappings?: SavedMapping[] };
+  if (!data.ok) {
+    return [];
+  }
   return data.mappings ?? [];
 }
 
@@ -368,12 +377,29 @@ function createDraft(product: PreviewProduct, saved?: SavedMapping): DraftMappin
 }
 
 function findSavedMapping(product: PreviewProduct, mappings: SavedMapping[]) {
-  return mappings.find((mapping) => mappingKey(mapping) === productKey(product));
+  const productId = normalizeOnlinePosId(product.onlinepos_product_id);
+
+  if (productId) {
+    return mappings.find((mapping) => normalizeOnlinePosId(mapping.onlineposProductId) === productId);
+  }
+
+  const productName = normalizeName(product.onlinepos_product_name);
+
+  if (!productName) {
+    return undefined;
+  }
+
+  return mappings.find(
+    (mapping) =>
+      !normalizeOnlinePosId(mapping.onlineposProductId) &&
+      normalizeName(mapping.onlineposProductName) === productName &&
+      mapping.lineType === product.lineType,
+  );
 }
 
 function applySavedMappingToPreview(preview: PreviewResponse, mapping: SavedMapping): PreviewResponse {
   const products = preview.products.map((product) => {
-    if (productKey(product) !== mappingKey(mapping)) {
+    if (!mappingMatchesProduct(mapping, product)) {
       return product;
     }
 
@@ -405,7 +431,7 @@ function applySavedMappingToPreview(preview: PreviewResponse, mapping: SavedMapp
 }
 
 function upsertMapping(mappings: SavedMapping[], mapping: SavedMapping) {
-  const next = mappings.filter((item) => mappingKey(item) !== mappingKey(mapping));
+  const next = mappings.filter((item) => !sameMapping(item, mapping));
   return [...next, mapping];
 }
 
@@ -418,13 +444,42 @@ function productKey(product: PreviewProduct) {
   ].join(":");
 }
 
-function mappingKey(mapping: SavedMapping) {
-  return [
-    mapping.onlineposProductId ?? "",
-    mapping.onlineposProductName ?? "",
-    mapping.onlineposProductGroupName ?? "",
-    mapping.lineType,
-  ].join(":");
+function mappingMatchesProduct(mapping: SavedMapping, product: PreviewProduct) {
+  const mappingId = normalizeOnlinePosId(mapping.onlineposProductId);
+  const productId = normalizeOnlinePosId(product.onlinepos_product_id);
+
+  if (productId) {
+    return mappingId === productId;
+  }
+
+  return (
+    !mappingId &&
+    normalizeName(mapping.onlineposProductName) === normalizeName(product.onlinepos_product_name) &&
+    mapping.lineType === product.lineType
+  );
+}
+
+function sameMapping(left: SavedMapping, right: SavedMapping) {
+  const leftId = normalizeOnlinePosId(left.onlineposProductId);
+  const rightId = normalizeOnlinePosId(right.onlineposProductId);
+
+  if (leftId || rightId) {
+    return leftId === rightId;
+  }
+
+  return normalizeName(left.onlineposProductName) === normalizeName(right.onlineposProductName) && left.lineType === right.lineType;
+}
+
+function normalizeOnlinePosId(value: string | number | null) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  return String(value).trim() || null;
+}
+
+function normalizeName(value: string | null) {
+  return value?.trim().toLocaleLowerCase("da-DK") || null;
 }
 
 function toIso(value: string) {

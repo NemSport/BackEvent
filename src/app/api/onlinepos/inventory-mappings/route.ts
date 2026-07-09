@@ -1,11 +1,8 @@
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 import {
-  createMockMappingId,
   mappingActions,
   mappingStatuses,
-  mockOnlinePosInventoryMappings,
-  toMappingIdentity,
   type OnlinePosInventoryMapping,
   type OnlinePosInventoryMappingInput,
   type OnlinePosLineType,
@@ -39,7 +36,7 @@ export async function GET() {
   }
 
   if (!isSupabaseConfigured()) {
-    return NextResponse.json({ mappings: mockOnlinePosInventoryMappings });
+    return NextResponse.json({ ok: false, error: "Supabase mangler. Mappinger kan ikke gemmes lokalt." }, { status: 503 });
   }
 
   const supabase = createSupabaseServerClient(access.accessToken);
@@ -51,10 +48,10 @@ export async function GET() {
     .order("onlinepos_product_name", { ascending: true });
 
   if (error) {
-    return NextResponse.json({ error: "Mappinger kunne ikke hentes" }, { status: 500 });
+    return NextResponse.json({ ok: false, error: "Mappinger kunne ikke hentes" }, { status: 500 });
   }
 
-  return NextResponse.json({ mappings: data.map(toMapping) });
+  return NextResponse.json({ ok: true, mappings: data.map(toMapping) });
 }
 
 export async function POST(request: Request) {
@@ -67,26 +64,11 @@ export async function POST(request: Request) {
   const input = normalizeInput(await request.json().catch(() => null));
 
   if (!input) {
-    return NextResponse.json({ error: "Ugyldig mapping" }, { status: 400 });
+    return NextResponse.json({ ok: false, error: "Ugyldig mapping" }, { status: 400 });
   }
 
   if (!isSupabaseConfigured()) {
-    const identity = toMappingIdentity(input);
-    const existingIndex = mockOnlinePosInventoryMappings.findIndex((mapping) => toMappingIdentity(mapping) === identity);
-    const saved: OnlinePosInventoryMapping = {
-      ...input,
-      id: input.id || (existingIndex >= 0 ? mockOnlinePosInventoryMappings[existingIndex].id : createMockMappingId()),
-      updatedAt: new Date().toISOString(),
-      createdAt: existingIndex >= 0 ? mockOnlinePosInventoryMappings[existingIndex].createdAt : new Date().toISOString(),
-    };
-
-    if (existingIndex >= 0) {
-      mockOnlinePosInventoryMappings[existingIndex] = saved;
-    } else {
-      mockOnlinePosInventoryMappings.push(saved);
-    }
-
-    return NextResponse.json({ mapping: saved });
+    return NextResponse.json({ ok: false, error: "Supabase mangler. Mappingen blev ikke gemt." }, { status: 503 });
   }
 
   const supabase = createSupabaseServerClient(access.accessToken);
@@ -113,10 +95,10 @@ export async function POST(request: Request) {
     .single();
 
   if (error) {
-    return NextResponse.json({ error: "Mapping kunne ikke gemmes" }, { status: 500 });
+    return NextResponse.json({ ok: false, error: "Mapping kunne ikke gemmes" }, { status: 500 });
   }
 
-  return NextResponse.json({ mapping: toMapping(data) });
+  return NextResponse.json({ ok: true, mapping: toMapping(data) });
 }
 
 async function findExistingById(supabase: NonNullable<ReturnType<typeof createSupabaseServerClient>>, id: string) {
@@ -128,22 +110,26 @@ async function findExistingByIdentity(
   supabase: NonNullable<ReturnType<typeof createSupabaseServerClient>>,
   input: OnlinePosInventoryMappingInput,
 ) {
-  let query = supabase
+  if (input.onlineposProductId) {
+    const onlineposProductId = normalizeOnlinePosId(input.onlineposProductId);
+    const { data } = await supabase
+      .from("onlinepos_inventory_mappings")
+      .select("id")
+      .eq("onlinepos_product_id", onlineposProductId)
+      .limit(1)
+      .maybeSingle();
+    return data;
+  }
+
+  const query = supabase
     .from("onlinepos_inventory_mappings")
     .select("id")
+    .is("onlinepos_product_id", null)
     .eq("line_type", input.lineType);
 
-  query = input.onlineposProductId
-    ? query.eq("onlinepos_product_id", input.onlineposProductId)
-    : query.is("onlinepos_product_id", null);
-  query = input.onlineposProductName
-    ? query.eq("onlinepos_product_name", input.onlineposProductName)
-    : query.is("onlinepos_product_name", null);
-  query = input.onlineposProductGroupName
-    ? query.eq("onlinepos_product_group_name", input.onlineposProductGroupName)
-    : query.is("onlinepos_product_group_name", null);
-
-  const { data } = await query.maybeSingle();
+  const { data } = input.onlineposProductName
+    ? await query.eq("onlinepos_product_name", input.onlineposProductName).limit(1).maybeSingle()
+    : await query.is("onlinepos_product_name", null).limit(1).maybeSingle();
   return data;
 }
 
@@ -171,7 +157,7 @@ function normalizeInput(value: unknown): OnlinePosInventoryMappingInput | null {
 
   return {
     id: stringOrNull(input.id),
-    onlineposProductId: stringOrNull(input.onlineposProductId),
+    onlineposProductId: normalizeOnlinePosId(input.onlineposProductId),
     onlineposProductName: stringOrNull(input.onlineposProductName),
     onlineposProductGroupName: stringOrNull(input.onlineposProductGroupName),
     lineType: lineType as OnlinePosLineType,
@@ -208,6 +194,14 @@ function stringOrNull(value: unknown) {
   }
 
   return value.trim() || null;
+}
+
+function normalizeOnlinePosId(value: unknown) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  return String(value).trim() || null;
 }
 
 function numberOrNull(value: unknown) {

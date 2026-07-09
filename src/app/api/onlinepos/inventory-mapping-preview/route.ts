@@ -2,8 +2,6 @@ import { NextResponse } from "next/server";
 import { products as mockProductsSource } from "@/lib/backevent/mock-data";
 import type { Product } from "@/lib/backevent/types";
 import {
-  mockOnlinePosInventoryMappings,
-  toMappingIdentity,
   type OnlinePosInventoryMapping,
   type OnlinePosMappingAction,
   type OnlinePosMappingStatus,
@@ -37,6 +35,9 @@ type InventoryMappingPreviewResponse = {
   hasMorePages: boolean;
   productCountBeforeMapping: number;
   mappingCount: number;
+  matchedMappingCount: number;
+  mappingSource: "supabase";
+  mappedProductIds: string[];
   errorStep: ErrorStep;
   summary: {
     totalProducts: number;
@@ -109,6 +110,9 @@ export async function GET(request: Request) {
         hasMorePages: false,
         productCountBeforeMapping: 0,
         mappingCount: 0,
+        matchedMappingCount: 0,
+        mappingSource: "supabase",
+        mappedProductIds: [],
         errorStep: "missing_datetime",
         summary: emptySummary(),
         products: [],
@@ -136,6 +140,9 @@ export async function GET(request: Request) {
       hasMorePages: false,
       productCountBeforeMapping: 0,
       mappingCount: 0,
+      matchedMappingCount: 0,
+      mappingSource: "supabase",
+      mappedProductIds: [],
       errorStep: "missing_env",
       summary: emptySummary(),
       products: [],
@@ -178,6 +185,9 @@ export async function GET(request: Request) {
         hasMorePages: false,
         productCountBeforeMapping: 0,
         mappingCount: 0,
+        matchedMappingCount: 0,
+        mappingSource: "supabase",
+        mappedProductIds: [],
         errorStep: "token_request",
         summary: emptySummary(),
         products: [],
@@ -202,6 +212,9 @@ export async function GET(request: Request) {
         hasMorePages: false,
         productCountBeforeMapping: 0,
         mappingCount: 0,
+        matchedMappingCount: 0,
+        mappingSource: "supabase",
+        mappedProductIds: [],
         errorStep: "token_parse",
         summary: emptySummary(),
         products: [],
@@ -237,6 +250,9 @@ export async function GET(request: Request) {
         hasMorePages: false,
         productCountBeforeMapping: 0,
         mappingCount: 0,
+        matchedMappingCount: 0,
+        mappingSource: "supabase",
+        mappedProductIds: [],
         errorStep: "transactions_request",
         summary: emptySummary(),
         products: [],
@@ -253,6 +269,10 @@ export async function GET(request: Request) {
     ]);
     const products = buildMappingProducts(parsed.transactions, backeventProducts, savedMappings);
     const mappingCount = products.filter((product) => product.mappingStatus === "approved").length;
+    const matchedMappingCount = products.filter((product) => Boolean(findSavedMappingForProduct(product, savedMappings))).length;
+    const mappedProductIds = products
+      .filter((product) => Boolean(findSavedMappingForProduct(product, savedMappings)))
+      .map((product) => normalizeOnlinePosId(product.onlinepos_product_id) ?? product.onlinepos_product_name ?? "unknown");
 
     if (products.length === 0) {
       return jsonPreview({
@@ -269,6 +289,9 @@ export async function GET(request: Request) {
         hasMorePages: hasMorePages(parsed.pagination),
         productCountBeforeMapping,
         mappingCount,
+        matchedMappingCount,
+        mappingSource: "supabase",
+        mappedProductIds,
         errorStep: "parse_products_empty",
         summary: emptySummary(),
         products: [],
@@ -289,6 +312,9 @@ export async function GET(request: Request) {
       hasMorePages: hasMorePages(parsed.pagination),
       productCountBeforeMapping,
       mappingCount,
+      matchedMappingCount,
+      mappingSource: "supabase",
+      mappedProductIds,
       errorStep: null,
       summary: buildSummary(products),
       products,
@@ -309,6 +335,9 @@ export async function GET(request: Request) {
       hasMorePages: false,
       productCountBeforeMapping: 0,
       mappingCount: 0,
+      matchedMappingCount: 0,
+      mappingSource: "supabase",
+      mappedProductIds: [],
       errorStep: "unexpected_error",
       summary: emptySummary(),
       products: [],
@@ -394,7 +423,7 @@ async function getSavedMappings(accessToken?: string): Promise<OnlinePosInventor
   const supabase = createSupabaseServerClient(accessToken);
 
   if (!supabase) {
-    return mockOnlinePosInventoryMappings;
+    return [];
   }
 
   const { data, error } = await supabase
@@ -493,14 +522,45 @@ function toMappingProduct(
 }
 
 function findSavedMapping(line: ClassifiedLine, savedMappings: OnlinePosInventoryMapping[]) {
-  const identity = toMappingIdentity({
-    onlineposProductId: line.onlineposProductId,
-    onlineposProductName: line.onlineposProductName,
-    onlineposProductGroupName: line.onlineposProductGroupName,
-    lineType: line.lineType,
-  });
+  const onlineposId = normalizeOnlinePosId(line.onlineposProductId);
 
-  return savedMappings.find((mapping) => toMappingIdentity(mapping) === identity);
+  if (onlineposId) {
+    return savedMappings.find((mapping) => normalizeOnlinePosId(mapping.onlineposProductId) === onlineposId);
+  }
+
+  const onlineposName = normalizeName(line.onlineposProductName);
+
+  if (!onlineposName) {
+    return undefined;
+  }
+
+  return savedMappings.find(
+    (mapping) =>
+      !normalizeOnlinePosId(mapping.onlineposProductId) &&
+      normalizeName(mapping.onlineposProductName) === onlineposName &&
+      mapping.lineType === line.lineType,
+  );
+}
+
+function findSavedMappingForProduct(product: MappingPreviewProduct, savedMappings: OnlinePosInventoryMapping[]) {
+  const onlineposId = normalizeOnlinePosId(product.onlinepos_product_id);
+
+  if (onlineposId) {
+    return savedMappings.find((mapping) => normalizeOnlinePosId(mapping.onlineposProductId) === onlineposId);
+  }
+
+  const onlineposName = normalizeName(product.onlinepos_product_name);
+
+  if (!onlineposName) {
+    return undefined;
+  }
+
+  return savedMappings.find(
+    (mapping) =>
+      !normalizeOnlinePosId(mapping.onlineposProductId) &&
+      normalizeName(mapping.onlineposProductName) === onlineposName &&
+      mapping.lineType === product.lineType,
+  );
 }
 
 function getDefaultMappingAction(line: ClassifiedLine): MappingAction {
@@ -711,6 +771,18 @@ function stringifyValue(value: unknown) {
   }
 
   return String(value);
+}
+
+function normalizeOnlinePosId(value: string | number | null | undefined) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  return String(value).trim() || null;
+}
+
+function normalizeName(value: string | null | undefined) {
+  return value?.trim().toLocaleLowerCase("da-DK") || null;
 }
 
 function normalizeKey(value: string) {

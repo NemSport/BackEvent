@@ -29,23 +29,3 @@ export type OnlinePosInventoryMappingInput = Omit<OnlinePosInventoryMapping, "id
 
 export const mappingActions: OnlinePosMappingAction[] = ["consume_stock", "ignore", "deposit_fee", "deposit_return", "container_only"];
 export const mappingStatuses: OnlinePosMappingStatus[] = ["unmapped", "approved"];
-
-export const mockOnlinePosInventoryMappings: OnlinePosInventoryMapping[] = [];
-
-export function toMappingIdentity(input: {
-  onlineposProductId?: string | number | null;
-  onlineposProductName?: string | null;
-  onlineposProductGroupName?: string | null;
-  lineType: OnlinePosLineType;
-}) {
-  return [
-    input.onlineposProductId === null || input.onlineposProductId === undefined ? "" : String(input.onlineposProductId),
-    input.onlineposProductName ?? "",
-    input.onlineposProductGroupName ?? "",
-    input.lineType,
-  ].join(":");
-}
-
-export function createMockMappingId() {
-  return `mapping-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
