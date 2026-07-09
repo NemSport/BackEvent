@@ -9,7 +9,8 @@ type TransactionsResponse = {
   hasClientId: boolean;
   hasClientSecret: boolean;
   hasVenueId: boolean;
-  datetimeMode: "query" | "default-last-24h";
+  searchMode: "receipt_number" | "receipt_range" | "datetime" | "default-last-24h";
+  datetimeMode: "query" | "default-last-24h" | "not-used";
   transactionCount: number;
   pagination: Record<string, unknown> | null;
   sample: SafeTransactionSample | null;
@@ -58,7 +59,7 @@ export async function GET(request: Request) {
   const hasClientId = Boolean(process.env.ONLINEPOS_CLIENT_ID);
   const hasClientSecret = Boolean(process.env.ONLINEPOS_CLIENT_SECRET);
   const hasVenueId = Boolean(process.env.ONLINEPOS_VENUE_ID);
-  const datetimeWindow = getDatetimeWindow(request);
+  const transactionQuery = getTransactionQuery(request);
 
   if (!hasClientId || !hasClientSecret || !hasVenueId) {
     return jsonTransactions({
@@ -67,7 +68,8 @@ export async function GET(request: Request) {
       message: missingEnvMessage({ hasClientId, hasClientSecret, hasVenueId }),
       tokenRequestStatus: null,
       transactionsRequestStatus: null,
-      datetimeMode: datetimeWindow.mode,
+      searchMode: transactionQuery.searchMode,
+      datetimeMode: transactionQuery.datetimeMode,
       transactionCount: 0,
       pagination: null,
       sample: null,
@@ -103,7 +105,8 @@ export async function GET(request: Request) {
         message: tokenMessage || tokenFailureMessage(tokenResponse.status),
         tokenRequestStatus: tokenResponse.status,
         transactionsRequestStatus: null,
-        datetimeMode: datetimeWindow.mode,
+        searchMode: transactionQuery.searchMode,
+        datetimeMode: transactionQuery.datetimeMode,
         transactionCount: 0,
         pagination: null,
         sample: null,
@@ -121,7 +124,8 @@ export async function GET(request: Request) {
         message: "OnlinePOS token response manglede access_token",
         tokenRequestStatus: tokenResponse.status,
         transactionsRequestStatus: null,
-        datetimeMode: datetimeWindow.mode,
+        searchMode: transactionQuery.searchMode,
+        datetimeMode: transactionQuery.datetimeMode,
         transactionCount: 0,
         pagination: null,
         sample: null,
@@ -129,7 +133,7 @@ export async function GET(request: Request) {
       });
     }
 
-    const transactionsResponse = await fetch(transactionsUrlWithWindow(datetimeWindow), {
+    const transactionsResponse = await fetch(transactionsUrlWithQuery(transactionQuery), {
       method: "GET",
       headers: {
         Accept: "application/json",
@@ -150,7 +154,8 @@ export async function GET(request: Request) {
         message: transactionsMessage || transactionsFailureMessage(transactionsResponse.status),
         tokenRequestStatus: tokenResponse.status,
         transactionsRequestStatus: transactionsResponse.status,
-        datetimeMode: datetimeWindow.mode,
+        searchMode: transactionQuery.searchMode,
+        datetimeMode: transactionQuery.datetimeMode,
         transactionCount: 0,
         pagination: null,
         sample: null,
@@ -166,7 +171,8 @@ export async function GET(request: Request) {
       message: "Transactions fetched",
       tokenRequestStatus: tokenResponse.status,
       transactionsRequestStatus: transactionsResponse.status,
-      datetimeMode: datetimeWindow.mode,
+      searchMode: transactionQuery.searchMode,
+      datetimeMode: transactionQuery.datetimeMode,
       transactionCount: parsed.transactions.length,
       pagination: parsed.pagination,
       sample: buildSample(parsed.transactions[0] ?? null),
@@ -180,7 +186,8 @@ export async function GET(request: Request) {
       message: error instanceof Error && error.name === "AbortError" ? "OnlinePOS kald timeout" : "OnlinePOS kan ikke nås",
       tokenRequestStatus: null,
       transactionsRequestStatus: null,
-      datetimeMode: datetimeWindow.mode,
+      searchMode: transactionQuery.searchMode,
+      datetimeMode: transactionQuery.datetimeMode,
       transactionCount: 0,
       pagination: null,
       sample: null,
@@ -200,24 +207,62 @@ function jsonTransactions(
   } satisfies TransactionsResponse);
 }
 
-function transactionsUrlWithWindow(datetimeWindow: { from: string; to: string; mode: TransactionsResponse["datetimeMode"] }) {
+function transactionsUrlWithQuery(transactionQuery: {
+  searchMode: TransactionsResponse["searchMode"];
+  datetimeMode: TransactionsResponse["datetimeMode"];
+  params: Record<string, string>;
+}) {
   const url = new URL(transactionsUrl);
   url.searchParams.set("venue", process.env.ONLINEPOS_VENUE_ID ?? "");
-  url.searchParams.set("datetime_from", datetimeWindow.from);
-  url.searchParams.set("datetime_to", datetimeWindow.to);
+
+  Object.entries(transactionQuery.params).forEach(([key, value]) => {
+    url.searchParams.set(key, value);
+  });
+
   return url;
 }
 
-function getDatetimeWindow(request: Request): { from: string; to: string; mode: TransactionsResponse["datetimeMode"] } {
+function getTransactionQuery(request: Request): {
+  searchMode: TransactionsResponse["searchMode"];
+  datetimeMode: TransactionsResponse["datetimeMode"];
+  params: Record<string, string>;
+} {
   const url = new URL(request.url);
+  const receiptNumber = url.searchParams.get("receipt_number");
+  const receiptNumberFrom = url.searchParams.get("receipt_number_from");
+  const receiptNumberTo = url.searchParams.get("receipt_number_to");
   const datetimeFrom = url.searchParams.get("datetime_from");
   const datetimeTo = url.searchParams.get("datetime_to");
 
+  if (receiptNumber) {
+    return {
+      searchMode: "receipt_number",
+      datetimeMode: "not-used",
+      params: {
+        receipt_number: receiptNumber,
+      },
+    };
+  }
+
+  if (receiptNumberFrom || receiptNumberTo) {
+    return {
+      searchMode: "receipt_range",
+      datetimeMode: "not-used",
+      params: {
+        ...(receiptNumberFrom ? { receipt_number_from: receiptNumberFrom } : {}),
+        ...(receiptNumberTo ? { receipt_number_to: receiptNumberTo } : {}),
+      },
+    };
+  }
+
   if (datetimeFrom && datetimeTo) {
     return {
-      from: datetimeFrom,
-      to: datetimeTo,
-      mode: "query",
+      searchMode: "datetime",
+      datetimeMode: "query",
+      params: {
+        datetime_from: datetimeFrom,
+        datetime_to: datetimeTo,
+      },
     };
   }
 
@@ -225,9 +270,12 @@ function getDatetimeWindow(request: Request): { from: string; to: string; mode: 
   const from = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
   return {
-    from: from.toISOString(),
-    to: now.toISOString(),
-    mode: "default-last-24h",
+    searchMode: "default-last-24h",
+    datetimeMode: "default-last-24h",
+    params: {
+      datetime_from: from.toISOString(),
+      datetime_to: now.toISOString(),
+    },
   };
 }
 
@@ -472,3 +520,4 @@ function containsSensitiveOnlinePosData(text: string) {
     text,
   );
 }
+
