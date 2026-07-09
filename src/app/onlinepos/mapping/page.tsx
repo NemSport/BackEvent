@@ -45,6 +45,28 @@ type PreviewResponse = {
   products: PreviewProduct[];
 };
 
+type MappingDebugRow = {
+  onlinepos_product_id: string | null;
+  onlinepos_product_name: string | null;
+  onlinepos_product_group_name: string | null;
+  line_type: string | null;
+  mapping_action: string | null;
+  status: string | null;
+  backevent_inventory_item_id: string | null;
+  conversion_factor: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+type MappingDebugResponse = {
+  ok: boolean;
+  source?: "supabase";
+  rowCount?: number;
+  rows?: MappingDebugRow[];
+  message?: string;
+  errorStep?: string;
+};
+
 type SavedMapping = {
   id: string;
   onlineposProductId: string | null;
@@ -81,6 +103,10 @@ export default function OnlinePosMappingPage() {
   const [to, setTo] = useState(defaultTo());
   const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [debugLoading, setDebugLoading] = useState(false);
+  const [mappingDebug, setMappingDebug] = useState<MappingDebugResponse | null>(null);
+  const [rowDebugs, setRowDebugs] = useState<Record<string, MappingDebugResponse>>({});
+  const [rowDebugLoading, setRowDebugLoading] = useState<Record<string, boolean>>({});
   const inventoryProducts = useMemo(() => products.filter((product) => product.active !== false && product.trackingMode !== "ignore"), [products]);
 
   useEffect(() => {
@@ -168,12 +194,52 @@ export default function OnlinePosMappingPage() {
       }
 
       const savedMapping = data.mapping;
-      const nextMappings = upsertMapping(savedMappings, savedMapping);
-      setSavedMappings(nextMappings);
+      const freshMappings = await fetchSavedMappings();
+      setSavedMappings(freshMappings);
       setPreview((current) => current ? applySavedMappingToPreview(current, savedMapping) : current);
-      setMessage("Mapping gemt");
+      setMessage("Gemt i Supabase");
     } catch {
       setMessage("Mapping kunne ikke gemmes.");
+    }
+  }
+
+  async function checkSavedMappings() {
+    setDebugLoading(true);
+    setMappingDebug(null);
+
+    try {
+      setMappingDebug(await fetchMappingDebug());
+    } catch {
+      setMappingDebug({ ok: false, message: "Debug kunne ikke hentes.", errorStep: "client_fetch" });
+    } finally {
+      setDebugLoading(false);
+    }
+  }
+
+  async function checkProductMapping(product: PreviewProduct) {
+    const key = productKey(product);
+    const productId = normalizeOnlinePosId(product.onlinepos_product_id);
+
+    if (!productId) {
+      setRowDebugs((current) => ({
+        ...current,
+        [key]: { ok: false, message: "Produktet mangler OnlinePOS ID.", errorStep: "missing_product_id" },
+      }));
+      return;
+    }
+
+    setRowDebugLoading((current) => ({ ...current, [key]: true }));
+
+    try {
+      const debug = await fetchMappingDebug(productId);
+      setRowDebugs((current) => ({ ...current, [key]: debug }));
+    } catch {
+      setRowDebugs((current) => ({
+        ...current,
+        [key]: { ok: false, message: "Debug kunne ikke hentes.", errorStep: "client_fetch" },
+      }));
+    } finally {
+      setRowDebugLoading((current) => ({ ...current, [key]: false }));
     }
   }
 
@@ -201,6 +267,8 @@ export default function OnlinePosMappingPage() {
 
       {preview ? <SummaryCards preview={preview} /> : null}
 
+      <MappingDebugPanel debug={mappingDebug} loading={debugLoading} onCheck={checkSavedMappings} />
+
       <section className="mt-5 max-h-[72vh] overflow-auto rounded-[1.25rem] border border-line bg-macro shadow-soft">
         <div className="sticky top-0 z-10 hidden grid-cols-[5.5rem_minmax(14rem,2fr)_8rem_7rem_minmax(12rem,1.25fr)_9rem_5.5rem_7rem_8.5rem] gap-2 border-b border-line bg-soft px-3 py-2 text-[0.68rem] font-bold uppercase tracking-wide text-muted 2xl:grid">
           <span>ID</span>
@@ -222,6 +290,9 @@ export default function OnlinePosMappingPage() {
               draft={drafts[productKey(product)] ?? createDraft(product, findSavedMapping(product, savedMappings))}
               onDraft={(draft) => setDrafts((current) => ({ ...current, [productKey(product)]: draft }))}
               onSave={() => saveMapping(product)}
+              onDebug={() => checkProductMapping(product)}
+              debug={rowDebugs[productKey(product)] ?? null}
+              debugLoading={Boolean(rowDebugLoading[productKey(product)])}
             />
           ))}
           {!preview ? <p className="p-5 text-base font-bold text-muted">Vælg periode og hent varer fra OnlinePOS.</p> : null}
@@ -253,18 +324,114 @@ function SummaryCards({ preview }: { preview: PreviewResponse }) {
   );
 }
 
+function MappingDebugPanel({
+  debug,
+  loading,
+  onCheck,
+}: {
+  debug: MappingDebugResponse | null;
+  loading: boolean;
+  onCheck: () => void;
+}) {
+  return (
+    <section className="mt-4 rounded-[1.25rem] border border-line bg-macro p-4 shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-base font-bold text-ink">Mapping debug</h2>
+          <p className="text-xs font-bold text-muted">Viser gemte rækker fra Supabase for din login-session.</p>
+        </div>
+        <button
+          type="button"
+          onClick={onCheck}
+          disabled={loading}
+          className="rounded-lg bg-pantone139 px-3 py-2 text-xs font-bold text-ink disabled:opacity-60"
+        >
+          {loading ? "Tjekker..." : "Tjek gemte mappings"}
+        </button>
+      </div>
+
+      {debug ? (
+        <div className="mt-3 rounded-xl bg-soft p-3 text-xs font-bold text-muted">
+          <div className="grid gap-2 sm:grid-cols-3">
+            <span>ok: {String(debug.ok)}</span>
+            <span>rowCount: {debug.rowCount ?? 0}</span>
+            <span>source: {debug.source ?? "-"}</span>
+          </div>
+          {!debug.ok ? <p className="mt-2 text-warmRed">{debug.message ?? "Debug fejlede"} ({debug.errorStep ?? "ukendt"})</p> : null}
+          {debug.rows?.length ? <DebugRows rows={debug.rows.slice(0, 10)} /> : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function RowDebugBox({ debug }: { debug: MappingDebugResponse }) {
+  return (
+    <div className="rounded-xl bg-soft p-3 text-xs font-bold text-muted 2xl:col-span-full 2xl:mt-1">
+      <div className="flex flex-wrap gap-3">
+        <span>ok: {String(debug.ok)}</span>
+        <span>rowCount: {debug.rowCount ?? 0}</span>
+        <span>source: {debug.source ?? "-"}</span>
+      </div>
+      {!debug.ok ? <p className="mt-2 text-warmRed">{debug.message ?? "Debug fejlede"} ({debug.errorStep ?? "ukendt"})</p> : null}
+      {debug.rows?.length ? <DebugRows rows={debug.rows.slice(0, 10)} /> : null}
+    </div>
+  );
+}
+
+function DebugRows({ rows }: { rows: MappingDebugRow[] }) {
+  return (
+    <div className="mt-3 overflow-x-auto">
+      <table className="w-full min-w-[52rem] text-left text-[0.68rem]">
+        <thead className="text-muted">
+          <tr className="border-b border-line">
+            <th className="py-1 pr-2">ID</th>
+            <th className="py-1 pr-2">Navn</th>
+            <th className="py-1 pr-2">Gruppe</th>
+            <th className="py-1 pr-2">Type</th>
+            <th className="py-1 pr-2">Handling</th>
+            <th className="py-1 pr-2">Status</th>
+            <th className="py-1 pr-2">Vare</th>
+            <th className="py-1 pr-2">Faktor</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => (
+            <tr key={`${row.onlinepos_product_id ?? "missing"}-${index}`} className="border-b border-line/70 last:border-0">
+              <td className="max-w-24 truncate py-1 pr-2">{row.onlinepos_product_id ?? "-"}</td>
+              <td className="max-w-48 truncate py-1 pr-2">{row.onlinepos_product_name ?? "-"}</td>
+              <td className="max-w-36 truncate py-1 pr-2">{row.onlinepos_product_group_name ?? "-"}</td>
+              <td className="py-1 pr-2">{row.line_type ?? "-"}</td>
+              <td className="py-1 pr-2">{row.mapping_action ?? "-"}</td>
+              <td className="py-1 pr-2">{row.status ?? "-"}</td>
+              <td className="max-w-36 truncate py-1 pr-2">{row.backevent_inventory_item_id ?? "-"}</td>
+              <td className="py-1 pr-2">{row.conversion_factor ?? "-"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function MappingRow({
   product,
   inventoryProducts,
   draft,
   onDraft,
   onSave,
+  onDebug,
+  debug,
+  debugLoading,
 }: {
   product: PreviewProduct;
   inventoryProducts: Product[];
   draft: DraftMapping;
   onDraft: (draft: DraftMapping) => void;
   onSave: () => void;
+  onDebug: () => void;
+  debug: MappingDebugResponse | null;
+  debugLoading: boolean;
 }) {
   return (
     <article className="grid gap-3 px-4 py-4 text-sm font-medium text-ink 2xl:grid-cols-[5.5rem_minmax(14rem,2fr)_8rem_7rem_minmax(12rem,1.25fr)_9rem_5.5rem_7rem_8.5rem] 2xl:items-center 2xl:gap-2 2xl:px-3 2xl:py-1.5 2xl:text-xs">
@@ -312,10 +479,14 @@ function MappingRow({
         <button type="button" onClick={onSave} className="rounded-xl bg-pantone139 px-3 py-2 text-sm font-bold text-ink 2xl:rounded-lg 2xl:px-2.5 2xl:py-1.5 2xl:text-xs">
           Gem
         </button>
+        <button type="button" onClick={onDebug} className="rounded-xl border border-line bg-macro px-3 py-2 text-sm font-bold text-muted 2xl:rounded-lg 2xl:px-2.5 2xl:py-1.5 2xl:text-xs">
+          {debugLoading ? "..." : "Tjek mapping"}
+        </button>
         <span className={`rounded-xl px-3 py-2 text-xs font-bold 2xl:rounded-lg 2xl:px-2 2xl:py-1 2xl:text-[0.68rem] ${product.canAffectInventory ? "bg-green-50 text-green-700" : "bg-soft text-muted"}`}>
           {product.canAffectInventory ? "Kan trække" : "Trækker ikke"}
         </span>
       </div>
+      {debug ? <RowDebugBox debug={debug} /> : null}
     </article>
   );
 }
@@ -361,6 +532,30 @@ async function fetchSavedMappings(): Promise<SavedMapping[]> {
     return [];
   }
   return data.mappings ?? [];
+}
+
+async function fetchMappingDebug(onlineposProductId?: string): Promise<MappingDebugResponse> {
+  const params = new URLSearchParams();
+
+  if (onlineposProductId) {
+    params.set("onlinepos_product_id", onlineposProductId);
+  }
+
+  const response = await fetch(`/api/onlinepos/inventory-mappings/debug${params.size ? `?${params.toString()}` : ""}`, {
+    headers: await getAuthHeaders(),
+    cache: "no-store",
+  });
+  const data = (await response.json()) as MappingDebugResponse;
+
+  if (!response.ok && data.ok !== false) {
+    return {
+      ok: false,
+      message: "Debug kunne ikke hentes.",
+      errorStep: `http_${response.status}`,
+    };
+  }
+
+  return data;
 }
 
 function createDrafts(products: PreviewProduct[], mappings: SavedMapping[]) {
@@ -430,11 +625,6 @@ function applySavedMappingToPreview(preview: PreviewResponse, mapping: SavedMapp
   };
 }
 
-function upsertMapping(mappings: SavedMapping[], mapping: SavedMapping) {
-  const next = mappings.filter((item) => !sameMapping(item, mapping));
-  return [...next, mapping];
-}
-
 function productKey(product: PreviewProduct) {
   return [
     product.onlinepos_product_id ?? "",
@@ -457,17 +647,6 @@ function mappingMatchesProduct(mapping: SavedMapping, product: PreviewProduct) {
     normalizeName(mapping.onlineposProductName) === normalizeName(product.onlinepos_product_name) &&
     mapping.lineType === product.lineType
   );
-}
-
-function sameMapping(left: SavedMapping, right: SavedMapping) {
-  const leftId = normalizeOnlinePosId(left.onlineposProductId);
-  const rightId = normalizeOnlinePosId(right.onlineposProductId);
-
-  if (leftId || rightId) {
-    return leftId === rightId;
-  }
-
-  return normalizeName(left.onlineposProductName) === normalizeName(right.onlineposProductName) && left.lineType === right.lineType;
 }
 
 function normalizeOnlinePosId(value: string | number | null) {
