@@ -5,6 +5,7 @@ import { DoorClosed, DoorOpen, History, MapPin, PackageSearch, Repeat, ShieldChe
 import type { LucideIcon } from "lucide-react";
 import { AuthGuard } from "@/components/backevent/auth-guard";
 import { useBackEventAuth } from "@/lib/backevent/auth";
+import { hasRoleAtLeast, type BackEventRole } from "@/lib/backevent/permissions";
 
 const volunteerActions = [
   {
@@ -12,41 +13,48 @@ const volunteerActions = [
     title: "Flyt varer",
     description: "Send kasser videre",
     icon: Repeat,
+    minRole: "frivillig",
   },
   {
     href: "/lagerstatus",
     title: "Se lagerstatus",
     description: "Se hvad der er på lager",
     icon: PackageSearch,
+    minRole: "ansvarlig",
   },
   {
     href: "/aabning",
     title: "Åbn container/bar",
     description: "Tæl lageret ved start",
     icon: DoorOpen,
+    minRole: "frivillig",
   },
   {
     href: "/lukning",
     title: "Luk container/bar",
     description: "Gem tal ved lukning",
     icon: DoorClosed,
+    minRole: "frivillig",
   },
   {
     href: "/historik",
     title: "Historik",
     description: "Se seneste handlinger",
     icon: History,
+    minRole: "ansvarlig",
   },
   {
     href: "/steder",
     title: "Container/bar links",
     description: "Åbn direkte ved et sted",
     icon: MapPin,
+    minRole: "frivillig",
   },
-];
+] satisfies Array<{ href: string; title: string; description: string; icon: LucideIcon; minRole: BackEventRole }>;
 
 export default function VolunteerHomePage() {
-  const { isAdmin, isMock } = useBackEventAuth();
+  const { isAdmin, isMock, profile } = useBackEventAuth();
+  const visibleActions = volunteerActions.filter((action) => hasRoleAtLeast(profile?.role, action.minRole));
 
   return (
     <AuthGuard>
@@ -65,7 +73,7 @@ export default function VolunteerHomePage() {
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2 lg:gap-5">
-              {volunteerActions.map((action) => (
+              {visibleActions.map((action) => (
                 <VolunteerActionCard key={action.href} {...action} />
               ))}
             </div>

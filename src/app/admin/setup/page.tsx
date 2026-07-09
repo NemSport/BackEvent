@@ -22,7 +22,7 @@ export default function AdminSetupPage() {
   }, []);
 
   return (
-    <AppShell adminOnly>
+    <AppShell requiredRole="ejer">
       <BackButton href="/admin" />
       <section className="my-6 rounded-[2rem] bg-soft p-6 shadow-soft lg:my-5 lg:rounded-[1.5rem] lg:p-5">
         <h1 className="text-4xl font-bold text-ink">Setup</h1>

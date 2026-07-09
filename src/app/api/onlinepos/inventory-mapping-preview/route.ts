@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { products as mockProductsSource } from "@/lib/backevent/mock-data";
+import { isOwnerRole } from "@/lib/backevent/permissions";
 import type { Product } from "@/lib/backevent/types";
 import {
   type OnlinePosInventoryMapping,
@@ -1109,11 +1110,11 @@ async function ensureAdminAccess(): Promise<
 
   const { data: profile } = await supabase.from("backevent_profiles").select("role,active").eq("id", user.id).maybeSingle();
 
-  if (!profile?.active || profile.role !== "admin") {
+  if (!profile?.active || !isOwnerRole(profile.role)) {
     return {
       ok: false,
       status: 403,
-      error: "Kun admin kan gøre dette",
+      error: "Kun ejer kan gøre dette",
       debug: createAuthDebug({
         hasUser: true,
         profileRole: profile?.role ?? null,

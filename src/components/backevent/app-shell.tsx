@@ -16,26 +16,29 @@ import {
   PlugZap,
   QrCode,
   Repeat,
+  Users,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { AuthGuard } from "./auth-guard";
 import { useBackEventAuth } from "@/lib/backevent/auth";
+import { hasRoleAtLeast, roleLabels, type BackEventRole } from "@/lib/backevent/permissions";
 
 const navItems = [
-  { href: "/", label: "Start", icon: Home, adminOnly: false },
-  { href: "/admin", label: "Admin-overblik", icon: LayoutDashboard, adminOnly: true },
-  { href: "/admin/produkter", label: "Produkter", icon: PackagePlus, adminOnly: true },
-  { href: "/admin/containere", label: "Steder", icon: MapPin, adminOnly: true },
-  { href: "/admin/rettelser", label: "Ret lager", icon: PencilLine, adminOnly: true },
-  { href: "/admin/rapport", label: "Rapport", icon: BarChart3, adminOnly: true },
-  { href: "/admin/qr", label: "QR-koder", icon: QrCode, adminOnly: true },
-  { href: "/onlinepos/mapping", label: "OnlinePOS", icon: PlugZap, adminOnly: true },
-  { href: "/flyt", label: "Flyt", icon: Repeat, adminOnly: false },
-  { href: "/lagerstatus", label: "Lager", icon: PackageSearch, adminOnly: false },
-  { href: "/aabning", label: "Åbning", icon: ClipboardCheck, adminOnly: false },
-  { href: "/lukning", label: "Lukning", icon: DoorClosed, adminOnly: false },
-  { href: "/historik", label: "Historik", icon: History, adminOnly: true },
-];
+  { href: "/", label: "Start", icon: Home, minRole: "frivillig" },
+  { href: "/admin", label: "Admin-overblik", icon: LayoutDashboard, minRole: "ansvarlig" },
+  { href: "/admin/medlemmer", label: "Medlemmer", icon: Users, minRole: "ejer" },
+  { href: "/admin/produkter", label: "Produkter", icon: PackagePlus, minRole: "ejer" },
+  { href: "/admin/containere", label: "Steder", icon: MapPin, minRole: "ejer" },
+  { href: "/admin/rettelser", label: "Ret lager", icon: PencilLine, minRole: "ansvarlig" },
+  { href: "/admin/rapport", label: "Rapport", icon: BarChart3, minRole: "ansvarlig" },
+  { href: "/admin/qr", label: "QR-koder", icon: QrCode, minRole: "ejer" },
+  { href: "/onlinepos/mapping", label: "OnlinePOS", icon: PlugZap, minRole: "ejer" },
+  { href: "/flyt", label: "Flyt", icon: Repeat, minRole: "frivillig" },
+  { href: "/lagerstatus", label: "Lager", icon: PackageSearch, minRole: "ansvarlig" },
+  { href: "/aabning", label: "Åbning", icon: ClipboardCheck, minRole: "frivillig" },
+  { href: "/lukning", label: "Lukning", icon: DoorClosed, minRole: "frivillig" },
+  { href: "/historik", label: "Historik", icon: History, minRole: "ansvarlig" },
+] satisfies Array<{ href: string; label: string; icon: typeof Home; minRole: BackEventRole }>;
 
 const mobileNavHrefs = ["/", "/admin", "/flyt", "/lagerstatus", "/aabning"];
 
@@ -43,21 +46,23 @@ export function AppShell({
   children,
   aside,
   adminOnly = false,
+  requiredRole,
 }: {
   children: ReactNode;
   aside?: ReactNode;
   adminOnly?: boolean;
+  requiredRole?: BackEventRole;
 }) {
   return (
-    <AuthGuard adminOnly={adminOnly}>
+    <AuthGuard adminOnly={adminOnly} requiredRole={requiredRole}>
       <ShellChrome aside={aside}>{children}</ShellChrome>
     </AuthGuard>
   );
 }
 
 function ShellChrome({ children, aside }: { children: ReactNode; aside?: ReactNode }) {
-  const { isAdmin } = useBackEventAuth();
-  const mobileNavItems = navItems.filter((item) => mobileNavHrefs.includes(item.href) && (!item.adminOnly || isAdmin));
+  const { profile } = useBackEventAuth();
+  const mobileNavItems = navItems.filter((item) => mobileNavHrefs.includes(item.href) && hasRoleAtLeast(profile?.role, item.minRole));
 
   return (
     <div className="min-h-screen">
@@ -90,8 +95,8 @@ function ShellChrome({ children, aside }: { children: ReactNode; aside?: ReactNo
 }
 
 export function Sidebar() {
-  const { isAdmin } = useBackEventAuth();
-  const visibleItems = navItems.filter((item) => !item.adminOnly || isAdmin);
+  const { profile } = useBackEventAuth();
+  const visibleItems = navItems.filter((item) => hasRoleAtLeast(profile?.role, item.minRole));
 
   return (
     <aside className="sticky top-0 hidden h-screen w-56 shrink-0 flex-col border-r border-line bg-macro p-3 shadow-soft lg:flex xl:w-60">
@@ -106,7 +111,7 @@ export function Sidebar() {
             href={item.href}
             className="flex min-h-10 items-center gap-2 rounded-xl px-3 py-2 text-sm font-bold text-ink transition hover:bg-soft"
           >
-            <item.icon className="h-4 w-4 shrink-0 text-pantone140" aria-hidden />
+            <item.icon className="h-4 w-4 shrink-0 text-pantone139" aria-hidden />
             {item.label}
           </Link>
         ))}
@@ -125,7 +130,7 @@ function SidebarUserPanel() {
     <div className="space-y-2">
       <div className="rounded-2xl bg-soft px-3 py-2">
         <p className="truncate text-xs font-bold text-muted">{isMock ? "Mock mode" : profile?.fullName ?? "Ukendt"}</p>
-        <p className="text-sm font-bold text-pantone140">{profile?.role ?? "frivillig"}</p>
+        <p className="text-sm font-bold text-pantone140">{roleLabels[profile?.role ?? "frivillig"]}</p>
       </div>
       <Link href="/logout" className="flex min-h-10 items-center justify-center gap-2 rounded-xl bg-pantone139 px-3 py-2 text-sm font-bold text-ink">
         <LogOut className="h-4 w-4" aria-hidden />
@@ -142,7 +147,7 @@ function UserHeader() {
     <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-line bg-macro px-4 py-3 shadow-sm">
       <div>
         <p className="text-sm font-bold text-muted">{isMock ? "Mock mode" : profile?.fullName ?? "Ukendt"}</p>
-        <p className="text-base font-bold text-pantone140">{profile?.role ?? "frivillig"}</p>
+        <p className="text-base font-bold text-pantone140">{roleLabels[profile?.role ?? "frivillig"]}</p>
       </div>
       <Link href="/logout" className="inline-flex min-h-11 items-center gap-2 rounded-2xl bg-soft px-4 py-2 text-base font-bold text-pantone140">
         <LogOut className="h-4 w-4" aria-hidden />

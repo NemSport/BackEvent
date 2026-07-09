@@ -75,7 +75,7 @@ export function InventoryStatus() {
   const status = location ? getLocationStatus(location.id, products, balances) : "good";
 
   return (
-    <AppShell>
+    <AppShell requiredRole="ansvarlig">
       <div className="mb-5">
         <BackButton />
       </div>

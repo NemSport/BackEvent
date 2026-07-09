@@ -107,7 +107,7 @@ export default function AdminRettelserPage() {
   }
 
   return (
-    <AppShell adminOnly>
+    <AppShell requiredRole="ansvarlig">
       <div className="mb-5">
         <BackButton href="/admin" />
       </div>

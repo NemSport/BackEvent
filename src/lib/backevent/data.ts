@@ -1,5 +1,6 @@
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { getCurrentActorName, getCurrentProfile } from "./auth";
+import { isOwnerRole, isResponsibleRole, normalizeRole } from "./permissions";
 import {
   locations as mockLocationsSource,
   openingClosingStatuses as mockStatusesSource,
@@ -9,6 +10,7 @@ import {
 } from "./mock-data";
 import type {
   AdminSetupStatus,
+  BackEventMember,
   ConsumptionLine,
   ConsumptionReport,
   HistoryEntry,
@@ -19,6 +21,7 @@ import type {
   OpeningClosingStatus,
   OpeningClosingLocationOverview,
   Product,
+  MemberRole,
   StockAdjustment,
   StockAdjustmentType,
   StockBalance,
@@ -69,6 +72,16 @@ const mockStore = {
   movements: mockMovementsSource.map((movement) => ({ ...movement })),
   statuses: mockStatusesSource.map((status) => ({ ...status })),
   adjustments: [] as StockAdjustment[],
+  members: [
+    {
+      id: "mock-user",
+      fullName: "Mock mode",
+      email: "mock@backevent.local",
+      role: "ejer" as MemberRole,
+      active: true,
+      createdAt: new Date().toISOString(),
+    },
+  ],
 };
 
 export async function getLocations(): Promise<Location[]> {
@@ -282,8 +295,8 @@ export async function createStockAdjustment(input: CreateStockAdjustmentInput) {
   }
 
   const profile = await getCurrentProfile();
-  if (profile?.role !== "admin") {
-    throw new Error("Kun admin kan gøre dette");
+  if (!isResponsibleRole(profile?.role)) {
+    throw new Error("Kun ansvarlig kan gøre dette");
   }
 
   const { data, error } = await supabase.rpc("backevent_create_stock_adjustment", {
@@ -386,8 +399,8 @@ export async function reverseStockMovement(
   }
 
   const profile = await getCurrentProfile();
-  if (profile?.role !== "admin") {
-    throw new Error("Kun admin kan gøre dette");
+  if (!isOwnerRole(profile?.role)) {
+    throw new Error("Kun ejer kan gøre dette");
   }
 
   const { error } = await supabase.rpc("backevent_reverse_stock_movement", {
@@ -754,6 +767,51 @@ export function getLocationStatus(locationId: string, products: Product[], balan
 
 export function getFillPercentageFromTotal(total: number) {
   return Math.max(0, Math.min(100, Math.round((total / 260) * 100)));
+}
+
+export async function getMembers(): Promise<BackEventMember[]> {
+  const supabase = createSupabaseBrowserClient();
+
+  if (!supabase) {
+    return mockStore.members.map((member) => ({ ...member }));
+  }
+
+  const { data, error } = await supabase
+    .from("backevent_profiles")
+    .select("id,full_name,email,role,active,created_at")
+    .order("created_at", { ascending: true });
+
+  if (error) throw error;
+
+  return data.map((row) => ({
+    id: row.id,
+    fullName: row.full_name,
+    email: row.email,
+    role: normalizeRole(row.role),
+    active: row.active ?? true,
+    createdAt: row.created_at,
+  }));
+}
+
+export async function updateMemberRole(memberId: string, role: MemberRole) {
+  const supabase = createSupabaseBrowserClient();
+
+  if (!supabase) {
+    const member = mockStore.members.find((item) => item.id === memberId);
+    if (member) {
+      member.role = role;
+    }
+    return;
+  }
+
+  const profile = await getCurrentProfile();
+  if (!isOwnerRole(profile?.role)) {
+    throw new Error("Kun ejer kan gøre dette");
+  }
+
+  const { error } = await supabase.from("backevent_profiles").update({ role }).eq("id", memberId);
+
+  if (error) throw error;
 }
 
 export async function getAdminSetupStatus(): Promise<AdminSetupStatus> {

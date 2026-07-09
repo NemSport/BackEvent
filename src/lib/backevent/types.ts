@@ -181,3 +181,14 @@ export type OperationalChecklistItem = {
   status: "Klar" | "Tjek kræves" | "Fejl";
   detail: string;
 };
+
+export type MemberRole = "frivillig" | "ansvarlig" | "ejer";
+
+export type BackEventMember = {
+  id: string;
+  fullName: string | null;
+  email: string | null;
+  role: MemberRole;
+  active: boolean;
+  createdAt?: string | null;
+};

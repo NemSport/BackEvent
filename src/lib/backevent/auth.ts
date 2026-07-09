@@ -4,8 +4,8 @@ import { useEffect, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { isSupabaseConfigured } from "@/lib/supabase/is-configured";
-
-export type BackEventRole = "frivillig" | "admin";
+import { isOwnerRole, isResponsibleRole, normalizeRole, type BackEventRole } from "./permissions";
+export type { BackEventRole } from "./permissions";
 
 export type BackEventProfile = {
   id: string;
@@ -20,7 +20,7 @@ const mockProfile: BackEventProfile = {
   id: "mock-user",
   fullName: "Mock mode",
   email: null,
-  role: "admin",
+  role: "ejer",
   active: true,
   isMock: true,
 };
@@ -54,7 +54,7 @@ export async function getCurrentProfile(): Promise<BackEventProfile | null> {
     id: user.id,
     fullName: data?.full_name ?? user.email ?? null,
     email: user.email ?? null,
-    role: (data?.role as BackEventRole | undefined) ?? "frivillig",
+    role: normalizeRole(data?.role),
     active: data?.active ?? true,
     isMock: false,
   };
@@ -127,6 +127,7 @@ export async function signUpWithPassword(fullName: string, email: string, passwo
       .upsert({
         id: data.user.id,
         full_name: fullName,
+        email,
         role: "frivillig",
         active: true,
       })
@@ -222,7 +223,9 @@ export function useBackEventAuth() {
     user,
     loading,
     isMock: isMockMode(),
-    isAdmin: profile?.role === "admin",
+    isAdmin: isResponsibleRole(profile?.role),
+    isResponsible: isResponsibleRole(profile?.role),
+    isOwner: isOwnerRole(profile?.role),
     isAuthenticated: Boolean(profile),
   };
 }

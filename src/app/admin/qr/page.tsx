@@ -45,7 +45,7 @@ export default function AdminQrPage() {
   }
 
   return (
-    <AppShell adminOnly>
+    <AppShell requiredRole="ejer">
       <div className="mb-5">
         <BackButton href="/admin" />
       </div>

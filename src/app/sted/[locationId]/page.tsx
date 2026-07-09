@@ -6,6 +6,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { AuthGuard } from "@/components/backevent/auth-guard";
 import { BackButton } from "@/components/backevent/buttons";
+import { useBackEventAuth } from "@/lib/backevent/auth";
+import { hasRoleAtLeast } from "@/lib/backevent/permissions";
 import {
   getLocationTotal,
   getLocations,
@@ -16,6 +18,7 @@ import {
 import type { Location, OpeningClosingLocationOverview, Product, StockBalance } from "@/lib/backevent/types";
 
 export default function LocationQuickPage() {
+  const { profile } = useBackEventAuth();
   const params = useParams<{ locationId: string }>();
   const locationId = params.locationId;
   const [locations, setLocations] = useState<Location[]>([]);
@@ -23,18 +26,17 @@ export default function LocationQuickPage() {
   const [balances, setBalances] = useState<StockBalance[]>([]);
   const [overview, setOverview] = useState<OpeningClosingLocationOverview[]>([]);
   const [message, setMessage] = useState<string | null>(null);
+  const canSeeStock = hasRoleAtLeast(profile?.role, "ansvarlig");
 
   useEffect(() => {
     let mounted = true;
 
     async function loadData() {
       try {
-        const [loadedLocations, loadedProducts, loadedBalances, loadedOverview] = await Promise.all([
-          getLocations(),
-          getProducts(),
-          getStockBalances(),
-          getOpeningClosingOverview(),
-        ]);
+        const [loadedLocations, loadedProducts] = await Promise.all([getLocations(), getProducts()]);
+        const [loadedBalances, loadedOverview] = canSeeStock
+          ? await Promise.all([getStockBalances(), getOpeningClosingOverview()])
+          : [[], []];
 
         if (!mounted) {
           return;
@@ -56,7 +58,7 @@ export default function LocationQuickPage() {
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [canSeeStock]);
 
   const location = locations.find((item) => item.id === locationId);
   const locationOverview = overview.find((item) => item.locationId === locationId);
@@ -102,9 +104,11 @@ export default function LocationQuickPage() {
           <h1 className="text-4xl font-bold text-ink lg:text-3xl">{location?.name ?? "Henter sted..."}</h1>
           <div className="mt-4 flex flex-wrap gap-3">
             <StatusPill overview={locationOverview} />
-            <span className="rounded-full bg-macro px-3 py-1 text-sm font-bold text-pantone140">
-              {total.toLocaleString("da-DK")} kasser i alt
-            </span>
+            {canSeeStock ? (
+              <span className="rounded-full bg-macro px-3 py-1 text-sm font-bold text-pantone140">
+                {total.toLocaleString("da-DK")} kasser i alt
+              </span>
+            ) : null}
           </div>
         </section>
 
@@ -115,9 +119,10 @@ export default function LocationQuickPage() {
           <QuickAction href={`/lukning?locationId=${locationId}`} title="Luk denne" text="Gem lukketal" icon={DoorClosed} />
           <QuickAction href={`/flyt?toLocationId=${locationId}`} title="Flyt varer hertil" text="Modtag varer" icon={Repeat} />
           <QuickAction href={`/flyt?fromLocationId=${locationId}`} title="Flyt varer herfra" text="Send varer videre" icon={Repeat} />
-          <QuickAction href="#lager" title="Se lager her" text="Vis varer på stedet" icon={PackageSearch} />
+          {canSeeStock ? <QuickAction href="#lager" title="Se lager her" text="Vis varer på stedet" icon={PackageSearch} /> : null}
         </section>
 
+        {canSeeStock ? (
         <section id="lager" className="mt-10 rounded-[2rem] border border-line bg-macro p-5 shadow-soft lg:rounded-[1.5rem] lg:p-4">
           <h2 className="mb-4 text-2xl font-bold text-ink">Lager her</h2>
           <div className="space-y-3">
@@ -132,6 +137,7 @@ export default function LocationQuickPage() {
             ))}
           </div>
         </section>
+        ) : null}
         </div>
       </main>
     </AuthGuard>

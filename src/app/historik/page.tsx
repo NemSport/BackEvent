@@ -46,7 +46,7 @@ export default function HistorikPage() {
   }, []);
 
   return (
-    <AppShell adminOnly>
+    <AppShell requiredRole="ansvarlig">
       <div className="mb-5">
         <BackButton />
       </div>

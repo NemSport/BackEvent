@@ -14,6 +14,7 @@ import {
   RefreshCw,
   Repeat,
   Settings,
+  Users,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ActionCard } from "@/components/backevent/action-card";
@@ -21,6 +22,7 @@ import { AppShell } from "@/components/backevent/app-shell";
 import { Header } from "@/components/backevent/header";
 import { LocationCard } from "@/components/backevent/location-card";
 import { MovementList } from "@/components/backevent/movement-list";
+import { useBackEventAuth } from "@/lib/backevent/auth";
 import {
   getFillPercentageFromTotal,
   getLocationStatus,
@@ -32,10 +34,12 @@ import {
   getStockDiscrepancies,
   isPhysicalStockLocation,
 } from "@/lib/backevent/data";
+import { isOwnerRole } from "@/lib/backevent/permissions";
 import type { Location, Product, StockBalance, StockDiscrepancy, StockMovement } from "@/lib/backevent/types";
 
 const setupCards = [
   { href: "/admin/setup", title: "Setup", description: "Kontrol før markedet", icon: Settings },
+  { href: "/admin/medlemmer", title: "Medlemmer", description: "Roller og adgang", icon: Users },
   { href: "/admin/produkter", title: "Produkter", description: "Varer og OnlinePOS-mapping", icon: PackagePlus },
   { href: "/admin/containere", title: "Steder", description: "Containere og barer", icon: PackageSearch },
   { href: "/admin/qr", title: "QR-koder", description: "Direkte links til steder", icon: QrCode },
@@ -50,17 +54,19 @@ const driftCards = [
 
 function controlCards(discrepancyCount: number) {
   return [
-    { href: "/admin/driftstjek", title: "Driftstjek", description: "Se om systemet er klar", icon: ListChecks },
-    { href: "/admin/rapport", title: "Afvigelser", description: `${discrepancyCount} kræver tjek`, icon: AlertTriangle },
-    { href: "/admin/rapport", title: "Forbrugsrapport", description: "Forbrug pr. sted og vare", icon: BarChart3 },
-    { href: "/onlinepos/mapping", title: "OnlinePOS mapping", description: "Godkend lagerpåvirkning", icon: PlugZap },
-    { href: "/admin/onlinepos-test", title: "OnlinePOS test", description: "Mock salg og mapping", icon: PlugZap },
-    { href: "/admin/onlinepos-probe", title: "OnlinePOS probe", description: "Læs rigtig API read-only", icon: RefreshCw },
-    { href: "/admin/eksport", title: "Eksport", description: "CSV og backup", icon: Download },
+    { href: "/admin/driftstjek", title: "Driftstjek", description: "Se om systemet er klar", icon: ListChecks, ownerOnly: true },
+    { href: "/admin/rapport", title: "Afvigelser", description: `${discrepancyCount} kræver tjek`, icon: AlertTriangle, ownerOnly: false },
+    { href: "/admin/rapport", title: "Forbrugsrapport", description: "Forbrug pr. sted og vare", icon: BarChart3, ownerOnly: false },
+    { href: "/onlinepos/mapping", title: "OnlinePOS mapping", description: "Godkend lagerpåvirkning", icon: PlugZap, ownerOnly: true },
+    { href: "/admin/onlinepos-test", title: "OnlinePOS test", description: "Mock salg og mapping", icon: PlugZap, ownerOnly: true },
+    { href: "/admin/onlinepos-probe", title: "OnlinePOS probe", description: "Læs rigtig API read-only", icon: RefreshCw, ownerOnly: true },
+    { href: "/admin/eksport", title: "Eksport", description: "CSV og backup", icon: Download, ownerOnly: true },
   ];
 }
 
 export default function AdminDashboardPage() {
+  const { profile } = useBackEventAuth();
+  const isOwner = isOwnerRole(profile?.role);
   const [locations, setLocations] = useState<Location[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [balances, setBalances] = useState<StockBalance[]>([]);
@@ -107,17 +113,19 @@ export default function AdminDashboardPage() {
   }, []);
 
   return (
-    <AppShell adminOnly aside={<DashboardAside lowStockText={lowStockText} discrepancyCount={discrepancies.length} movements={movements.length} />}>
+    <AppShell requiredRole="ansvarlig" aside={<DashboardAside lowStockText={lowStockText} discrepancyCount={discrepancies.length} movements={movements.length} />}>
       <Header title="Admin-overblik" subtitle="Samlet status for containere, barer og beholdning" />
 
       {message ? <p className="mb-4 rounded-2xl bg-warmRed/10 px-4 py-3 text-base font-bold text-warmRed">{message}</p> : null}
 
       <div className="space-y-10">
-        <CardSection title="Opsætning" description="Det ansvarlige hold kan klargøre produkter, steder og QR-koder.">
-          {setupCards.map((card) => (
-            <ActionCard key={card.href} {...card} />
-          ))}
-        </CardSection>
+        {isOwner ? (
+          <CardSection title="Opsætning" description="Ejer kan klargøre produkter, steder, adgang og QR-koder.">
+            {setupCards.map((card) => (
+              <ActionCard key={card.href} {...card} />
+            ))}
+          </CardSection>
+        ) : null}
 
         <CardSection title="Drift" description="Daglige lageropgaver under markedet.">
           {driftCards.map((card) => (
@@ -125,10 +133,12 @@ export default function AdminDashboardPage() {
           ))}
         </CardSection>
 
-        <CardSection title="Kontrol" description="Tjek, rapporter og eksport.">
-          {controlCards(discrepancies.length).map((card) => (
-            <ActionCard key={`${card.href}-${card.title}`} {...card} />
-          ))}
+        <CardSection title="Kontrol" description="Tjek og rapporter.">
+          {controlCards(discrepancies.length)
+            .filter((card) => isOwner || !card.ownerOnly)
+            .map((card) => (
+              <ActionCard key={`${card.href}-${card.title}`} {...card} />
+            ))}
         </CardSection>
 
         <section>

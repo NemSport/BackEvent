@@ -12,6 +12,7 @@ import {
 } from "@/lib/onlinepos/inventory-mappings";
 import { isSupabaseConfigured } from "@/lib/supabase/is-configured";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { isOwnerRole } from "@/lib/backevent/permissions";
 
 type AuthFailureDebug = {
   hasUser: boolean;
@@ -424,11 +425,11 @@ async function ensureAdminAccess(): Promise<
 
   const { data: profile } = await supabase.from("backevent_profiles").select("role,active").eq("id", user.id).maybeSingle();
 
-  if (!profile?.active || profile.role !== "admin") {
+  if (!profile?.active || !isOwnerRole(profile.role)) {
     return {
       ok: false,
       status: 403,
-      error: "Kun admin kan gøre dette",
+      error: "Kun ejer kan gøre dette",
       debug: createAuthDebug({
         hasUser: true,
         profileRole: profile?.role ?? null,

@@ -80,6 +80,7 @@ export default function LoginPage() {
     const { error: profileError } = await supabase.from("backevent_profiles").upsert({
       id: userId,
       full_name: name,
+      email,
       role: "frivillig",
       active: true,
     });

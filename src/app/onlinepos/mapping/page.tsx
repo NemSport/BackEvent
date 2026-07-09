@@ -312,7 +312,7 @@ export default function OnlinePosMappingPage() {
   }
 
   return (
-    <AppShell adminOnly>
+    <AppShell requiredRole="ejer">
       <BackButton href="/admin" />
       <section className="my-6 rounded-[2rem] bg-soft p-6 shadow-soft lg:my-5 lg:rounded-[1.5rem] lg:p-5">
         <div className="flex flex-wrap items-end justify-between gap-4">

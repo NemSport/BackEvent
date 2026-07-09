@@ -4,19 +4,23 @@ import Link from "next/link";
 import { useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useBackEventAuth } from "@/lib/backevent/auth";
+import { hasRoleAtLeast, type BackEventRole } from "@/lib/backevent/permissions";
 
 export function AuthGuard({
   children,
   adminOnly = false,
+  requiredRole,
 }: {
   children: React.ReactNode;
   adminOnly?: boolean;
+  requiredRole?: BackEventRole;
 }) {
   const router = useRouter();
   const pathname = usePathname();
-  const { loading, isAuthenticated, isAdmin, isMock } = useBackEventAuth();
+  const { loading, isAuthenticated, isMock, profile } = useBackEventAuth();
   const isPublicAuthRoute = pathname.startsWith("/login") || pathname.startsWith("/logout");
   const authState = loading ? "loading" : isMock || isAuthenticated ? "authenticated" : "unauthenticated";
+  const minimumRole = requiredRole ?? (adminOnly ? "ansvarlig" : "frivillig");
 
   useEffect(() => {
     if (!isPublicAuthRoute && authState === "unauthenticated") {
@@ -36,7 +40,7 @@ export function AuthGuard({
     return <AccessMessage title="Du skal logge ind" href="/login" action="Gå til login" />;
   }
 
-  if (adminOnly && !isAdmin) {
+  if (!hasRoleAtLeast(profile?.role, minimumRole)) {
     return <AccessMessage title="Du har ikke adgang" href="/" action="Gå til Start" />;
   }
 

@@ -19,7 +19,7 @@ export default function PrintQrPage() {
   }, []);
 
   return (
-    <AuthGuard adminOnly>
+    <AuthGuard requiredRole="ejer">
       <main className="min-h-screen bg-macro p-6 text-ink print:p-0">
         <style jsx global>{`
           @media print {
