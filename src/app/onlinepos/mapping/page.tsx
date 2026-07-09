@@ -318,13 +318,13 @@ export default function OnlinePosMappingPage() {
         onCheckPreview={checkPreviewWithMappings}
       />
 
-      <section className="mt-5 max-h-[72vh] overflow-auto rounded-[1.25rem] border border-line bg-macro shadow-soft">
-        <div className="sticky top-0 z-10 hidden grid-cols-[5.5rem_minmax(14rem,2fr)_8rem_7rem_minmax(12rem,1.25fr)_9rem_5.5rem_7rem_8.5rem] gap-2 border-b border-line bg-soft px-3 py-2 text-[0.68rem] font-bold uppercase tracking-wide text-muted 2xl:grid">
+      <section className="mt-5 max-h-[76vh] overflow-auto rounded-[1.25rem] border border-line bg-macro shadow-soft">
+        <div className="sticky top-0 z-10 hidden grid-cols-[4.75rem_minmax(16rem,2.4fr)_7rem_6.5rem_minmax(10rem,1fr)_7.75rem_4.5rem_6.25rem_10rem] gap-1.5 border-b border-line bg-soft px-2.5 py-1.5 text-[0.65rem] font-bold uppercase tracking-wide text-muted xl:grid">
           <span>ID</span>
           <SortableMappingHeader label="Vare" sortKey="productName" sort={sort} onSort={toggleSort} />
           <SortableMappingHeader label="Gruppe" sortKey="groupName" sort={sort} onSort={toggleSort} />
           <SortableMappingHeader label="Type" sortKey="lineType" sort={sort} onSort={toggleSort} />
-          <SortableMappingHeader label="Valgt vare" sortKey="selectedProduct" sort={sort} onSort={toggleSort} />
+          <SortableMappingHeader label="Vare" sortKey="selectedProduct" sort={sort} onSort={toggleSort} />
           <SortableMappingHeader label="Handling" sortKey="mappingAction" sort={sort} onSort={toggleSort} />
           <SortableMappingHeader label="Faktor" sortKey="conversionFactor" sort={sort} onSort={toggleSort} />
           <SortableMappingHeader label="Status" sortKey="status" sort={sort} onSort={toggleSort} />
@@ -486,7 +486,7 @@ function MappingDebugPanel({
 
 function RowDebugBox({ debug }: { debug: MappingDebugResponse }) {
   return (
-    <div className="rounded-xl bg-soft p-3 text-xs font-bold text-muted 2xl:col-span-full 2xl:mt-1">
+    <div className="rounded-xl bg-soft p-3 text-xs font-bold text-muted xl:col-span-full xl:mt-1">
       <div className="flex flex-wrap gap-3">
         <span>ok: {String(debug.ok)}</span>
         <span>rowCount: {debug.rowCount ?? 0}</span>
@@ -553,18 +553,18 @@ function MappingRow({
   debugLoading: boolean;
 }) {
   return (
-    <article className="grid gap-3 px-4 py-4 text-sm font-medium text-ink 2xl:grid-cols-[5.5rem_minmax(14rem,2fr)_8rem_7rem_minmax(12rem,1.25fr)_9rem_5.5rem_7rem_8.5rem] 2xl:items-center 2xl:gap-2 2xl:px-3 2xl:py-1.5 2xl:text-xs">
+    <article className="grid gap-3 px-4 py-4 text-sm font-medium text-ink xl:grid-cols-[4.75rem_minmax(16rem,2.4fr)_7rem_6.5rem_minmax(10rem,1fr)_7.75rem_4.5rem_6.25rem_10rem] xl:items-center xl:gap-1.5 xl:px-2.5 xl:py-1 xl:text-xs">
       <span className="truncate font-bold text-muted" title={String(product.onlinepos_product_id ?? "-")}>{product.onlinepos_product_id ?? "-"}</span>
       <div className="min-w-0">
         <p className="truncate font-bold" title={product.onlinepos_product_name ?? "Ukendt vare"}>{product.onlinepos_product_name ?? "Ukendt vare"}</p>
-        <p className="text-xs text-muted 2xl:hidden">{product.onlinepos_product_group_name ?? "-"} · {lineTypeLabel(product.lineType)}</p>
+        <p className="text-xs text-muted xl:hidden">{product.onlinepos_product_group_name ?? "-"} · {lineTypeLabel(product.lineType)}</p>
       </div>
-      <span className="hidden truncate 2xl:block" title={product.onlinepos_product_group_name ?? "-"}>{product.onlinepos_product_group_name ?? "-"}</span>
-      <span className="w-fit rounded-lg bg-soft px-2 py-1 text-[0.68rem] font-bold text-pantone140 2xl:max-w-full 2xl:truncate" title={lineTypeLabel(product.lineType)}>{lineTypeLabel(product.lineType)}</span>
+      <span className="hidden truncate xl:block" title={product.onlinepos_product_group_name ?? "-"}>{product.onlinepos_product_group_name ?? "-"}</span>
+      <span className="w-fit rounded-lg bg-soft px-2 py-1 text-[0.68rem] font-bold text-pantone140 xl:max-w-full xl:truncate xl:px-1.5 xl:py-0.5 xl:text-[0.65rem]" title={lineTypeLabel(product.lineType)}>{lineTypeLabel(product.lineType)}</span>
       <select
         value={draft.backeventInventoryItemId}
         onChange={(event) => onDraft({ ...draft, backeventInventoryItemId: event.target.value })}
-        className="min-h-10 rounded-xl border border-line bg-macro px-3 py-2 font-bold outline-none focus:border-pantone140 2xl:min-h-8 2xl:rounded-lg 2xl:px-2 2xl:py-1 2xl:text-xs"
+        className="min-h-10 rounded-xl border border-line bg-macro px-3 py-2 font-bold outline-none focus:border-pantone140 xl:min-h-7 xl:rounded-lg xl:px-1.5 xl:py-0.5 xl:text-xs"
       >
         <option value="">Ingen valgt</option>
         {inventoryProducts.map((item) => (
@@ -574,7 +574,7 @@ function MappingRow({
       <select
         value={draft.mappingAction}
         onChange={(event) => onDraft({ ...draft, mappingAction: event.target.value as MappingAction })}
-        className="min-h-10 rounded-xl border border-line bg-macro px-3 py-2 font-bold outline-none focus:border-pantone140 2xl:min-h-8 2xl:rounded-lg 2xl:px-2 2xl:py-1 2xl:text-xs"
+        className="min-h-10 rounded-xl border border-line bg-macro px-3 py-2 font-bold outline-none focus:border-pantone140 xl:min-h-7 xl:rounded-lg xl:px-1.5 xl:py-0.5 xl:text-xs"
       >
         {mappingActions.map((action) => (
           <option key={action.value} value={action.value}>{action.label}</option>
@@ -583,25 +583,25 @@ function MappingRow({
       <input
         value={draft.conversionFactor}
         onChange={(event) => onDraft({ ...draft, conversionFactor: event.target.value })}
-        className="min-h-10 rounded-xl border border-line bg-macro px-3 py-2 font-bold outline-none focus:border-pantone140 2xl:min-h-8 2xl:rounded-lg 2xl:px-2 2xl:py-1 2xl:text-xs"
+        className="min-h-10 rounded-xl border border-line bg-macro px-3 py-2 font-bold outline-none focus:border-pantone140 xl:min-h-7 xl:rounded-lg xl:px-1.5 xl:py-0.5 xl:text-xs"
         inputMode="decimal"
       />
       <select
         value={draft.status}
         onChange={(event) => onDraft({ ...draft, status: event.target.value as MappingStatus })}
-        className="min-h-10 rounded-xl border border-line bg-macro px-3 py-2 font-bold outline-none focus:border-pantone140 2xl:min-h-8 2xl:rounded-lg 2xl:px-2 2xl:py-1 2xl:text-xs"
+        className="min-h-10 rounded-xl border border-line bg-macro px-3 py-2 font-bold outline-none focus:border-pantone140 xl:min-h-7 xl:rounded-lg xl:px-1.5 xl:py-0.5 xl:text-xs"
       >
         <option value="unmapped">Afventer</option>
         <option value="approved">Godkendt</option>
       </select>
-      <div className="flex flex-wrap items-center gap-2 2xl:flex-nowrap 2xl:gap-1.5">
-        <button type="button" onClick={onSave} className="rounded-xl bg-pantone139 px-3 py-2 text-sm font-bold text-ink 2xl:rounded-lg 2xl:px-2.5 2xl:py-1.5 2xl:text-xs">
+      <div className="flex flex-wrap items-center gap-2 xl:flex-nowrap xl:gap-1">
+        <button type="button" onClick={onSave} className="rounded-xl bg-pantone139 px-3 py-2 text-sm font-bold text-ink xl:rounded-lg xl:px-2 xl:py-1 xl:text-xs">
           Gem
         </button>
-        <button type="button" onClick={onDebug} className="rounded-xl border border-line bg-macro px-3 py-2 text-sm font-bold text-muted 2xl:rounded-lg 2xl:px-2.5 2xl:py-1.5 2xl:text-xs">
-          {debugLoading ? "..." : "Tjek mapping"}
+        <button type="button" onClick={onDebug} className="rounded-xl border border-line bg-macro px-3 py-2 text-sm font-bold text-muted xl:rounded-lg xl:px-2 xl:py-1 xl:text-xs">
+          {debugLoading ? "..." : "Tjek"}
         </button>
-        <span className={`rounded-xl px-3 py-2 text-xs font-bold 2xl:rounded-lg 2xl:px-2 2xl:py-1 2xl:text-[0.68rem] ${product.canAffectInventory ? "bg-green-50 text-green-700" : "bg-soft text-muted"}`}>
+        <span className={`rounded-xl px-3 py-2 text-xs font-bold xl:rounded-lg xl:px-1.5 xl:py-0.5 xl:text-[0.65rem] ${product.canAffectInventory ? "bg-green-50 text-green-700" : "bg-soft text-muted"}`}>
           {product.canAffectInventory ? "Kan trække" : "Trækker ikke"}
         </span>
       </div>
