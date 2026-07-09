@@ -114,7 +114,7 @@ type DraftMapping = {
 };
 
 type SortDirection = "asc" | "desc";
-type MappingSortKey = "productName" | "groupName" | "lineType" | "selectedProduct" | "mappingAction" | "conversionFactor" | "status";
+type MappingSortKey = "productName" | "groupName" | "lineType" | "drawStatus" | "selectedProduct" | "mappingAction" | "conversionFactor" | "status";
 type MappingSort = { key: MappingSortKey; direction: SortDirection } | null;
 
 const mappingActions: Array<{ value: MappingAction; label: string }> = [
@@ -139,7 +139,7 @@ export default function OnlinePosMappingPage() {
   const [mappingDebug, setMappingDebug] = useState<MappingDebugResponse | null>(null);
   const [rowDebugs, setRowDebugs] = useState<Record<string, MappingDebugResponse>>({});
   const [rowDebugLoading, setRowDebugLoading] = useState<Record<string, boolean>>({});
-  const [sort, setSort] = useState<MappingSort>(null);
+  const [sort, setSort] = useState<MappingSort>({ key: "productName", direction: "asc" });
   const inventoryProducts = useMemo(() => products.filter((product) => product.active !== false && product.trackingMode !== "ignore"), [products]);
   const sortedPreviewProducts = useMemo(
     () => sortMappingProducts(preview?.products ?? [], sort, drafts, savedMappings, inventoryProducts),
@@ -345,15 +345,15 @@ export default function OnlinePosMappingPage() {
       />
 
       <section className="mt-5 max-h-[76vh] overflow-auto rounded-[1.25rem] border border-line bg-macro shadow-soft">
-        <div className="sticky top-0 z-10 hidden grid-cols-[4.75rem_minmax(16rem,2.4fr)_7rem_6.5rem_minmax(10rem,1fr)_7.75rem_4.5rem_6.25rem_10rem] gap-1.5 border-b border-line bg-soft px-2.5 py-1.5 text-[0.65rem] font-bold uppercase tracking-wide text-muted xl:grid">
+        <div className="sticky top-0 z-10 hidden grid-cols-[4.75rem_minmax(16rem,2.4fr)_7rem_6.5rem_minmax(18rem,1.6fr)_7.75rem_5.5rem_6.25rem_10rem] gap-1.5 border-b border-line bg-soft px-2.5 py-1.5 text-[0.65rem] font-bold uppercase tracking-wide text-muted xl:grid">
           <span>ID</span>
           <SortableMappingHeader label="Vare" sortKey="productName" sort={sort} onSort={toggleSort} />
           <SortableMappingHeader label="Gruppe" sortKey="groupName" sort={sort} onSort={toggleSort} />
           <SortableMappingHeader label="Type" sortKey="lineType" sort={sort} onSort={toggleSort} />
           <SortableMappingHeader label="Vare" sortKey="selectedProduct" sort={sort} onSort={toggleSort} />
           <SortableMappingHeader label="Handling" sortKey="mappingAction" sort={sort} onSort={toggleSort} />
-          <SortableMappingHeader label="Faktor" sortKey="conversionFactor" sort={sort} onSort={toggleSort} />
-          <SortableMappingHeader label="Status" sortKey="status" sort={sort} onSort={toggleSort} />
+          <SortableMappingHeader label="Forbrug pr. salg" sortKey="conversionFactor" sort={sort} onSort={toggleSort} />
+          <SortableMappingHeader label="Trækker" sortKey="drawStatus" sort={sort} onSort={toggleSort} />
           <span>Gem</span>
         </div>
         <div className="divide-y divide-line">
@@ -580,6 +580,7 @@ function MappingRow({
 }) {
   const components = draft.components.length > 0 ? draft.components : [{ backeventInventoryItemId: draft.backeventInventoryItemId, conversionFactor: draft.conversionFactor }];
   const canApprove = draft.mappingAction !== "consume_stock" || hasValidDraftComponents(components);
+  const canDrawInventory = draftCanDrawInventory({ ...draft, components });
 
   function updateComponent(index: number, component: DraftComponent) {
     onDraft({ ...draft, components: components.map((item, itemIndex) => itemIndex === index ? component : item) });
@@ -595,7 +596,7 @@ function MappingRow({
   }
 
   return (
-    <article className="grid gap-3 px-4 py-4 text-sm font-medium text-ink xl:grid-cols-[4.75rem_minmax(16rem,2.4fr)_7rem_6.5rem_minmax(10rem,1fr)_7.75rem_4.5rem_6.25rem_10rem] xl:items-center xl:gap-1.5 xl:px-2.5 xl:py-1 xl:text-xs">
+    <article className="grid gap-3 px-4 py-4 text-sm font-medium text-ink xl:grid-cols-[4.75rem_minmax(16rem,2.4fr)_7rem_6.5rem_minmax(18rem,1.6fr)_7.75rem_5.5rem_6.25rem_10rem] xl:items-center xl:gap-1.5 xl:px-2.5 xl:py-1 xl:text-xs">
       <span className="truncate font-bold text-muted" title={String(product.onlinepos_product_id ?? "-")}>{product.onlinepos_product_id ?? "-"}</span>
       <div className="min-w-0">
         <p className="truncate font-bold" title={product.onlinepos_product_name ?? "Ukendt vare"}>{product.onlinepos_product_name ?? "Ukendt vare"}</p>
@@ -605,7 +606,7 @@ function MappingRow({
       <span className="w-fit rounded-lg bg-soft px-2 py-1 text-[0.68rem] font-bold text-pantone140 xl:max-w-full xl:truncate xl:px-1.5 xl:py-0.5 xl:text-[0.65rem]" title={lineTypeLabel(product.lineType)}>{lineTypeLabel(product.lineType)}</span>
       <div className="grid gap-1">
         {components.map((component, index) => (
-          <div key={index} className="grid grid-cols-[minmax(0,1fr)_4.25rem_auto] gap-1">
+          <div key={index} className="grid grid-cols-1 gap-1 sm:grid-cols-[minmax(10rem,1fr)_minmax(90px,8rem)_auto]">
             <select
               value={component.backeventInventoryItemId}
               onChange={(event) => updateComponent(index, { ...component, backeventInventoryItemId: event.target.value })}
@@ -616,7 +617,7 @@ function MappingRow({
                 <option key={item.id} value={item.id}>{item.name}</option>
               ))}
             </select>
-            <div className="flex min-w-0 items-center overflow-hidden rounded-xl border border-line bg-macro focus-within:border-pantone140 xl:rounded-lg">
+            <div className="flex min-w-[90px] items-center overflow-hidden rounded-xl border border-line bg-macro focus-within:border-pantone140 xl:rounded-lg">
               <input
                 value={component.conversionFactor}
                 onChange={(event) => updateComponent(index, { ...component, conversionFactor: event.target.value })}
@@ -672,8 +673,8 @@ function MappingRow({
         <button type="button" onClick={onDebug} className="rounded-xl border border-line bg-macro px-3 py-2 text-sm font-bold text-muted xl:rounded-lg xl:px-2 xl:py-1 xl:text-xs">
           {debugLoading ? "..." : "Tjek"}
         </button>
-        <span className={`rounded-xl px-3 py-2 text-xs font-bold xl:rounded-lg xl:px-1.5 xl:py-0.5 xl:text-[0.65rem] ${product.canAffectInventory ? "bg-green-50 text-green-700" : "bg-soft text-muted"}`}>
-          {product.canAffectInventory ? "Kan trække" : "Trækker ikke"}
+        <span className={`rounded-xl px-3 py-2 text-xs font-bold xl:rounded-lg xl:px-1.5 xl:py-0.5 xl:text-[0.65rem] ${canDrawInventory ? "bg-green-50 text-green-700" : "bg-soft text-muted"}`}>
+          {canDrawInventory ? "Kan trække" : "Trækker ikke"}
         </span>
       </div>
       {debug ? <RowDebugBox debug={debug} /> : null}
@@ -827,6 +828,7 @@ function mappingSortValue(product: PreviewProduct, draft: DraftMapping, inventor
   if (key === "selectedProduct") return inventoryProducts.find((item) => item.id === draft.components[0]?.backeventInventoryItemId)?.name;
   if (key === "mappingAction") return mappingActionLabel(draft.mappingAction);
   if (key === "conversionFactor") return parseDecimalInput(draft.components[0]?.conversionFactor ?? "");
+  if (key === "drawStatus") return draftCanDrawInventory(draft) ? "Trækker" : "Trækker ikke";
   return statusLabel(draft.status);
 }
 
@@ -890,6 +892,10 @@ function applySavedMappingToPreview(preview: PreviewResponse, mapping: SavedMapp
 
 function hasValidDraftComponents(components: DraftComponent[]) {
   return components.length > 0 && components.every((component) => component.backeventInventoryItemId && parseDecimalInput(component.conversionFactor) !== null);
+}
+
+function draftCanDrawInventory(draft: DraftMapping) {
+  return draft.status === "approved" && draft.mappingAction === "consume_stock" && hasValidDraftComponents(draft.components);
 }
 
 function hasValidMappingComponents(components: MappingComponent[]) {
