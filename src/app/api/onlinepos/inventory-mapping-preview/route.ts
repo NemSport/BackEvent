@@ -63,6 +63,8 @@ type MappingPreviewProduct = {
   backeventInventoryItemId: string | null;
   conversionFactor: number | null;
   canAffectInventory: boolean;
+  matchedMappingId: string | null;
+  matchedBy: "product_id" | "name" | null;
 };
 
 type ClassifiedLine = {
@@ -84,6 +86,11 @@ type SafePagination = {
 
 type TokenResponse = {
   access_token?: string;
+};
+
+type MappingMatch = {
+  mapping: OnlinePosInventoryMapping;
+  matchedBy: "product_id" | "name";
 };
 
 const restBaseUrl = "https://rest.onlinepos.dk";
@@ -268,10 +275,11 @@ export async function GET(request: Request) {
       getSavedMappings(accessTokenForData),
     ]);
     const products = buildMappingProducts(parsed.transactions, backeventProducts, savedMappings);
-    const mappingCount = products.filter((product) => product.mappingStatus === "approved").length;
-    const matchedMappingCount = products.filter((product) => Boolean(findSavedMappingForProduct(product, savedMappings))).length;
+    const mappingCount = savedMappings.length;
+    const matchedProducts = products.filter((product) => product.matchedMappingId);
+    const matchedMappingCount = matchedProducts.length;
     const mappedProductIds = products
-      .filter((product) => Boolean(findSavedMappingForProduct(product, savedMappings)))
+      .filter((product) => product.matchedMappingId)
       .map((product) => normalizeOnlinePosId(product.onlinepos_product_id) ?? product.onlinepos_product_name ?? "unknown");
 
     if (products.length === 0) {
@@ -430,24 +438,25 @@ async function getSavedMappings(accessToken?: string): Promise<OnlinePosInventor
     .from("onlinepos_inventory_mappings")
     .select(
       "id,onlinepos_product_id,onlinepos_product_name,onlinepos_product_group_name,line_type,backevent_inventory_item_id,conversion_factor,mapping_action,status,created_at,updated_at",
-    );
+    )
+    .order("onlinepos_product_name", { ascending: true });
 
   if (error) {
     return [];
   }
 
   return data.map((row) => ({
-    id: row.id,
-    onlineposProductId: row.onlinepos_product_id,
-    onlineposProductName: row.onlinepos_product_name,
-    onlineposProductGroupName: row.onlinepos_product_group_name,
+    id: String(row.id),
+    onlineposProductId: normalizeOnlinePosId(row.onlinepos_product_id),
+    onlineposProductName: stringOrNull(row.onlinepos_product_name),
+    onlineposProductGroupName: stringOrNull(row.onlinepos_product_group_name),
     lineType: row.line_type,
-    backeventInventoryItemId: row.backevent_inventory_item_id,
+    backeventInventoryItemId: stringOrNull(row.backevent_inventory_item_id),
     conversionFactor: row.conversion_factor === null ? null : Number(row.conversion_factor),
     mappingAction: row.mapping_action,
     status: row.status,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    createdAt: stringOrNull(row.created_at),
+    updatedAt: stringOrNull(row.updated_at),
   }));
 }
 
@@ -498,13 +507,23 @@ function toMappingProduct(
   backeventProducts: Product[],
   savedMappings: OnlinePosInventoryMapping[],
 ): MappingPreviewProduct {
-  const savedMapping = findSavedMapping(line, savedMappings);
+  const savedMappingMatch = findSavedMapping(line, savedMappings);
+  const savedMapping = savedMappingMatch?.mapping;
   const mappedProduct = savedMapping?.backeventInventoryItemId
     ? backeventProducts.find((product) => product.id === savedMapping.backeventInventoryItemId)
     : undefined;
   const mappingStatus: MappingStatus = savedMapping?.status ?? "unmapped";
   const mappingAction = savedMapping?.mappingAction ?? getDefaultMappingAction(line);
-  const canAffectInventory = mappingStatus === "approved" && mappingAction === "consume_stock";
+  const conversionFactor = savedMapping
+    ? savedMapping.conversionFactor
+    : mappedProduct && mappingAction === "consume_stock"
+      ? mappedProduct.salesUnitQuantity ?? 1
+      : null;
+  const canAffectInventory =
+    savedMapping?.status === "approved" &&
+    savedMapping.mappingAction === "consume_stock" &&
+    Boolean(savedMapping.backeventInventoryItemId) &&
+    savedMapping.conversionFactor !== null;
 
   return {
     onlinepos_product_id: line.onlineposProductId,
@@ -516,51 +535,34 @@ function toMappingProduct(
     mappingStatus,
     mappingAction,
     backeventInventoryItemId: savedMapping?.backeventInventoryItemId ?? null,
-    conversionFactor: savedMapping?.conversionFactor ?? (mappedProduct && mappingAction === "consume_stock" ? mappedProduct.salesUnitQuantity ?? 1 : null),
+    conversionFactor,
     canAffectInventory,
+    matchedMappingId: savedMapping?.id ?? null,
+    matchedBy: savedMappingMatch?.matchedBy ?? null,
   };
 }
 
-function findSavedMapping(line: ClassifiedLine, savedMappings: OnlinePosInventoryMapping[]) {
+function findSavedMapping(line: ClassifiedLine, savedMappings: OnlinePosInventoryMapping[]): MappingMatch | null {
   const onlineposId = normalizeOnlinePosId(line.onlineposProductId);
 
   if (onlineposId) {
-    return savedMappings.find((mapping) => normalizeOnlinePosId(mapping.onlineposProductId) === onlineposId);
+    const mapping = savedMappings.find((item) => normalizeOnlinePosId(item.onlineposProductId) === onlineposId);
+    return mapping ? { mapping, matchedBy: "product_id" } : null;
   }
 
   const onlineposName = normalizeName(line.onlineposProductName);
 
   if (!onlineposName) {
-    return undefined;
+    return null;
   }
 
-  return savedMappings.find(
-    (mapping) =>
-      !normalizeOnlinePosId(mapping.onlineposProductId) &&
-      normalizeName(mapping.onlineposProductName) === onlineposName &&
-      mapping.lineType === line.lineType,
+  const mapping = savedMappings.find(
+    (item) =>
+      !normalizeOnlinePosId(item.onlineposProductId) &&
+      normalizeName(item.onlineposProductName) === onlineposName &&
+      item.lineType === line.lineType,
   );
-}
-
-function findSavedMappingForProduct(product: MappingPreviewProduct, savedMappings: OnlinePosInventoryMapping[]) {
-  const onlineposId = normalizeOnlinePosId(product.onlinepos_product_id);
-
-  if (onlineposId) {
-    return savedMappings.find((mapping) => normalizeOnlinePosId(mapping.onlineposProductId) === onlineposId);
-  }
-
-  const onlineposName = normalizeName(product.onlinepos_product_name);
-
-  if (!onlineposName) {
-    return undefined;
-  }
-
-  return savedMappings.find(
-    (mapping) =>
-      !normalizeOnlinePosId(mapping.onlineposProductId) &&
-      normalizeName(mapping.onlineposProductName) === onlineposName &&
-      mapping.lineType === product.lineType,
-  );
+  return mapping ? { mapping, matchedBy: "name" } : null;
 }
 
 function getDefaultMappingAction(line: ClassifiedLine): MappingAction {
@@ -773,12 +775,24 @@ function stringifyValue(value: unknown) {
   return String(value);
 }
 
-function normalizeOnlinePosId(value: string | number | null | undefined) {
+function normalizeOnlinePosId(value: unknown) {
   if (value === null || value === undefined) {
     return null;
   }
 
   return String(value).trim() || null;
+}
+
+function stringOrNull(value: unknown) {
+  if (typeof value === "number") {
+    return String(value);
+  }
+
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  return value.trim() || null;
 }
 
 function normalizeName(value: string | null | undefined) {
