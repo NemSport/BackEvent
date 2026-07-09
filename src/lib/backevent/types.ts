@@ -13,6 +13,11 @@ export type Product = {
   lowThreshold: number;
   criticalThreshold: number;
   unitsPerCase?: number | null;
+  purchaseUnitLabel?: string | null;
+  unitsPerPurchaseUnit?: number | null;
+  stockUnitLabel?: string | null;
+  contentPerStockUnit?: number | null;
+  consumptionUnitLabel?: string | null;
   sortOrder?: number;
   active?: boolean;
 };

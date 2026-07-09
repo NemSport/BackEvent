@@ -471,7 +471,7 @@ async function getBackeventProducts(accessToken?: string): Promise<Product[]> {
 
   const { data, error } = await supabase
     .from("backevent_products")
-    .select("id,name,unit,tracking_mode,onlinepos_product_id,onlinepos_name,sales_unit_quantity,liters_per_sale,units_per_case,sort_order,active")
+    .select("id,name,unit,tracking_mode,onlinepos_product_id,onlinepos_name,sales_unit_quantity,liters_per_sale,units_per_case,purchase_unit_label,units_per_purchase_unit,stock_unit_label,content_per_stock_unit,consumption_unit_label,sort_order,active")
     .eq("active", true);
 
   if (error) {
@@ -488,6 +488,11 @@ async function getBackeventProducts(accessToken?: string): Promise<Product[]> {
     salesUnitQuantity: Number(row.sales_unit_quantity ?? 1),
     litersPerSale: row.liters_per_sale === null ? null : Number(row.liters_per_sale),
     unitsPerCase: row.units_per_case,
+    purchaseUnitLabel: row.purchase_unit_label ?? row.unit ?? "kasser",
+    unitsPerPurchaseUnit: row.units_per_purchase_unit === null ? row.units_per_case ?? 1 : Number(row.units_per_purchase_unit),
+    stockUnitLabel: row.stock_unit_label ?? row.unit ?? "kasser",
+    contentPerStockUnit: row.content_per_stock_unit === null ? 1 : Number(row.content_per_stock_unit),
+    consumptionUnitLabel: row.consumption_unit_label ?? row.unit ?? "kasser",
     sortOrder: row.sort_order,
     active: row.active,
     lowThreshold: 10,

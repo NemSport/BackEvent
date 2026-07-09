@@ -37,6 +37,9 @@ type CreateStockMovementInput = {
   createdByName?: string | null;
 };
 
+const productSelectColumns =
+  "id,name,unit,tracking_mode,onlinepos_product_id,onlinepos_name,sales_unit_quantity,liters_per_sale,units_per_case,purchase_unit_label,units_per_purchase_unit,stock_unit_label,content_per_stock_unit,consumption_unit_label,sort_order,active";
+
 type CreateOpeningClosingStatusInput = {
   locationId: string;
   type: "opening" | "closing";
@@ -105,7 +108,7 @@ export async function getProducts(): Promise<Product[]> {
 
   const { data, error } = await supabase
     .from("backevent_products")
-    .select("id,name,unit,tracking_mode,onlinepos_product_id,onlinepos_name,sales_unit_quantity,liters_per_sale,units_per_case,sort_order,active")
+    .select(productSelectColumns)
     .eq("active", true)
     .eq("tracking_mode", "inventory")
     .order("sort_order");
@@ -124,6 +127,11 @@ export async function getProducts(): Promise<Product[]> {
     salesUnitQuantity: Number(row.sales_unit_quantity ?? 1),
     litersPerSale: row.liters_per_sale === null ? null : Number(row.liters_per_sale),
     unitsPerCase: row.units_per_case,
+    purchaseUnitLabel: row.purchase_unit_label,
+    unitsPerPurchaseUnit: row.units_per_purchase_unit === null ? null : Number(row.units_per_purchase_unit),
+    stockUnitLabel: row.stock_unit_label,
+    contentPerStockUnit: row.content_per_stock_unit === null ? null : Number(row.content_per_stock_unit),
+    consumptionUnitLabel: row.consumption_unit_label,
     sortOrder: row.sort_order,
     active: row.active,
   }));
@@ -779,7 +787,7 @@ export async function getProductsAdmin() {
 
   const { data, error } = await supabase
     .from("backevent_products")
-    .select("id,name,unit,tracking_mode,onlinepos_product_id,onlinepos_name,sales_unit_quantity,liters_per_sale,units_per_case,sort_order,active")
+    .select(productSelectColumns)
     .order("sort_order");
 
   if (error) throw error;
@@ -794,6 +802,11 @@ export async function getProductsAdmin() {
     salesUnitQuantity: Number(row.sales_unit_quantity ?? 1),
     litersPerSale: row.liters_per_sale === null ? null : Number(row.liters_per_sale),
     unitsPerCase: row.units_per_case,
+    purchaseUnitLabel: row.purchase_unit_label,
+    unitsPerPurchaseUnit: row.units_per_purchase_unit === null ? null : Number(row.units_per_purchase_unit),
+    stockUnitLabel: row.stock_unit_label,
+    contentPerStockUnit: row.content_per_stock_unit === null ? null : Number(row.content_per_stock_unit),
+    consumptionUnitLabel: row.consumption_unit_label,
     sortOrder: row.sort_order,
     active: row.active,
   }));
@@ -808,6 +821,11 @@ export async function createProduct(input: {
   salesUnitQuantity?: number;
   litersPerSale?: number | null;
   unitsPerCase?: number | null;
+  purchaseUnitLabel?: string | null;
+  unitsPerPurchaseUnit?: number | null;
+  stockUnitLabel?: string | null;
+  contentPerStockUnit?: number | null;
+  consumptionUnitLabel?: string | null;
   active?: boolean;
   sortOrder?: number;
 }) {
@@ -824,6 +842,11 @@ export async function createProduct(input: {
       salesUnitQuantity: input.salesUnitQuantity ?? 1,
       litersPerSale: input.litersPerSale ?? null,
       unitsPerCase: input.unitsPerCase ?? null,
+      purchaseUnitLabel: input.purchaseUnitLabel ?? input.unit ?? "kasser",
+      unitsPerPurchaseUnit: input.unitsPerPurchaseUnit ?? input.unitsPerCase ?? 1,
+      stockUnitLabel: input.stockUnitLabel ?? input.unit ?? "kasser",
+      contentPerStockUnit: input.contentPerStockUnit ?? 1,
+      consumptionUnitLabel: input.consumptionUnitLabel ?? input.unit ?? "kasser",
       active: input.active ?? true,
       sortOrder: input.sortOrder ?? mockStore.products.length + 1,
       ...thresholdsForProduct(input.name),
@@ -843,6 +866,11 @@ export async function createProduct(input: {
       sales_unit_quantity: input.salesUnitQuantity ?? 1,
       liters_per_sale: input.litersPerSale ?? null,
       units_per_case: input.unitsPerCase ?? null,
+      purchase_unit_label: input.purchaseUnitLabel ?? input.unit ?? "kasser",
+      units_per_purchase_unit: input.unitsPerPurchaseUnit ?? input.unitsPerCase ?? 1,
+      stock_unit_label: input.stockUnitLabel ?? input.unit ?? "kasser",
+      content_per_stock_unit: input.contentPerStockUnit ?? 1,
+      consumption_unit_label: input.consumptionUnitLabel ?? input.unit ?? "kasser",
       active: input.active ?? true,
       sort_order: input.sortOrder ?? 999,
     })
@@ -864,6 +892,11 @@ export async function updateProduct(
     salesUnitQuantity: number;
     litersPerSale?: number | null;
     unitsPerCase?: number | null;
+    purchaseUnitLabel?: string | null;
+    unitsPerPurchaseUnit?: number | null;
+    stockUnitLabel?: string | null;
+    contentPerStockUnit?: number | null;
+    consumptionUnitLabel?: string | null;
     active: boolean;
     sortOrder: number;
   },
@@ -881,6 +914,11 @@ export async function updateProduct(
       product.salesUnitQuantity = input.salesUnitQuantity;
       product.litersPerSale = input.litersPerSale ?? null;
       product.unitsPerCase = input.unitsPerCase ?? null;
+      product.purchaseUnitLabel = input.purchaseUnitLabel ?? input.unit ?? "kasser";
+      product.unitsPerPurchaseUnit = input.unitsPerPurchaseUnit ?? input.unitsPerCase ?? 1;
+      product.stockUnitLabel = input.stockUnitLabel ?? input.unit ?? "kasser";
+      product.contentPerStockUnit = input.contentPerStockUnit ?? 1;
+      product.consumptionUnitLabel = input.consumptionUnitLabel ?? input.unit ?? "kasser";
       product.active = input.active;
       product.sortOrder = input.sortOrder;
     }
@@ -898,6 +936,11 @@ export async function updateProduct(
       sales_unit_quantity: input.salesUnitQuantity,
       liters_per_sale: input.litersPerSale ?? null,
       units_per_case: input.unitsPerCase ?? null,
+      purchase_unit_label: input.purchaseUnitLabel ?? input.unit ?? "kasser",
+      units_per_purchase_unit: input.unitsPerPurchaseUnit ?? input.unitsPerCase ?? 1,
+      stock_unit_label: input.stockUnitLabel ?? input.unit ?? "kasser",
+      content_per_stock_unit: input.contentPerStockUnit ?? 1,
+      consumption_unit_label: input.consumptionUnitLabel ?? input.unit ?? "kasser",
       active: input.active,
       sort_order: input.sortOrder,
     })
@@ -1176,6 +1219,11 @@ function withProductDefaults(product: Partial<Product> & { id: string; name: str
     salesUnitQuantity: product.salesUnitQuantity ?? 1,
     litersPerSale: product.litersPerSale ?? null,
     unitsPerCase: product.unitsPerCase ?? null,
+    purchaseUnitLabel: product.purchaseUnitLabel ?? product.unit ?? "kasser",
+    unitsPerPurchaseUnit: product.unitsPerPurchaseUnit ?? product.unitsPerCase ?? 1,
+    stockUnitLabel: product.stockUnitLabel ?? product.unit ?? "kasser",
+    contentPerStockUnit: product.contentPerStockUnit ?? 1,
+    consumptionUnitLabel: product.consumptionUnitLabel ?? product.unit ?? "kasser",
     sortOrder: product.sortOrder,
     active: product.active ?? true,
     ...thresholdsForProduct(product.name),

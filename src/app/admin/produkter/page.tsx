@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/backevent/app-shell";
@@ -15,12 +15,17 @@ type ProductFormInput = {
   salesUnitQuantity?: number;
   litersPerSale?: number | null;
   unitsPerCase?: number | null;
+  purchaseUnitLabel?: string | null;
+  unitsPerPurchaseUnit?: number | null;
+  stockUnitLabel?: string | null;
+  contentPerStockUnit?: number | null;
+  consumptionUnitLabel?: string | null;
   active?: boolean;
   sortOrder?: number;
 };
 
 type SortDirection = "asc" | "desc";
-type ProductSortKey = "name" | "unit" | "trackingMode" | "unitsPerCase" | "salesUnitQuantity" | "litersPerSale" | "onlinepos" | "sortOrder" | "active";
+type ProductSortKey = "name" | "purchase" | "stock" | "consumption" | "trackingMode" | "onlinepos" | "sortOrder" | "active";
 type ProductSort = { key: ProductSortKey; direction: SortDirection } | null;
 
 export default function AdminProdukterPage() {
@@ -64,6 +69,11 @@ export default function AdminProdukterPage() {
         ...input,
         trackingMode: input.trackingMode ?? "inventory",
         salesUnitQuantity: input.salesUnitQuantity ?? 1,
+        purchaseUnitLabel: input.purchaseUnitLabel ?? input.unit,
+        unitsPerPurchaseUnit: input.unitsPerPurchaseUnit ?? input.unitsPerCase,
+        stockUnitLabel: input.stockUnitLabel ?? input.unit,
+        contentPerStockUnit: input.contentPerStockUnit,
+        consumptionUnitLabel: input.consumptionUnitLabel ?? input.unit,
         active: input.active ?? true,
         sortOrder: input.sortOrder ?? editingProduct.sortOrder ?? 999,
       });
@@ -117,13 +127,12 @@ export default function AdminProdukterPage() {
       {message ? <p className="mb-4 rounded-2xl bg-soft p-4 text-base font-bold text-pantone140">{message}</p> : null}
 
       <section className="overflow-hidden rounded-[1.5rem] border border-line bg-macro shadow-soft">
-        <div className="hidden grid-cols-[1.4fr_0.7fr_0.9fr_0.7fr_0.7fr_0.8fr_1fr_0.7fr_0.6fr_0.7fr] gap-3 border-b border-line bg-soft px-4 py-3 text-xs font-bold uppercase tracking-wide text-muted xl:grid">
+        <div className="hidden grid-cols-[1.4fr_0.95fr_0.95fr_0.95fr_0.85fr_1fr_0.55fr_0.5fr_0.65fr] gap-3 border-b border-line bg-soft px-4 py-3 text-xs font-bold uppercase tracking-wide text-muted xl:grid">
           <SortableHeader label="Navn" sortKey="name" sort={sort} onSort={toggleSort} />
-          <SortableHeader label="Enhed" sortKey="unit" sort={sort} onSort={toggleSort} />
+          <SortableHeader label="IndkÃ¸b" sortKey="purchase" sort={sort} onSort={toggleSort} />
+          <SortableHeader label="Lager" sortKey="stock" sort={sort} onSort={toggleSort} />
+          <SortableHeader label="Forbrug" sortKey="consumption" sort={sort} onSort={toggleSort} />
           <SortableHeader label="Lagerstyring" sortKey="trackingMode" sort={sort} onSort={toggleSort} />
-          <SortableHeader label="Units/case" sortKey="unitsPerCase" sort={sort} onSort={toggleSort} />
-          <SortableHeader label="Salgsantal" sortKey="salesUnitQuantity" sort={sort} onSort={toggleSort} />
-          <SortableHeader label="Liter pr. salg" sortKey="litersPerSale" sort={sort} onSort={toggleSort} />
           <SortableHeader label="OnlinePOS" sortKey="onlinepos" sort={sort} onSort={toggleSort} />
           <SortableHeader label="Sortering" sortKey="sortOrder" sort={sort} onSort={toggleSort} />
           <SortableHeader label="Aktiv" sortKey="active" sort={sort} onSort={toggleSort} />
@@ -166,23 +175,22 @@ function SortableHeader({
   return (
     <button type="button" onClick={() => onSort(sortKey)} className="flex min-w-0 items-center gap-1 text-left font-bold uppercase tracking-wide hover:text-ink">
       <span className="truncate">{label}</span>
-      {direction ? <span aria-hidden="true">{direction === "asc" ? "↑" : "↓"}</span> : null}
+      {direction ? <span aria-hidden="true">{direction === "asc" ? "â†‘" : "â†“"}</span> : null}
     </button>
   );
 }
 
 function ProductRow({ product, onEdit }: { product: Product; onEdit: () => void }) {
   return (
-    <article className="grid gap-2 px-4 py-3 text-sm font-medium text-ink xl:grid-cols-[1.4fr_0.7fr_0.9fr_0.7fr_0.7fr_0.8fr_1fr_0.7fr_0.6fr_0.7fr] xl:items-center">
+    <article className="grid gap-2 px-4 py-3 text-sm font-medium text-ink xl:grid-cols-[1.4fr_0.95fr_0.95fr_0.95fr_0.85fr_1fr_0.55fr_0.5fr_0.65fr] xl:items-center">
       <div>
         <p className="font-bold">{product.name}</p>
-        <p className="text-xs text-muted xl:hidden">{trackingLabel(product.trackingMode)} · {product.unit}</p>
+        <p className="text-xs text-muted xl:hidden">{trackingLabel(product.trackingMode)} · {formatPackage(product)}</p>
       </div>
-      <span className="hidden xl:block">{product.unit}</span>
+      <span className="hidden xl:block">{formatPurchase(product)}</span>
+      <span className="hidden xl:block">{formatStock(product)}</span>
+      <span className="hidden xl:block">{formatConsumption(product)}</span>
       <span className="hidden xl:block">{trackingLabel(product.trackingMode)}</span>
-      <span className="hidden xl:block">{formatValue(product.unitsPerCase)}</span>
-      <span className="hidden xl:block">{product.salesUnitQuantity ?? 1}</span>
-      <span className="hidden xl:block">{formatValue(product.litersPerSale)}</span>
       <span className="text-muted xl:text-ink">{product.onlineposName || product.onlineposProductId || "-"}</span>
       <span className="hidden xl:block">{product.sortOrder ?? "-"}</span>
       <span className="hidden xl:block">{product.active === false ? "Nej" : "Ja"}</span>
@@ -195,13 +203,16 @@ function ProductRow({ product, onEdit }: { product: Product; onEdit: () => void 
 
 function ProductModal({ product, onClose, onSave }: { product?: Product; onClose: () => void; onSave: (input: ProductFormInput) => Promise<void> }) {
   const [name, setName] = useState(product?.name ?? "");
-  const [unit, setUnit] = useState(product?.unit ?? "kasser");
   const [trackingMode, setTrackingMode] = useState<ProductTrackingMode>(product?.trackingMode ?? "inventory");
   const [salesUnitQuantity, setSalesUnitQuantity] = useState((product?.salesUnitQuantity ?? 1).toString());
   const [litersPerSale, setLitersPerSale] = useState(product?.litersPerSale?.toString() ?? "");
   const [onlineposProductId, setOnlineposProductId] = useState(product?.onlineposProductId ?? "");
   const [onlineposName, setOnlineposName] = useState(product?.onlineposName ?? "");
-  const [unitsPerCase, setUnitsPerCase] = useState(product?.unitsPerCase?.toString() ?? "");
+  const [purchaseUnitLabel, setPurchaseUnitLabel] = useState(product?.purchaseUnitLabel ?? product?.unit ?? "kasse");
+  const [unitsPerPurchaseUnit, setUnitsPerPurchaseUnit] = useState((product?.unitsPerPurchaseUnit ?? product?.unitsPerCase ?? 1).toString());
+  const [stockUnitLabel, setStockUnitLabel] = useState(product?.stockUnitLabel ?? product?.unit ?? "stk");
+  const [contentPerStockUnit, setContentPerStockUnit] = useState((product?.contentPerStockUnit ?? 1).toString());
+  const [consumptionUnitLabel, setConsumptionUnitLabel] = useState(product?.consumptionUnitLabel ?? product?.unit ?? "stk");
   const [active, setActive] = useState(product?.active ?? true);
   const [sortOrder, setSortOrder] = useState((product?.sortOrder ?? 999).toString());
   const [isSaving, setIsSaving] = useState(false);
@@ -210,13 +221,18 @@ function ProductModal({ product, onClose, onSave }: { product?: Product; onClose
     setIsSaving(true);
     await onSave({
       name,
-      unit,
+      unit: purchaseUnitLabel || "kasser",
       trackingMode,
       salesUnitQuantity: salesUnitQuantity ? Number(salesUnitQuantity) : 1,
       litersPerSale: litersPerSale ? Number(litersPerSale) : null,
       onlineposProductId: onlineposProductId.trim() || null,
       onlineposName: onlineposName.trim() || null,
-      unitsPerCase: unitsPerCase ? Number(unitsPerCase) : null,
+      unitsPerCase: unitsPerPurchaseUnit ? Number(unitsPerPurchaseUnit) : null,
+      purchaseUnitLabel: purchaseUnitLabel.trim() || null,
+      unitsPerPurchaseUnit: unitsPerPurchaseUnit ? Number(unitsPerPurchaseUnit) : null,
+      stockUnitLabel: stockUnitLabel.trim() || null,
+      contentPerStockUnit: contentPerStockUnit ? Number(contentPerStockUnit) : null,
+      consumptionUnitLabel: consumptionUnitLabel.trim() || null,
       active,
       sortOrder: Number(sortOrder),
     });
@@ -227,7 +243,6 @@ function ProductModal({ product, onClose, onSave }: { product?: Product; onClose
     <Modal title={product ? "Rediger produkt" : "Opret produkt"} onClose={onClose}>
       <div className="grid gap-3 md:grid-cols-2">
         <Input label="Navn" value={name} onChange={setName} />
-        <Input label="Enhed" value={unit} onChange={setUnit} />
         <label className="block">
           <span className="text-base font-bold text-ink">Lagerstyring</span>
           <select value={trackingMode} onChange={(event) => setTrackingMode(event.target.value as ProductTrackingMode)} className="mt-2 min-h-12 w-full rounded-2xl border border-line px-3 py-2 font-bold outline-none focus:border-pantone140">
@@ -236,11 +251,34 @@ function ProductModal({ product, onClose, onSave }: { product?: Product; onClose
             <option value="ignore">Ignorer</option>
           </select>
         </label>
-        <Input label="Units/case" value={unitsPerCase} onChange={setUnitsPerCase} />
-        <Input label="Salgsantal" value={salesUnitQuantity} onChange={setSalesUnitQuantity} />
-        <Input label="Liter pr. salg" value={litersPerSale} onChange={setLitersPerSale} />
-        <Input label="OnlinePOS ID" value={onlineposProductId} onChange={setOnlineposProductId} />
-        <Input label="OnlinePOS navn" value={onlineposName} onChange={setOnlineposName} />
+      </div>
+
+      <section className="mt-5 rounded-2xl border border-line bg-soft p-4">
+        <h3 className="text-lg font-bold text-ink">Indkøb og optælling</h3>
+        <div className="mt-3 grid gap-3 md:grid-cols-2">
+          <Input label="Indkøbsenhed" value={purchaseUnitLabel} onChange={setPurchaseUnitLabel} />
+          <Input label="Antal pr. indkøbsenhed" value={unitsPerPurchaseUnit} onChange={setUnitsPerPurchaseUnit} />
+          <Input label="Lagerenhed" value={stockUnitLabel} onChange={setStockUnitLabel} />
+          <Input label="Indhold pr. lagerenhed" value={contentPerStockUnit} onChange={setContentPerStockUnit} />
+          <Input label="Forbrugsenhed" value={consumptionUnitLabel} onChange={setConsumptionUnitLabel} />
+        </div>
+        <p className="mt-3 text-sm font-bold text-muted">
+          1 {purchaseUnitLabel || "indkøbsenhed"} = {formatCalculatedConsumption(unitsPerPurchaseUnit, contentPerStockUnit)} {consumptionUnitLabel || "forbrugsenheder"}
+        </p>
+      </section>
+
+      <details className="mt-5 rounded-2xl border border-line bg-macro p-4">
+        <summary className="cursor-pointer text-lg font-bold text-ink">Direkte OnlinePOS kobling</summary>
+        <p className="mt-2 text-sm font-bold text-muted">Valgfrit. Bruges kun hvis varen selv skal kobles direkte til OnlinePOS.</p>
+        <div className="mt-3 grid gap-3 md:grid-cols-2">
+          <Input label="OnlinePOS ID" value={onlineposProductId} onChange={setOnlineposProductId} />
+          <Input label="OnlinePOS navn" value={onlineposName} onChange={setOnlineposName} />
+          <Input label="Salgsantal" value={salesUnitQuantity} onChange={setSalesUnitQuantity} />
+          <Input label="Liter pr. salg" value={litersPerSale} onChange={setLitersPerSale} />
+        </div>
+      </details>
+
+      <div className="mt-5 grid gap-3 md:grid-cols-2">
         <Input label="Sortering" value={sortOrder} onChange={setSortOrder} />
         <label className="flex items-center gap-2 text-lg font-bold text-ink">
           <input type="checkbox" checked={active} onChange={(event) => setActive(event.target.checked)} />
@@ -284,8 +322,44 @@ function trackingLabel(mode?: ProductTrackingMode) {
   return "Lagerstyret";
 }
 
-function formatValue(value?: number | null) {
-  return value ?? "-";
+function formatPurchase(product: Product) {
+  const label = product.purchaseUnitLabel ?? product.unit;
+  const amount = product.unitsPerPurchaseUnit ?? product.unitsPerCase ?? 1;
+  return `${amount} pr. ${label}`;
+}
+
+function formatStock(product: Product) {
+  return product.stockUnitLabel ?? product.unit;
+}
+
+function formatConsumption(product: Product) {
+  const content = product.contentPerStockUnit ?? 1;
+  const stockUnit = product.stockUnitLabel ?? product.unit;
+  const consumptionUnit = product.consumptionUnitLabel ?? product.unit;
+  return `${content} ${consumptionUnit}/${stockUnit}`;
+}
+
+function formatPackage(product: Product) {
+  const purchaseUnit = product.purchaseUnitLabel ?? product.unit;
+  const stockUnit = product.stockUnitLabel ?? product.unit;
+  const consumptionUnit = product.consumptionUnitLabel ?? product.unit;
+  const total = (product.unitsPerPurchaseUnit ?? product.unitsPerCase ?? 1) * (product.contentPerStockUnit ?? 1);
+  return `1 ${purchaseUnit} = ${formatNumber(total)} ${consumptionUnit} (${stockUnit})`;
+}
+
+function formatCalculatedConsumption(unitsPerPurchaseUnit: string, contentPerStockUnit: string) {
+  const units = Number(unitsPerPurchaseUnit);
+  const content = Number(contentPerStockUnit);
+
+  if (!Number.isFinite(units) || !Number.isFinite(content)) {
+    return "-";
+  }
+
+  return formatNumber(units * content);
+}
+
+function formatNumber(value: number) {
+  return Number.isInteger(value) ? value.toString() : value.toLocaleString("da-DK", { maximumFractionDigits: 2 });
 }
 
 function sortProducts(products: Product[], sort: ProductSort) {
@@ -298,11 +372,10 @@ function sortProducts(products: Product[], sort: ProductSort) {
 
 function productSortValue(product: Product, key: ProductSortKey) {
   if (key === "name") return product.name;
-  if (key === "unit") return product.unit;
+  if (key === "purchase") return product.purchaseUnitLabel ?? product.unit;
+  if (key === "stock") return product.stockUnitLabel ?? product.unit;
+  if (key === "consumption") return product.consumptionUnitLabel ?? product.unit;
   if (key === "trackingMode") return trackingLabel(product.trackingMode);
-  if (key === "unitsPerCase") return product.unitsPerCase;
-  if (key === "salesUnitQuantity") return product.salesUnitQuantity ?? 1;
-  if (key === "litersPerSale") return product.litersPerSale;
   if (key === "onlinepos") return product.onlineposName || product.onlineposProductId;
   if (key === "sortOrder") return product.sortOrder;
   return product.active === false ? "Nej" : "Ja";
