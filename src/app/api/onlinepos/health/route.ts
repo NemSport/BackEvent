@@ -11,7 +11,8 @@ type HealthResponse = {
   testedUrlHostOnly: string;
   hasClientId: boolean;
   hasClientSecret: boolean;
-  hasTarget: boolean;
+  hasConcern: boolean;
+  hasVenueId: boolean;
 };
 
 type TokenResponse = {
@@ -26,14 +27,15 @@ const timeoutMs = 8000;
 export async function GET() {
   const hasClientId = Boolean(process.env.ONLINEPOS_CLIENT_ID);
   const hasClientSecret = Boolean(process.env.ONLINEPOS_CLIENT_SECRET);
-  const hasTarget = Boolean(process.env.ONLINEPOS_TARGET);
+  const hasConcern = Boolean(process.env.ONLINEPOS_CONCERN);
+  const hasVenueId = Boolean(process.env.ONLINEPOS_VENUE_ID);
 
-  if (!hasClientId || !hasClientSecret || !hasTarget) {
+  if (!hasClientId || !hasClientSecret || !hasConcern || !hasVenueId) {
     return jsonHealth({
       ok: false,
       onlineposReachable: false,
       status: null,
-      message: missingEnvMessage({ hasClientId, hasClientSecret, hasTarget }),
+      message: missingEnvMessage({ hasClientId, hasClientSecret, hasConcern, hasVenueId }),
       tokenRequestStatus: null,
       reportRequestStatus: null,
     });
@@ -87,7 +89,7 @@ export async function GET() {
       });
     }
 
-    const reportResponse = await fetch(reportUrlWithTarget(), {
+    const reportResponse = await fetch(reportUrlWithVenueScope(), {
       method: "GET",
       headers: {
         Accept: "application/json",
@@ -145,7 +147,7 @@ export async function GET() {
 }
 
 function jsonHealth(
-  body: Omit<HealthResponse, "authMode" | "testedUrlHostOnly" | "hasClientId" | "hasClientSecret" | "hasTarget">,
+  body: Omit<HealthResponse, "authMode" | "testedUrlHostOnly" | "hasClientId" | "hasClientSecret" | "hasConcern" | "hasVenueId">,
 ) {
   return NextResponse.json({
     ...body,
@@ -153,13 +155,15 @@ function jsonHealth(
     testedUrlHostOnly: "rest.onlinepos.dk",
     hasClientId: Boolean(process.env.ONLINEPOS_CLIENT_ID),
     hasClientSecret: Boolean(process.env.ONLINEPOS_CLIENT_SECRET),
-    hasTarget: Boolean(process.env.ONLINEPOS_TARGET),
+    hasConcern: Boolean(process.env.ONLINEPOS_CONCERN),
+    hasVenueId: Boolean(process.env.ONLINEPOS_VENUE_ID),
   } satisfies HealthResponse);
 }
 
-function reportUrlWithTarget() {
+function reportUrlWithVenueScope() {
   const url = new URL(reportUrl);
-  url.searchParams.set("target", process.env.ONLINEPOS_TARGET ?? "");
+  url.searchParams.set("concern", process.env.ONLINEPOS_CONCERN ?? "");
+  url.searchParams.set("venue_id", JSON.stringify([process.env.ONLINEPOS_VENUE_ID ?? ""]));
   return url;
 }
 
@@ -186,7 +190,7 @@ function reportFailureMessage(status: number) {
   }
 
   if (status === 422) {
-    return "OnlinePOS report request afviser target eller parametre";
+    return "OnlinePOS report request afviser concern, venue eller parametre";
   }
 
   if (status === 401 || status === 403) {
@@ -199,22 +203,29 @@ function reportFailureMessage(status: number) {
 function missingEnvMessage({
   hasClientId,
   hasClientSecret,
-  hasTarget,
+  hasConcern,
+  hasVenueId,
 }: {
   hasClientId: boolean;
   hasClientSecret: boolean;
-  hasTarget: boolean;
+  hasConcern: boolean;
+  hasVenueId: boolean;
 }) {
   const missing = [
     !hasClientId ? "ONLINEPOS_CLIENT_ID" : null,
     !hasClientSecret ? "ONLINEPOS_CLIENT_SECRET" : null,
-    !hasTarget ? "ONLINEPOS_TARGET" : null,
+    !hasConcern ? "ONLINEPOS_CONCERN" : null,
+    !hasVenueId ? "ONLINEPOS_VENUE_ID" : null,
   ].filter(Boolean);
 
   return `OnlinePOS env mangler: ${missing.join(", ")}`;
 }
 
 function safeResponseMessage(text: string) {
+  if (containsSensitiveOnlinePosData(text)) {
+    return "OnlinePOS svarede, men body er skjult af hensyn til følsomme data";
+  }
+
   return text
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "")
@@ -222,4 +233,8 @@ function safeResponseMessage(text: string) {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 500);
+}
+
+function containsSensitiveOnlinePosData(text: string) {
+  return /business_number|access_token|client_secret|client_id/i.test(text);
 }

@@ -35,12 +35,13 @@ export async function GET() {
   const hasClientId = Boolean(process.env.ONLINEPOS_CLIENT_ID);
   const hasClientSecret = Boolean(process.env.ONLINEPOS_CLIENT_SECRET);
   const hasConcern = Boolean(process.env.ONLINEPOS_CONCERN);
+  const hasVenueId = Boolean(process.env.ONLINEPOS_VENUE_ID);
 
-  if (!hasClientId || !hasClientSecret || !hasConcern) {
+  if (!hasClientId || !hasClientSecret || !hasConcern || !hasVenueId) {
     return jsonVenues({
       ok: false,
       status: null,
-      message: missingEnvMessage({ hasClientId, hasClientSecret, hasConcern }),
+      message: missingEnvMessage({ hasClientId, hasClientSecret, hasConcern, hasVenueId }),
       tokenRequestStatus: null,
       venuesRequestStatus: null,
       venueCount: 0,
@@ -100,10 +101,7 @@ export async function GET() {
     url.searchParams.set("concern", process.env.ONLINEPOS_CONCERN ?? "");
     url.searchParams.set("country_code", "DK");
     url.searchParams.set("status", "all");
-
-    if (process.env.ONLINEPOS_VENUE_ID) {
-      url.searchParams.set("venue_id", JSON.stringify([process.env.ONLINEPOS_VENUE_ID]));
-    }
+    url.searchParams.set("venue_id", JSON.stringify([process.env.ONLINEPOS_VENUE_ID ?? ""]));
 
     const venuesResponse = await fetch(url, {
       method: "GET",
@@ -135,7 +133,7 @@ export async function GET() {
     return jsonVenues({
       ok: true,
       status: venuesResponse.status,
-      message: venuesMessage || "OnlinePOS venues svarer",
+      message: "Venues fetched",
       tokenRequestStatus: tokenResponse.status,
       venuesRequestStatus: venuesResponse.status,
       venueCount: venues.length,
@@ -262,21 +260,28 @@ function missingEnvMessage({
   hasClientId,
   hasClientSecret,
   hasConcern,
+  hasVenueId,
 }: {
   hasClientId: boolean;
   hasClientSecret: boolean;
   hasConcern: boolean;
+  hasVenueId: boolean;
 }) {
   const missing = [
     !hasClientId ? "ONLINEPOS_CLIENT_ID" : null,
     !hasClientSecret ? "ONLINEPOS_CLIENT_SECRET" : null,
     !hasConcern ? "ONLINEPOS_CONCERN" : null,
+    !hasVenueId ? "ONLINEPOS_VENUE_ID" : null,
   ].filter(Boolean);
 
   return `OnlinePOS env mangler: ${missing.join(", ")}`;
 }
 
 function safeResponseMessage(text: string) {
+  if (containsSensitiveOnlinePosData(text)) {
+    return "OnlinePOS svarede, men body er skjult af hensyn til følsomme data";
+  }
+
   return text
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "")
@@ -284,4 +289,8 @@ function safeResponseMessage(text: string) {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 500);
+}
+
+function containsSensitiveOnlinePosData(text: string) {
+  return /business_number|access_token|client_secret|client_id/i.test(text);
 }

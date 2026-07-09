@@ -28,7 +28,7 @@ export function getOnlinePosReportsEnvStatus(): OnlinePosReportsEnvStatus {
   const token = process.env.ONLINEPOS_REPORTS_TOKEN;
 
   return {
-    configured: Boolean(baseUrl && token),
+    configured: Boolean(baseUrl && token && process.env.ONLINEPOS_CONCERN && process.env.ONLINEPOS_VENUE_ID),
     hasBaseUrl: Boolean(baseUrl),
     hasToken: Boolean(token),
     baseUrl,
@@ -90,7 +90,7 @@ async function requestOnlinePos(path: string, unixRange?: OnlinePosProbeResult["
   const rawText = await response.text();
   const parsed = parseResponse(rawText, contentType);
   const lines = normalizeSaleLines(parsed.value);
-  const rawPreview = parsed.type === "text" ? summarizeTextResponse(rawText) : rawText.slice(0, 1200);
+  const rawPreview = safeRawPreview(rawText, parsed.type);
 
   return {
     ok: response.ok,
@@ -126,11 +126,11 @@ async function requestOnlinePosReports(path: string): Promise<OnlinePosProbeResu
       status: 0,
       statusText: "Ikke konfigureret",
       contentType: null,
-      summary: emptySummary("ONLINEPOS_REPORTS_TOKEN mangler"),
+      summary: emptySummary("ONLINEPOS_REPORTS_TOKEN, ONLINEPOS_CONCERN eller ONLINEPOS_VENUE_ID mangler"),
       lines: [],
       distinctDepartments: [],
       distinctProducts: [],
-      error: "OnlinePOS Reports env mangler. Sæt ONLINEPOS_REPORTS_TOKEN server-side.",
+      error: "OnlinePOS Reports env mangler. Sæt ONLINEPOS_REPORTS_TOKEN, ONLINEPOS_CONCERN og ONLINEPOS_VENUE_ID server-side.",
     };
   }
 
@@ -144,7 +144,7 @@ async function requestOnlinePosReports(path: string): Promise<OnlinePosProbeResu
   const rawText = await response.text();
   const parsed = parseResponse(rawText, contentType);
   const lines = normalizeSaleLines(parsed.value);
-  const rawPreview = parsed.type === "text" ? summarizeTextResponse(rawText) : rawText.slice(0, 1200);
+  const rawPreview = safeRawPreview(rawText, parsed.type);
 
   return {
     ok: response.ok,
@@ -306,6 +306,8 @@ function emptySummary(rawPreview: string): OnlinePosProbeResult["summary"] {
 function buildReportsSalesPerProductPath(paramMode: OnlinePosReportsParamMode, date: string) {
   const url = new URL(`${defaultReportsBaseUrl}/reports/getSalesPerProduct`);
   const range = getIsoDateRange(date);
+  url.searchParams.set("concern", process.env.ONLINEPOS_CONCERN ?? "");
+  url.searchParams.set("venue_id", JSON.stringify([process.env.ONLINEPOS_VENUE_ID ?? ""]));
 
   if (paramMode === "from_to_iso") {
     url.searchParams.set("from", range.from);
@@ -381,6 +383,10 @@ function getOnlinePosErrorMessage(status: number, rawText: string, statusText: s
 }
 
 function summarizeTextResponse(rawText: string) {
+  if (containsSensitiveOnlinePosData(rawText)) {
+    return "OnlinePOS svarede, men body er skjult af hensyn til følsomme data";
+  }
+
   return rawText
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "")
@@ -388,6 +394,18 @@ function summarizeTextResponse(rawText: string) {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 1200);
+}
+
+function safeRawPreview(rawText: string, responseType: "json" | "text") {
+  if (containsSensitiveOnlinePosData(rawText)) {
+    return "OnlinePOS svarede, men body er skjult af hensyn til følsomme data";
+  }
+
+  return responseType === "text" ? summarizeTextResponse(rawText) : rawText.slice(0, 1200);
+}
+
+function containsSensitiveOnlinePosData(text: string) {
+  return /business_number|access_token|client_secret|client_id/i.test(text);
 }
 
 function normalizeKey(value: string) {
