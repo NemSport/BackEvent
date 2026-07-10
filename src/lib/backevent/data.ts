@@ -23,6 +23,7 @@ import type {
   OpeningClosingStatus,
   OpeningClosingLocationOverview,
   Product,
+  ProductAlertSetting,
   MemberRole,
   StockAdjustment,
   StockAdjustmentType,
@@ -70,6 +71,16 @@ type CreateStockAdjustmentInput = {
 const mockStore = {
   locations: mockLocationsSource.map((location, index) => withLocationDefaults({ ...location, sortOrder: index + 1 })),
   products: mockProductsSource.map((product, index) => withProductDefaults({ ...product, sortOrder: index + 1 })),
+  alertSettings: mockProductsSource.map((product) => ({
+    id: `mock-alert-${product.id}`,
+    inventoryItemId: product.id,
+    locationId: null,
+    lowThreshold: product.lowThreshold,
+    criticalThreshold: product.criticalThreshold,
+    active: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  })) as ProductAlertSetting[],
   balances: mockBalancesSource.map((balance) => ({ ...balance })),
   movements: mockMovementsSource.map((movement) => ({ ...movement })),
   statuses: mockStatusesSource.map((status) => ({ ...status })),
@@ -1067,6 +1078,91 @@ export async function getProductsAdmin() {
     sortOrder: row.sort_order,
     active: row.active,
   }));
+}
+
+export async function getProductAlertSettings(): Promise<ProductAlertSetting[]> {
+  const supabase = createSupabaseBrowserClient();
+
+  if (!supabase) {
+    return mockStore.alertSettings.map((setting) => ({ ...setting }));
+  }
+
+  const { data, error } = await supabase
+    .from("backevent_inventory_alert_settings")
+    .select("id,inventory_item_id,location_id,low_threshold,critical_threshold,active,created_at,updated_at")
+    .order("created_at", { ascending: true });
+
+  if (error) throw error;
+
+  return (data ?? []).map((row) => ({
+    id: row.id,
+    inventoryItemId: row.inventory_item_id,
+    locationId: row.location_id,
+    lowThreshold: row.low_threshold === null ? null : Number(row.low_threshold),
+    criticalThreshold: row.critical_threshold === null ? null : Number(row.critical_threshold),
+    active: row.active ?? true,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+}
+
+export async function upsertProductAlertSetting(
+  productId: string,
+  input: {
+    lowThreshold: number | null;
+    criticalThreshold: number | null;
+    active: boolean;
+  },
+) {
+  const supabase = createSupabaseBrowserClient();
+
+  if (!supabase) {
+    const existing = mockStore.alertSettings.find((setting) => setting.inventoryItemId === productId && !setting.locationId);
+    if (existing) {
+      existing.lowThreshold = input.lowThreshold;
+      existing.criticalThreshold = input.criticalThreshold;
+      existing.active = input.active;
+      existing.updatedAt = new Date().toISOString();
+    } else {
+      mockStore.alertSettings.push({
+        id: createMockId(),
+        inventoryItemId: productId,
+        locationId: null,
+        lowThreshold: input.lowThreshold,
+        criticalThreshold: input.criticalThreshold,
+        active: input.active,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    }
+    return;
+  }
+
+  await ensureOwner();
+
+  const { data: existing, error: readError } = await supabase
+    .from("backevent_inventory_alert_settings")
+    .select("id")
+    .eq("inventory_item_id", productId)
+    .is("location_id", null)
+    .maybeSingle();
+
+  if (readError) throw readError;
+
+  const payload = {
+    inventory_item_id: productId,
+    location_id: null,
+    low_threshold: input.lowThreshold,
+    critical_threshold: input.criticalThreshold,
+    active: input.active,
+    updated_at: new Date().toISOString(),
+  };
+
+  const response = existing?.id
+    ? await supabase.from("backevent_inventory_alert_settings").update(payload).eq("id", existing.id)
+    : await supabase.from("backevent_inventory_alert_settings").insert(payload);
+
+  if (response.error) throw response.error;
 }
 
 export async function createProduct(input: {

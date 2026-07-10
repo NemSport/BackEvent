@@ -3,8 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/backevent/app-shell";
 import { BackButton, PrimaryButton } from "@/components/backevent/buttons";
-import { createProduct, getProductsAdmin, updateProduct } from "@/lib/backevent/data";
-import type { Product, ProductTrackingMode } from "@/lib/backevent/types";
+import { createProduct, getProductAlertSettings, getProductsAdmin, updateProduct, upsertProductAlertSetting } from "@/lib/backevent/data";
+import type { Product, ProductAlertSetting, ProductTrackingMode } from "@/lib/backevent/types";
 
 type ProductFormInput = {
   name: string;
@@ -20,6 +20,9 @@ type ProductFormInput = {
   stockUnitLabel?: string | null;
   contentPerStockUnit?: number | null;
   consumptionUnitLabel?: string | null;
+  lowThreshold?: number | null;
+  criticalThreshold?: number | null;
+  alertsActive?: boolean;
   active?: boolean;
   sortOrder?: number;
 };
@@ -30,6 +33,7 @@ type ProductSort = { key: ProductSortKey; direction: SortDirection } | null;
 
 export default function AdminProdukterPage() {
   const [products, setProducts] = useState<Product[]>([]);
+  const [alertSettings, setAlertSettings] = useState<ProductAlertSetting[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isCreating, setIsCreating] = useState(false);
@@ -37,7 +41,9 @@ export default function AdminProdukterPage() {
   const sortedProducts = useMemo(() => sortProducts(products, sort), [products, sort]);
 
   async function reload() {
-    setProducts(await getProductsAdmin());
+    const [loadedProducts, loadedAlertSettings] = await Promise.all([getProductsAdmin(), getProductAlertSettings()]);
+    setProducts(loadedProducts);
+    setAlertSettings(loadedAlertSettings);
   }
 
   useEffect(() => {
@@ -45,9 +51,10 @@ export default function AdminProdukterPage() {
 
     async function loadData() {
       try {
-        const loadedProducts = await getProductsAdmin();
+        const [loadedProducts, loadedAlertSettings] = await Promise.all([getProductsAdmin(), getProductAlertSettings()]);
         if (mounted) {
           setProducts(loadedProducts);
+          setAlertSettings(loadedAlertSettings);
         }
       } catch {
         if (mounted) {
@@ -64,6 +71,8 @@ export default function AdminProdukterPage() {
   }, []);
 
   async function saveProduct(input: ProductFormInput) {
+    let productId = editingProduct?.id ?? null;
+
     if (editingProduct) {
       await updateProduct(editingProduct.id, {
         ...input,
@@ -79,8 +88,16 @@ export default function AdminProdukterPage() {
       });
       setMessage("Produkt gemt");
     } else {
-      await createProduct(input);
+      productId = await createProduct(input);
       setMessage("Produkt oprettet");
+    }
+
+    if (productId) {
+      await upsertProductAlertSetting(productId, {
+        lowThreshold: input.lowThreshold ?? null,
+        criticalThreshold: input.criticalThreshold ?? null,
+        active: input.alertsActive ?? true,
+      });
     }
 
     setEditingProduct(null);
@@ -148,6 +165,7 @@ export default function AdminProdukterPage() {
       {isCreating || editingProduct ? (
         <ProductModal
           product={editingProduct ?? undefined}
+          alertSetting={editingProduct ? alertSettings.find((setting) => setting.inventoryItemId === editingProduct.id && !setting.locationId) : undefined}
           onClose={() => {
             setEditingProduct(null);
             setIsCreating(false);
@@ -201,7 +219,17 @@ function ProductRow({ product, onEdit }: { product: Product; onEdit: () => void 
   );
 }
 
-function ProductModal({ product, onClose, onSave }: { product?: Product; onClose: () => void; onSave: (input: ProductFormInput) => Promise<void> }) {
+function ProductModal({
+  product,
+  alertSetting,
+  onClose,
+  onSave,
+}: {
+  product?: Product;
+  alertSetting?: ProductAlertSetting;
+  onClose: () => void;
+  onSave: (input: ProductFormInput) => Promise<void>;
+}) {
   const [name, setName] = useState(product?.name ?? "");
   const [trackingMode, setTrackingMode] = useState<ProductTrackingMode>(product?.trackingMode ?? "inventory");
   const [salesUnitQuantity, setSalesUnitQuantity] = useState((product?.salesUnitQuantity ?? 1).toString());
@@ -213,6 +241,9 @@ function ProductModal({ product, onClose, onSave }: { product?: Product; onClose
   const [stockUnitLabel, setStockUnitLabel] = useState(product?.stockUnitLabel ?? product?.unit ?? "stk");
   const [contentPerStockUnit, setContentPerStockUnit] = useState((product?.contentPerStockUnit ?? 1).toString());
   const [consumptionUnitLabel, setConsumptionUnitLabel] = useState(product?.consumptionUnitLabel ?? product?.unit ?? "stk");
+  const [lowThreshold, setLowThreshold] = useState(formatInputNumber(alertSetting?.lowThreshold ?? product?.lowThreshold ?? ""));
+  const [criticalThreshold, setCriticalThreshold] = useState(formatInputNumber(alertSetting?.criticalThreshold ?? product?.criticalThreshold ?? ""));
+  const [alertsActive, setAlertsActive] = useState(alertSetting?.active ?? true);
   const [active, setActive] = useState(product?.active ?? true);
   const [sortOrder, setSortOrder] = useState((product?.sortOrder ?? 999).toString());
   const [isSaving, setIsSaving] = useState(false);
@@ -233,6 +264,9 @@ function ProductModal({ product, onClose, onSave }: { product?: Product; onClose
       stockUnitLabel: stockUnitLabel.trim() || null,
       contentPerStockUnit: contentPerStockUnit ? Number(contentPerStockUnit) : null,
       consumptionUnitLabel: consumptionUnitLabel.trim() || null,
+      lowThreshold: parseDecimalInput(lowThreshold),
+      criticalThreshold: parseDecimalInput(criticalThreshold),
+      alertsActive,
       active,
       sortOrder: Number(sortOrder),
     });
@@ -277,6 +311,19 @@ function ProductModal({ product, onClose, onSave }: { product?: Product; onClose
           <Input label="Liter pr. salg" value={litersPerSale} onChange={setLitersPerSale} />
         </div>
       </details>
+
+      <section className="mt-5 rounded-2xl border border-line bg-soft p-4">
+        <h3 className="text-lg font-bold text-ink">Lageralarmer</h3>
+        <p className="mt-1 text-sm font-bold text-muted">Bruges når ejer manuelt kører lageralarm til Lageransvarlige.</p>
+        <div className="mt-3 grid gap-3 md:grid-cols-2">
+          <Input label="Lavt lager ved" value={lowThreshold} onChange={setLowThreshold} />
+          <Input label="Kritisk lager ved" value={criticalThreshold} onChange={setCriticalThreshold} />
+          <label className="flex items-center gap-2 text-base font-bold text-ink md:col-span-2">
+            <input type="checkbox" checked={alertsActive} onChange={(event) => setAlertsActive(event.target.checked)} />
+            Lageralarmer aktive
+          </label>
+        </div>
+      </section>
 
       <div className="mt-5 grid gap-3 md:grid-cols-2">
         <Input label="Sortering" value={sortOrder} onChange={setSortOrder} />
@@ -360,6 +407,25 @@ function formatCalculatedConsumption(unitsPerPurchaseUnit: string, contentPerSto
 
 function formatNumber(value: number) {
   return Number.isInteger(value) ? value.toString() : value.toLocaleString("da-DK", { maximumFractionDigits: 2 });
+}
+
+function formatInputNumber(value: number | string | null) {
+  if (value === null || value === "") {
+    return "";
+  }
+
+  return String(value).replace(".", ",");
+}
+
+function parseDecimalInput(value: string) {
+  const normalized = value.trim().replace(",", ".");
+
+  if (!normalized) {
+    return null;
+  }
+
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function sortProducts(products: Product[], sort: ProductSort) {

@@ -22,6 +22,17 @@ export type Product = {
   active?: boolean;
 };
 
+export type ProductAlertSetting = {
+  id?: string;
+  inventoryItemId: string;
+  locationId?: string | null;
+  lowThreshold: number | null;
+  criticalThreshold: number | null;
+  active: boolean;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+};
+
 export type Location = {
   id: string;
   name: string;

@@ -6,8 +6,8 @@ import { AppShell } from "@/components/backevent/app-shell";
 import { Header } from "@/components/backevent/header";
 import { NotificationSettingsCard } from "@/components/backevent/notification-settings-card";
 import { useBackEventAuth } from "@/lib/backevent/auth";
-import { getMemberGroups } from "@/lib/backevent/data";
-import type { BackEventMemberGroup } from "@/lib/backevent/types";
+import { getMemberGroupMemberships } from "@/lib/backevent/data";
+import type { BackEventMemberGroup, BackEventMemberGroupMembership } from "@/lib/backevent/types";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 type GroupPushResult = {
@@ -34,18 +34,46 @@ type PushLog = {
   createdAt: string;
 };
 
+type InventoryAlertRunResult = {
+  ok: boolean;
+  checkedItems: number;
+  lowCount: number;
+  criticalCount: number;
+  sentCount: number;
+  skippedCount: number;
+  failedCount: number;
+  alerts: Array<{
+    productName: string;
+    locationName: string;
+    stockValue: number;
+    unit: string;
+    alertLevel: "low" | "critical";
+    threshold: number;
+    skippedReason?: string;
+  }>;
+  message?: string;
+};
+
 export default function AdminNotificationsPage() {
   const { isOwner } = useBackEventAuth();
   const [groups, setGroups] = useState<BackEventMemberGroup[]>([]);
+  const [memberships, setMemberships] = useState<BackEventMemberGroupMembership[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState("");
   const [title, setTitle] = useState("");
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState<GroupPushResult | null>(null);
   const [logs, setLogs] = useState<PushLog[]>([]);
+  const [inventoryAlertResult, setInventoryAlertResult] = useState<InventoryAlertRunResult | null>(null);
+  const [runningInventoryAlert, setRunningInventoryAlert] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const activeGroups = useMemo(() => groups.filter((group) => group.active), [groups]);
+  const lagerGroup = useMemo(() => groups.find((group) => group.name.toLowerCase() === "lageransvarlige") ?? null, [groups]);
+  const lagerGroupMemberCount = useMemo(
+    () => (lagerGroup ? memberships.filter((membership) => membership.groupId === lagerGroup.id).length : 0),
+    [lagerGroup, memberships],
+  );
 
   const loadLogs = useCallback(async () => {
     const token = await getAccessToken();
@@ -68,9 +96,10 @@ export default function AdminNotificationsPage() {
 
     try {
       setError(null);
-      const [loadedGroups] = await Promise.all([getMemberGroups(), loadLogs()]);
-      const onlyActiveGroups = loadedGroups.filter((group) => group.active);
-      setGroups(loadedGroups);
+      const [memberGroupData] = await Promise.all([getMemberGroupMemberships(), loadLogs()]);
+      const onlyActiveGroups = memberGroupData.groups.filter((group) => group.active);
+      setGroups(memberGroupData.groups);
+      setMemberships(memberGroupData.memberships);
       setSelectedGroupId((current) => current || onlyActiveGroups[0]?.id || "");
     } catch {
       setError("Kunne ikke hente grupper og push-log lige nu.");
@@ -118,6 +147,31 @@ export default function AdminNotificationsPage() {
     }
   }
 
+  async function runInventoryAlerts() {
+    try {
+      setRunningInventoryAlert(true);
+      setInventoryAlertResult(null);
+      setError(null);
+      const token = await getAccessToken();
+      const response = await fetch("/api/admin/push/inventory-alerts/run", {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      });
+      const data = (await response.json()) as InventoryAlertRunResult;
+      setInventoryAlertResult(data);
+
+      if (!response.ok || !data.ok) {
+        setError(data.message ?? "Lageralarm kunne ikke køres.");
+      }
+
+      await loadLogs();
+    } catch {
+      setError("Lageralarm kunne ikke køres lige nu.");
+    } finally {
+      setRunningInventoryAlert(false);
+    }
+  }
+
   return (
     <AppShell requiredRole="ansvarlig">
       <Header title="Notifikationer" subtitle="Aktivér push-notifikationer og send beskeder" />
@@ -129,82 +183,141 @@ export default function AdminNotificationsPage() {
           <NotificationSettingsCard />
 
           {isOwner ? (
-            <section className="rounded-2xl border border-line bg-macro p-5 shadow-soft">
-              <div className="mb-5 flex items-center gap-3">
-                <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-pantone139/30 text-pantone140">
-                  <Users className="h-5 w-5" aria-hidden />
-                </span>
-                <div>
-                  <h2 className="text-lg font-bold text-ink">Send besked til gruppe</h2>
-                  <p className="text-sm font-medium text-muted">Kun ejer kan sende push til grupper.</p>
+            <>
+              <section className="rounded-2xl border border-line bg-macro p-5 shadow-soft">
+                <div className="mb-5 flex items-center gap-3">
+                  <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-pantone139/30 text-pantone140">
+                    <Bell className="h-5 w-5" aria-hidden />
+                  </span>
+                  <div>
+                    <h2 className="text-lg font-bold text-ink">Automatiske lageralarmer</h2>
+                    <p className="text-sm font-medium text-muted">Manuel kørsel til gruppen Lageransvarlige. Ingen cron endnu.</p>
+                  </div>
                 </div>
-              </div>
 
-              <div className="grid gap-4 md:grid-cols-2">
-                <label className="block md:col-span-2">
-                  <span className="mb-2 block text-sm font-bold text-ink">Gruppe</span>
-                  <select
-                    value={selectedGroupId}
-                    onChange={(event) => setSelectedGroupId(event.target.value)}
-                    className="h-11 w-full rounded-xl border border-line bg-macro px-3 text-sm font-bold text-ink outline-none focus:border-pantone140"
-                  >
-                    {activeGroups.length === 0 ? <option value="">Ingen aktive grupper</option> : null}
-                    {activeGroups.map((group) => (
-                      <option key={group.id} value={group.id}>
-                        {group.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                <div className="grid gap-3 rounded-2xl bg-soft p-4 text-sm font-bold text-ink sm:grid-cols-3">
+                  <ResultStat label="Gruppe" value={lagerGroup ? 1 : 0} />
+                  <ResultStat label="Medlemmer" value={lagerGroupMemberCount} />
+                  <ResultStat label="Status" value={lagerGroup?.active ? "Aktiv" : "Mangler"} />
+                  <p className="sm:col-span-3 text-muted">
+                    {lagerGroup ? "Lageransvarlige er klar. Medlemmer tildeles under Medlemmer." : "Gruppen oprettes ved migration eller første kørsel."}
+                  </p>
+                </div>
 
-                <label className="block md:col-span-2">
-                  <span className="mb-2 block text-sm font-bold text-ink">Titel</span>
-                  <input
-                    value={title}
-                    onChange={(event) => setTitle(event.target.value)}
-                    maxLength={120}
-                    className="h-11 w-full rounded-xl border border-line bg-macro px-3 text-sm font-bold text-ink outline-none focus:border-pantone140"
-                    placeholder="Kort titel"
-                  />
-                </label>
-
-                <label className="block md:col-span-2">
-                  <span className="mb-2 block text-sm font-bold text-ink">Besked</span>
-                  <textarea
-                    value={message}
-                    onChange={(event) => setMessage(event.target.value)}
-                    maxLength={500}
-                    rows={4}
-                    className="w-full rounded-xl border border-line bg-macro px-3 py-2 text-sm font-medium text-ink outline-none focus:border-pantone140"
-                    placeholder="Skriv beskeden til gruppen"
-                  />
-                </label>
-              </div>
-
-              <div className="mt-5 flex flex-wrap items-center gap-3">
                 <button
                   type="button"
-                  onClick={sendGroupPush}
-                  disabled={sending || !selectedGroupId || title.trim().length < 2 || message.trim().length < 2}
-                  className="inline-flex items-center gap-2 rounded-xl bg-pantone139 px-4 py-2.5 text-sm font-bold text-ink shadow-soft disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={runInventoryAlerts}
+                  disabled={runningInventoryAlert}
+                  className="mt-5 inline-flex items-center gap-2 rounded-xl bg-pantone139 px-4 py-2.5 text-sm font-bold text-ink shadow-soft disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Send className="h-4 w-4" aria-hidden />
-                  {sending ? "Sender..." : "Send push-besked"}
+                  {runningInventoryAlert ? "Kører..." : "Kør lageralarm test"}
                 </button>
-                <p className="text-sm font-bold text-muted">{activeGroups.length} aktive grupper</p>
-              </div>
 
-              {result ? (
-                <div className="mt-5 grid gap-3 rounded-2xl bg-soft p-4 text-sm font-bold text-ink sm:grid-cols-2 lg:grid-cols-5">
-                  <ResultStat label="Medlemmer" value={result.memberCount ?? 0} />
-                  <ResultStat label="Enheder" value={result.subscriptionCount ?? 0} />
-                  <ResultStat label="Sendt" value={result.sentCount ?? 0} />
-                  <ResultStat label="Fejlet" value={result.failedCount ?? 0} />
-                  <ResultStat label="Sprunget over" value={result.skippedCount ?? 0} />
-                  {result.message ? <p className="sm:col-span-2 lg:col-span-5 text-warmRed">{result.message}</p> : null}
+                {inventoryAlertResult ? (
+                  <div className="mt-5 rounded-2xl bg-soft p-4">
+                    <div className="grid gap-3 text-sm font-bold text-ink sm:grid-cols-3 lg:grid-cols-6">
+                      <ResultStat label="Tjekket" value={inventoryAlertResult.checkedItems} />
+                      <ResultStat label="Lavt" value={inventoryAlertResult.lowCount} />
+                      <ResultStat label="Kritisk" value={inventoryAlertResult.criticalCount} />
+                      <ResultStat label="Sendt" value={inventoryAlertResult.sentCount} />
+                      <ResultStat label="Fejlet" value={inventoryAlertResult.failedCount} />
+                      <ResultStat label="Sprunget over" value={inventoryAlertResult.skippedCount} />
+                    </div>
+                    {inventoryAlertResult.alerts.length > 0 ? (
+                      <div className="mt-4 space-y-2">
+                        {inventoryAlertResult.alerts.slice(0, 8).map((alert) => (
+                          <p key={`${alert.productName}-${alert.locationName}-${alert.alertLevel}`} className="rounded-xl bg-macro px-3 py-2 text-sm font-bold text-ink">
+                            {alert.alertLevel === "critical" ? "Kritisk" : "Lavt"}: {alert.productName} i {alert.locationName} ·{" "}
+                            {formatNumber(alert.stockValue)} {alert.unit}
+                            {alert.skippedReason ? <span className="text-muted"> · {alert.skippedReason}</span> : null}
+                          </p>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="mt-4 rounded-xl bg-macro px-3 py-2 text-sm font-bold text-muted">Ingen lageralarmer lige nu.</p>
+                    )}
+                  </div>
+                ) : null}
+              </section>
+
+              <section className="rounded-2xl border border-line bg-macro p-5 shadow-soft">
+                <div className="mb-5 flex items-center gap-3">
+                  <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-pantone139/30 text-pantone140">
+                    <Users className="h-5 w-5" aria-hidden />
+                  </span>
+                  <div>
+                    <h2 className="text-lg font-bold text-ink">Send besked til gruppe</h2>
+                    <p className="text-sm font-medium text-muted">Kun ejer kan sende push til grupper.</p>
+                  </div>
                 </div>
-              ) : null}
-            </section>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <label className="block md:col-span-2">
+                    <span className="mb-2 block text-sm font-bold text-ink">Gruppe</span>
+                    <select
+                      value={selectedGroupId}
+                      onChange={(event) => setSelectedGroupId(event.target.value)}
+                      className="h-11 w-full rounded-xl border border-line bg-macro px-3 text-sm font-bold text-ink outline-none focus:border-pantone140"
+                    >
+                      {activeGroups.length === 0 ? <option value="">Ingen aktive grupper</option> : null}
+                      {activeGroups.map((group) => (
+                        <option key={group.id} value={group.id}>
+                          {group.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="block md:col-span-2">
+                    <span className="mb-2 block text-sm font-bold text-ink">Titel</span>
+                    <input
+                      value={title}
+                      onChange={(event) => setTitle(event.target.value)}
+                      maxLength={120}
+                      className="h-11 w-full rounded-xl border border-line bg-macro px-3 text-sm font-bold text-ink outline-none focus:border-pantone140"
+                      placeholder="Kort titel"
+                    />
+                  </label>
+
+                  <label className="block md:col-span-2">
+                    <span className="mb-2 block text-sm font-bold text-ink">Besked</span>
+                    <textarea
+                      value={message}
+                      onChange={(event) => setMessage(event.target.value)}
+                      maxLength={500}
+                      rows={4}
+                      className="w-full rounded-xl border border-line bg-macro px-3 py-2 text-sm font-medium text-ink outline-none focus:border-pantone140"
+                      placeholder="Skriv beskeden til gruppen"
+                    />
+                  </label>
+                </div>
+
+                <div className="mt-5 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={sendGroupPush}
+                    disabled={sending || !selectedGroupId || title.trim().length < 2 || message.trim().length < 2}
+                    className="inline-flex items-center gap-2 rounded-xl bg-pantone139 px-4 py-2.5 text-sm font-bold text-ink shadow-soft disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Send className="h-4 w-4" aria-hidden />
+                    {sending ? "Sender..." : "Send push-besked"}
+                  </button>
+                  <p className="text-sm font-bold text-muted">{activeGroups.length} aktive grupper</p>
+                </div>
+
+                {result ? (
+                  <div className="mt-5 grid gap-3 rounded-2xl bg-soft p-4 text-sm font-bold text-ink sm:grid-cols-2 lg:grid-cols-5">
+                    <ResultStat label="Medlemmer" value={result.memberCount ?? 0} />
+                    <ResultStat label="Enheder" value={result.subscriptionCount ?? 0} />
+                    <ResultStat label="Sendt" value={result.sentCount ?? 0} />
+                    <ResultStat label="Fejlet" value={result.failedCount ?? 0} />
+                    <ResultStat label="Sprunget over" value={result.skippedCount ?? 0} />
+                    {result.message ? <p className="sm:col-span-2 lg:col-span-5 text-warmRed">{result.message}</p> : null}
+                  </div>
+                ) : null}
+              </section>
+            </>
           ) : (
             <section className="rounded-2xl border border-line bg-macro p-5 shadow-soft">
               <div className="flex items-center gap-3">
@@ -251,13 +364,17 @@ export default function AdminNotificationsPage() {
   );
 }
 
-function ResultStat({ label, value }: { label: string; value: number }) {
+function ResultStat({ label, value }: { label: string; value: number | string }) {
   return (
     <div>
       <p className="text-xs uppercase text-muted">{label}</p>
       <p className="text-xl text-ink">{value}</p>
     </div>
   );
+}
+
+function formatNumber(value: number) {
+  return Number.isInteger(value) ? value.toString() : value.toLocaleString("da-DK", { maximumFractionDigits: 1 });
 }
 
 function StatusChip({ status }: { status: PushLog["status"] }) {
