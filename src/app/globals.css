@@ -10,7 +10,8 @@
   --color-line: #eadfcf;
   --color-muted: #667085;
   --color-ok: #2f7d48;
-  --shadow-soft: 0 16px 40px rgba(129, 79, 18, 0.12);
+  --color-info: #2563eb;
+  --shadow-soft: 0 12px 30px rgba(129, 79, 18, 0.1);
 }
 
 :root {
@@ -24,13 +25,13 @@
 
 html {
   scroll-behavior: smooth;
+  overflow-x: hidden;
 }
 
 body {
   min-height: 100vh;
-  background:
-    radial-gradient(circle at top left, rgba(252, 193, 70, 0.2), transparent 32rem),
-    #ffffff;
+  overflow-x: hidden;
+  background: #ffffff;
   color: #1f2933;
 }
 
@@ -41,6 +42,6 @@ a {
 
 button:focus-visible,
 a:focus-visible {
-  outline: 3px solid rgba(129, 79, 18, 0.35);
+  outline: 3px solid rgba(129, 79, 18, 0.32);
   outline-offset: 3px;
 }

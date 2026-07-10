@@ -1,10 +1,10 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useBackEventAuth } from "@/lib/backevent/auth";
 import { hasRoleAtLeast, type BackEventRole } from "@/lib/backevent/permissions";
+import { ButtonLink, Card } from "./ui";
 
 export function AuthGuard({
   children,
@@ -61,14 +61,13 @@ function LoadingAccess() {
 function AccessMessage({ title, href, action }: { title: string; href: string; action: string }) {
   return (
     <main className="min-h-screen px-4 py-8">
-      <section className="mx-auto max-w-xl rounded-[2rem] bg-soft p-6 text-center shadow-soft">
-        <h1 className="text-4xl font-bold text-ink">{title}</h1>
-        <Link
-          href={href}
-          className="mt-6 inline-flex min-h-14 items-center rounded-2xl bg-pantone139 px-5 py-4 text-lg font-bold text-ink"
-        >
-          {action}
-        </Link>
+      <section className="mx-auto max-w-xl">
+        <Card className="border-transparent bg-soft p-6 text-center shadow-soft">
+          <h1 className="text-3xl font-bold text-ink">{title}</h1>
+          <ButtonLink href={href} tone="primary" className="mt-6 w-auto">
+            {action}
+          </ButtonLink>
+        </Card>
       </section>
     </main>
   );

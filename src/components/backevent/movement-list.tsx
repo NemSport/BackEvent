@@ -1,6 +1,7 @@
 import { ArrowRight } from "lucide-react";
 import { getLocation, getProduct, locations as mockLocations, products as mockProducts } from "@/lib/backevent/mock-data";
 import type { Location, Product, StockMovement } from "@/lib/backevent/types";
+import { cn, StatusPill } from "./ui";
 
 export function MovementList({
   movements,
@@ -22,9 +23,7 @@ export function MovementList({
         return (
           <article
             key={movement.id}
-            className={`rounded-3xl border p-4 shadow-sm ${
-              isReversed ? "border-line bg-soft opacity-80" : "border-line bg-macro"
-            }`}
+            className={cn("rounded-2xl border p-4 shadow-sm", isReversed ? "border-line bg-soft opacity-80" : "border-line bg-macro")}
           >
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -36,7 +35,7 @@ export function MovementList({
                   <ArrowRight className="h-4 w-4 text-pantone140" aria-hidden />
                   {to?.name}
                 </p>
-                {isReversed ? <p className="mt-2 text-sm font-bold text-warmRed">Fortrudt</p> : null}
+                {isReversed ? <StatusPill tone="danger" className="mt-2">Fortrudt</StatusPill> : null}
               </div>
               <p className="shrink-0 text-sm font-bold text-pantone140">{movement.createdBy}</p>
             </div>

@@ -113,17 +113,17 @@ function CountFlowContent({
       <div className="mb-5">
         <BackButton />
       </div>
-      <section className="mb-6 rounded-[2rem] bg-soft p-6 shadow-soft">
-        <h1 className="text-4xl font-bold text-ink">{title}</h1>
-        <p className="mt-2 text-lg font-medium text-muted">Vælg lager/container</p>
+      <section className="mb-6 rounded-2xl bg-pantone139 px-5 py-5 text-ink shadow-sm md:px-6">
+        <h1 className="text-3xl font-bold text-ink md:text-4xl">{title}</h1>
+        <p className="mt-2 text-base font-medium text-pantone140">Vælg lager/container</p>
       </section>
 
       <div className="space-y-6">
-        <section className="rounded-[2rem] border border-line bg-macro p-5 shadow-soft">
+        <section className="rounded-2xl border border-line bg-macro p-4 shadow-sm md:p-5">
           <LocationPicker locations={locations} selectedId={locationId} onSelect={setLocationId} />
         </section>
 
-        <section className="rounded-[2rem] border border-line bg-macro p-5 shadow-soft">
+        <section className="rounded-2xl border border-line bg-macro p-4 shadow-sm md:p-5">
           <h2 className="mb-4 text-2xl font-bold text-ink">{intro}</h2>
           <div className="space-y-3">
             {products.map((product) => (
@@ -138,13 +138,13 @@ function CountFlowContent({
         </section>
 
         {saved ? (
-          <div className="rounded-3xl border border-green-100 bg-green-50 p-4 text-lg font-bold text-ok">
+          <div className="rounded-2xl border border-green-100 bg-green-50 px-4 py-3 text-sm font-bold text-ok">
             {savedLabel} ✅
           </div>
         ) : null}
 
         {message ? (
-          <div className="rounded-3xl border border-warmRed/20 bg-warmRed/10 p-4 text-lg font-bold text-warmRed">
+          <div className="rounded-2xl border border-warmRed/20 bg-warmRed/10 px-4 py-3 text-sm font-bold text-warmRed">
             {message}
           </div>
         ) : null}

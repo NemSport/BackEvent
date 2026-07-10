@@ -2,6 +2,7 @@
 
 import { Check, Minus, Package, Plus } from "lucide-react";
 import type { Location, Product } from "@/lib/backevent/types";
+import { cn } from "./ui";
 
 export function LocationPicker({
   locations,
@@ -27,11 +28,10 @@ export function LocationPicker({
             type="button"
             data-testid={`${testIdPrefix}-${location.id}`}
             onClick={() => onSelect(location.id)}
-            className={`group flex min-h-24 items-center justify-between gap-3 rounded-[1.5rem] border-2 p-4 text-left text-lg font-bold transition ${
-              selected
-                ? "border-pantone140 bg-pantone139 text-ink shadow-soft"
-                : "border-transparent bg-soft text-ink hover:border-pantone139 hover:bg-macro"
-            }`}
+            className={cn(
+              "group flex min-h-20 items-center justify-between gap-3 rounded-2xl border p-4 text-left text-base font-bold transition focus:outline-none focus:ring-2 focus:ring-pantone140/35 focus:ring-offset-2 focus:ring-offset-macro",
+              selected ? "border-pantone140 bg-pantone139 text-ink shadow-sm" : "border-line bg-macro text-ink hover:border-pantone139 hover:bg-soft/70",
+            )}
           >
             <span>{location.name}</span>
             {selected ? (
@@ -67,11 +67,10 @@ export function ProductPicker({
             type="button"
             data-testid={`product-${product.id}`}
             onClick={() => onSelect(product.id)}
-            className={`flex min-h-28 flex-col items-start justify-between gap-4 rounded-[1.5rem] border-2 p-4 text-left text-lg font-bold transition ${
-              selected
-                ? "border-pantone140 bg-pantone139 text-ink shadow-soft"
-                : "border-transparent bg-soft text-ink hover:border-pantone139 hover:bg-macro"
-            }`}
+            className={cn(
+              "flex min-h-24 flex-col items-start justify-between gap-4 rounded-2xl border p-4 text-left text-base font-bold transition focus:outline-none focus:ring-2 focus:ring-pantone140/35 focus:ring-offset-2 focus:ring-offset-macro",
+              selected ? "border-pantone140 bg-pantone139 text-ink shadow-sm" : "border-line bg-macro text-ink hover:border-pantone139 hover:bg-soft/70",
+            )}
           >
             <span className="flex w-full items-center justify-between gap-3">
               <Package className="h-6 w-6 text-pantone140" aria-hidden />
@@ -102,8 +101,8 @@ export function QuantityControl({
   const update = (change: number) => onChange(Math.max(0.5, Number((value + change).toFixed(1))));
 
   return (
-    <div className="rounded-[1.75rem] bg-soft p-4">
-      <div className="flex items-center justify-center rounded-[1.5rem] bg-macro px-4 py-8 text-center shadow-sm">
+    <div className="rounded-2xl bg-soft p-4">
+      <div className="flex items-center justify-center rounded-2xl bg-macro px-4 py-7 text-center shadow-sm">
         <p className="text-5xl font-bold text-ink sm:text-6xl">
           {value.toLocaleString("da-DK")}
           <span className="ml-2 text-2xl text-pantone140">{unit}</span>
@@ -143,7 +142,7 @@ function QuantityButton({
       type="button"
       data-testid={testId}
       onClick={onClick}
-      className={`min-h-14 rounded-2xl px-2 py-3 text-xl font-bold shadow-sm ${
+      className={`min-h-[3.25rem] rounded-2xl px-2 py-3 text-xl font-bold shadow-sm ${
         strong ? "bg-pantone139 text-pantone140" : "bg-macro text-pantone140"
       }`}
     >
@@ -162,7 +161,7 @@ export function ProductStepper({
   onChange: (value: number) => void;
 }) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-3xl border border-line bg-macro p-3 shadow-sm">
+    <div className="flex items-center justify-between gap-3 rounded-2xl border border-line bg-macro p-3 shadow-sm">
       <div className="min-w-0">
         <p className="text-lg font-bold text-ink">{product.name}</p>
         <p className="text-sm font-bold text-muted">{product.unit}</p>

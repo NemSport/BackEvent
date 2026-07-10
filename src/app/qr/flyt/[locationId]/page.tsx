@@ -1,9 +1,11 @@
 "use client";
 
 import { Check, Minus, Plus } from "lucide-react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
+import { Button, Card, Notice, PageHeader, cn } from "@/components/backevent/ui";
 import { useBackEventAuth } from "@/lib/backevent/auth";
+import { isResponsibleRole } from "@/lib/backevent/permissions";
 import { clampQrMoveQuantity, validateQrMoveLines } from "@/lib/backevent/qr-move-validation";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
@@ -37,8 +39,11 @@ type SaveResult = {
 
 export default function QrMovePage() {
   const params = useParams<{ locationId: string }>();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const qrLocationId = params.locationId;
-  const { profile, isAuthenticated } = useBackEventAuth();
+  const forceFlow = searchParams.get("start") === "1";
+  const { profile, isAuthenticated, loading } = useBackEventAuth();
   const [locations, setLocations] = useState<QrLocation[]>([]);
   const [products, setProducts] = useState<QrProduct[]>([]);
   const [balances, setBalances] = useState<QrBalance[]>([]);
@@ -51,6 +56,12 @@ export default function QrMovePage() {
   const [isSaving, setIsSaving] = useState(false);
   const [saveResult, setSaveResult] = useState<SaveResult | null>(null);
   const [receiptLeaving, setReceiptLeaving] = useState(false);
+
+  useEffect(() => {
+    if (!forceFlow && !loading && isAuthenticated && isResponsibleRole(profile?.role)) {
+      router.replace(`/sted/${qrLocationId}`);
+    }
+  }, [forceFlow, isAuthenticated, loading, profile?.role, qrLocationId, router]);
 
   useEffect(() => {
     let mounted = true;
@@ -98,7 +109,7 @@ export default function QrMovePage() {
   const fromLocation = locations.find((location) => location.id === fromId);
   const toLocation = locations.find((location) => location.id === toId);
   const destinationLocations = locations.filter((location) => location.id !== fromId);
-  const actorName = profile?.fullName || profile?.email || "";
+  const accountName = profile?.fullName || profile?.email || "";
   const selectedLines = useMemo(
     () =>
       products
@@ -123,7 +134,7 @@ export default function QrMovePage() {
   );
   const canContinueDestination = Boolean(fromId && toId && fromId !== toId);
   const canContinueProducts = selectedLines.length > 0;
-  const finalName = isAuthenticated ? actorName : anonymousName.trim();
+  const finalName = isAuthenticated ? accountName : anonymousName.trim();
   const canAccept = Boolean(finalName && fromLocation && toLocation && selectedLines.length > 0 && !isSaving);
 
   function chooseStart(id: string) {
@@ -218,6 +229,14 @@ export default function QrMovePage() {
     setStep("destination");
   }
 
+  if (!forceFlow && !loading && isAuthenticated && isResponsibleRole(profile?.role)) {
+    return (
+      <main className="grid min-h-screen place-items-center bg-macro px-4 text-center text-ink">
+        <p className="rounded-2xl bg-soft px-4 py-3 text-base font-bold text-muted">Åbner lokationsside...</p>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-macro px-4 py-5 text-ink">
       <style jsx global>{`
@@ -230,23 +249,21 @@ export default function QrMovePage() {
         }
       `}</style>
       <div className="mx-auto max-w-2xl pb-28">
-        <header className="mb-4 rounded-3xl bg-pantone139 p-5 shadow-soft">
-          <p className="text-sm font-bold uppercase text-pantone140">QR lagerflyt</p>
-          <h1 className="mt-1 text-3xl font-bold">Flyt varer</h1>
+        <PageHeader title="Flyt varer" kicker="QR lagerflyt" className="mb-4">
           <StepIndicator step={step} />
-        </header>
+        </PageHeader>
 
-        {message ? <p className="mb-4 rounded-2xl bg-warmRed/10 px-4 py-3 text-sm font-bold text-warmRed">{message}</p> : null}
+        {message ? <Notice tone="danger" className="mb-4">{message}</Notice> : null}
 
         {step === "confirm-start" ? (
-          <Panel title={`Står du i ${fromLocation?.name ?? "dette sted"}?`}>
+          <Panel title={`Du står ved ${fromLocation?.name ?? "dette sted"} - er det korrekt?`}>
             <div className="grid gap-3">
-              <button type="button" onClick={() => setStep("destination")} className="min-h-14 rounded-2xl bg-pantone139 px-5 py-3 text-lg font-bold text-ink">
-                Ja
-              </button>
-              <button type="button" onClick={() => setStep("choose-start")} className="min-h-14 rounded-2xl border border-line bg-macro px-5 py-3 text-lg font-bold text-pantone140">
-                Nej
-              </button>
+              <Button type="button" onClick={() => setStep("destination")}>
+                Ja, fortsæt
+              </Button>
+              <Button type="button" tone="secondary" onClick={() => setStep("choose-start")}>
+                Nej, vælg anden aktiv lokation
+              </Button>
             </div>
           </Panel>
         ) : null}
@@ -272,15 +289,17 @@ export default function QrMovePage() {
         {step === "products" ? (
           <Panel title="Vælg varer og antal">
             {movableProducts.length === 0 ? (
-              <p className="rounded-2xl bg-soft p-4 text-base font-bold text-muted">Ingen varer med beholdning på startlokationen.</p>
+              <Notice tone="info">Ingen varer med beholdning på startlokationen.</Notice>
             ) : (
               <div className="space-y-3 pb-4">
                 {movableProducts.map(({ product, available, quantity }) => (
-                  <article key={product.id} className="rounded-2xl border border-line bg-macro p-4 shadow-sm">
+                  <Card key={product.id} as="article" className="p-4">
                     <div className="mb-3 flex items-start justify-between gap-3">
                       <div>
                         <h2 className="text-lg font-bold text-ink">{product.name}</h2>
-                        <p className="text-sm font-bold text-muted">På lager: {available.toLocaleString("da-DK")} {product.unit}</p>
+                        <p className="text-sm font-bold text-muted">
+                          Enhed: {product.unit} · Aktuel beholdning: {available.toLocaleString("da-DK")}
+                        </p>
                       </div>
                       <p className="text-sm font-bold text-pantone140">{product.unit}</p>
                     </div>
@@ -293,7 +312,7 @@ export default function QrMovePage() {
                         <Plus className="h-5 w-5" aria-hidden />
                       </RoundButton>
                     </div>
-                  </article>
+                  </Card>
                 ))}
               </div>
             )}
@@ -314,7 +333,7 @@ export default function QrMovePage() {
                 createdAt={new Date().toISOString()}
               />
               {isAuthenticated ? (
-                <p className="mt-4 rounded-2xl bg-soft p-4 text-base font-bold text-pantone140">Flytningen registreres som {actorName}</p>
+                <Notice tone="pending" className="mt-4">Flytningen registreres som {accountName}</Notice>
               ) : (
                 <label className="mt-4 block">
                   <span className="mb-2 block text-sm font-bold text-ink">Dit navn</span>
@@ -327,32 +346,31 @@ export default function QrMovePage() {
                 </label>
               )}
               <div className="mt-5 grid gap-3">
-                <button
+                <Button
                   type="button"
                   onClick={acceptMove}
                   disabled={!canAccept}
-                  className="min-h-14 rounded-2xl bg-pantone139 px-5 py-3 text-lg font-bold text-ink disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {isSaving ? "Gemmer..." : "Accepter"}
-                </button>
-                <button type="button" onClick={() => setStep("products")} className="min-h-12 rounded-2xl border border-line bg-macro px-5 py-3 text-base font-bold text-pantone140">
+                  {isSaving ? "Gemmer..." : "Godkend"}
+                </Button>
+                <Button type="button" tone="secondary" onClick={() => setStep("products")}>
                   Ret
-                </button>
-                <button type="button" onClick={resetToStart} className="min-h-12 rounded-2xl bg-soft px-5 py-3 text-base font-bold text-muted">
-                  Fortryd
-                </button>
+                </Button>
+                <Button type="button" tone="quiet" onClick={resetToStart}>
+                  Annuller
+                </Button>
               </div>
             </Panel>
           </section>
         ) : null}
 
         {step === "success" ? (
-          <Panel title="Godkendt">
+          <Panel title="Lagerflyt registreret">
             <div className="text-center">
-              <div className="mx-auto mb-5 flex h-20 w-20 items-center justify-center rounded-full bg-pantone139 text-pantone140">
+              <div className="mx-auto mb-5 flex h-20 w-20 items-center justify-center rounded-full bg-ok/15 text-ok">
                 <Check className="h-10 w-10" aria-hidden />
               </div>
-              <p className="text-4xl font-bold text-ink">Godkendt</p>
+              <p className="text-4xl font-bold text-ok">Lagerflyt registreret</p>
               <p className="mt-3 text-base font-bold text-muted">{saveResult?.createdAt ? new Date(saveResult.createdAt).toLocaleString("da-DK") : new Date().toLocaleString("da-DK")}</p>
             </div>
             <ReceiptSummary
@@ -363,9 +381,9 @@ export default function QrMovePage() {
               createdAt={saveResult?.createdAt ?? new Date().toISOString()}
               compact
             />
-            <button type="button" onClick={moveAgain} className="mt-5 min-h-14 w-full rounded-2xl bg-pantone139 px-5 py-3 text-lg font-bold text-ink">
+            <Button type="button" onClick={moveAgain} className="mt-5">
               Lav nyt flyt
-            </button>
+            </Button>
           </Panel>
         ) : null}
       </div>
@@ -375,10 +393,10 @@ export default function QrMovePage() {
 
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="rounded-3xl border border-line bg-macro p-5 shadow-soft">
+    <Card className="p-5 shadow-soft">
       <h2 className="mb-5 text-2xl font-bold text-ink">{title}</h2>
       {children}
-    </section>
+    </Card>
   );
 }
 
@@ -392,9 +410,10 @@ function LocationGrid({ locations, selectedId, onSelect }: { locations: QrLocati
             key={location.id}
             type="button"
             onClick={() => onSelect(location.id)}
-            className={`flex min-h-14 items-center justify-between rounded-2xl border px-4 py-3 text-left text-base font-bold ${
-              selected ? "border-pantone140 bg-pantone139/80 text-ink" : "border-line bg-macro text-ink"
-            }`}
+            className={cn(
+              "flex min-h-[3.25rem] items-center justify-between rounded-2xl border px-4 py-3 text-left text-base font-bold transition focus:outline-none focus:ring-2 focus:ring-pantone140/35 focus:ring-offset-2 focus:ring-offset-macro",
+              selected ? "border-pantone140 bg-pantone139/80 text-ink" : "border-line bg-macro text-ink hover:border-pantone139 hover:bg-soft/70",
+            )}
           >
             {location.name}
             {selected ? <Check className="h-5 w-5 text-pantone140" aria-hidden /> : null}
@@ -408,14 +427,9 @@ function LocationGrid({ locations, selectedId, onSelect }: { locations: QrLocati
 function StickyButton({ children, disabled, onClick }: { children: React.ReactNode; disabled: boolean; onClick: () => void }) {
   return (
     <div className="fixed inset-x-3 bottom-[calc(1rem+env(safe-area-inset-bottom))] z-20 mx-auto max-w-2xl rounded-2xl border border-line bg-macro p-3 shadow-soft">
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={onClick}
-        className="min-h-14 w-full rounded-2xl bg-pantone139 px-5 py-3 text-lg font-bold text-ink disabled:cursor-not-allowed disabled:opacity-50"
-      >
+      <Button type="button" disabled={disabled} onClick={onClick}>
         {children}
-      </button>
+      </Button>
     </div>
   );
 }
@@ -427,7 +441,7 @@ function RoundButton({ label, disabled, onClick, children }: { label: string; di
       aria-label={label}
       disabled={disabled}
       onClick={onClick}
-      className="flex h-14 w-14 items-center justify-center rounded-2xl bg-pantone139 text-ink disabled:cursor-not-allowed disabled:opacity-40"
+      className="flex h-[3.25rem] w-[3.25rem] items-center justify-center rounded-2xl border border-pantone139 bg-pantone139 text-ink transition focus:outline-none focus:ring-2 focus:ring-pantone140/35 focus:ring-offset-2 focus:ring-offset-macro disabled:cursor-not-allowed disabled:opacity-40"
     >
       {children}
     </button>
@@ -452,10 +466,18 @@ function ReceiptSummary({
   return (
     <div className={`rounded-3xl bg-soft ${compact ? "mt-5 p-4" : "p-4"}`}>
       <div className="grid gap-2 text-sm font-bold text-muted">
-        <p>Fra: <span className="text-ink">{fromName}</span></p>
-        <p>Til: <span className="text-ink">{toName}</span></p>
-        <p>Tidspunkt: <span className="text-ink">{new Date(createdAt).toLocaleString("da-DK")}</span></p>
-        <p>Navn: <span className="text-ink">{createdByName || "Mangler"}</span></p>
+        <p>
+          Fra: <span className="text-ink">{fromName}</span>
+        </p>
+        <p>
+          Til: <span className="text-ink">{toName}</span>
+        </p>
+        <p>
+          Tidspunkt: <span className="text-ink">{new Date(createdAt).toLocaleString("da-DK")}</span>
+        </p>
+        <p>
+          Navn: <span className="text-ink">{createdByName || "Mangler"}</span>
+        </p>
       </div>
       <div className="mt-4 space-y-2">
         {selectedLines.map((line) => (

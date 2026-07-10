@@ -117,7 +117,7 @@ export default function LocationQuickPage() {
         <section className="grid gap-4 sm:grid-cols-2 lg:gap-5">
           <QuickAction href={`/aabning?locationId=${locationId}`} title="Åbn denne" text="Gem åbningstal" icon={DoorOpen} />
           <QuickAction href={`/lukning?locationId=${locationId}`} title="Luk denne" text="Gem lukketal" icon={DoorClosed} />
-          <QuickAction href={`/qr/flyt/${locationId}`} title="Flyt varer" text="Start QR-flow" icon={Repeat} />
+          <QuickAction href={`/qr/flyt/${locationId}?start=1`} title="Flyt varer" text="Start lagerflyt" icon={Repeat} primary />
           {canSeeStock ? <QuickAction href="#lager" title="Se lager her" text="Vis varer på stedet" icon={PackageSearch} /> : null}
         </section>
 
@@ -148,15 +148,22 @@ function QuickAction({
   title,
   text,
   icon: Icon,
+  primary = false,
 }: {
   href: string;
   title: string;
   text: string;
   icon: typeof DoorOpen;
+  primary?: boolean;
 }) {
   return (
-    <Link href={href} className="flex min-h-28 items-center gap-4 rounded-[1.75rem] bg-macro p-5 shadow-soft lg:min-h-24 lg:p-4">
-      <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-pantone139 text-pantone140 lg:h-11 lg:w-11 lg:rounded-xl">
+    <Link
+      href={href}
+      className={`flex min-h-28 items-center gap-4 rounded-[1.75rem] p-5 shadow-soft lg:min-h-24 lg:p-4 ${
+        primary ? "border border-pantone139 bg-pantone139/80" : "bg-macro"
+      }`}
+    >
+      <span className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl text-pantone140 lg:h-11 lg:w-11 lg:rounded-xl ${primary ? "bg-macro/70" : "bg-pantone139"}`}>
         <Icon className="h-7 w-7 lg:h-5 lg:w-5" aria-hidden />
       </span>
       <span>
