@@ -212,8 +212,14 @@ export type BackEventMember = {
   id: string;
   fullName: string | null;
   email: string | null;
+  phone?: string | null;
   role: MemberRole;
   active: boolean;
+  invitationStatus?: "not_sent" | "pending" | "accepted";
+  invitationSentAt?: string | null;
+  invitationAcceptedAt?: string | null;
+  lastLoginAt?: string | null;
+  pushSubscriptionCount?: number;
   createdAt?: string | null;
   groups?: BackEventMemberGroup[];
 };
