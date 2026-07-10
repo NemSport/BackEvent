@@ -22,10 +22,11 @@ import {
   Settings,
   Users,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { AuthGuard } from "./auth-guard";
 import { useBackEventAuth } from "@/lib/backevent/auth";
 import { hasRoleAtLeast, roleLabels, type BackEventRole } from "@/lib/backevent/permissions";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 type NavItem = { href: string; label: string; icon: typeof Home; minRole: BackEventRole };
 type NavSection = { title: string; items: NavItem[] };
@@ -38,6 +39,7 @@ const navSections = [
       { href: "/flyt", label: "Flyt", icon: Repeat, minRole: "frivillig" },
       { href: "/aabning", label: "Åbning", icon: DoorOpen, minRole: "frivillig" },
       { href: "/lukning", label: "Lukning", icon: DoorClosed, minRole: "frivillig" },
+      { href: "/notifikationer", label: "Beskeder", icon: Bell, minRole: "frivillig" },
       { href: "/lagerstatus", label: "Lager", icon: PackageSearch, minRole: "ansvarlig" },
       { href: "/historik", label: "Historik", icon: History, minRole: "ansvarlig" },
     ],
@@ -88,11 +90,12 @@ export function AppShell({
 function ShellChrome({ children, aside }: { children: ReactNode; aside?: ReactNode }) {
   const { profile } = useBackEventAuth();
   const mobileNavItems = getMobileNavItems(profile?.role);
+  const unreadCount = useUnreadPushMessages(profile?.id);
 
   return (
     <div className="min-h-screen">
       <div className="mx-auto flex w-full max-w-[92rem] gap-4 px-4 py-4 sm:px-6 lg:px-5 lg:py-0">
-        <Sidebar />
+        <Sidebar unreadCount={unreadCount} />
         <main className="min-w-0 flex-1 pb-24 lg:py-5 lg:pb-8">
           <div className="lg:hidden">
             <UserHeader />
@@ -102,14 +105,19 @@ function ShellChrome({ children, aside }: { children: ReactNode; aside?: ReactNo
         {aside ? <aside className="hidden w-72 shrink-0 xl:block">{aside}</aside> : null}
       </div>
       <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-line bg-macro/95 px-2 py-2 shadow-[0_-10px_30px_rgba(31,41,51,0.08)] backdrop-blur lg:hidden">
-        <div className={`mx-auto grid max-w-md gap-1 ${mobileNavItems.length <= 3 ? "grid-cols-3" : "grid-cols-4"}`}>
+        <div className={`mx-auto grid max-w-md gap-1 ${mobileNavItems.length <= 3 ? "grid-cols-3" : mobileNavItems.length === 4 ? "grid-cols-4" : "grid-cols-5"}`}>
           {mobileNavItems.map((item) => (
             <Link
               key={item.href}
               href={item.href}
-              className="flex min-h-14 flex-col items-center justify-center gap-1 rounded-xl px-1 text-xs font-bold text-muted"
+              className="relative flex min-h-14 flex-col items-center justify-center gap-1 rounded-xl px-1 text-xs font-bold text-muted"
             >
               <item.icon className="h-5 w-5 text-pantone140" aria-hidden />
+              {item.href === "/notifikationer" && unreadCount > 0 ? (
+                <span className="absolute right-3 top-1 rounded-full bg-warmRed px-1.5 py-0.5 text-[10px] font-bold leading-none text-macro">
+                  {unreadCount > 9 ? "9+" : unreadCount}
+                </span>
+              ) : null}
               {item.label}
             </Link>
           ))}
@@ -119,7 +127,7 @@ function ShellChrome({ children, aside }: { children: ReactNode; aside?: ReactNo
   );
 }
 
-export function Sidebar() {
+export function Sidebar({ unreadCount = 0 }: { unreadCount?: number }) {
   const { profile } = useBackEventAuth();
   const visibleSections = navSections
     .map((section) => ({
@@ -148,7 +156,10 @@ export function Sidebar() {
                   }`}
                 >
                   <item.icon className={`h-4 w-4 shrink-0 ${section.title === "Drift" ? "text-pantone140" : "text-pantone139"}`} aria-hidden />
-                  {item.label}
+                  <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                  {item.href === "/notifikationer" && unreadCount > 0 ? (
+                    <span className="rounded-full bg-warmRed px-1.5 py-0.5 text-[10px] font-bold leading-none text-macro">{unreadCount > 9 ? "9+" : unreadCount}</span>
+                  ) : null}
                 </Link>
               ))}
             </div>
@@ -200,10 +211,60 @@ function getMobileNavItems(role: BackEventRole | undefined) {
   const driftItems = navSections[0].items;
 
   if (!hasRoleAtLeast(role, "ansvarlig")) {
-    return driftItems.filter((item) => ["/flyt", "/aabning", "/lukning"].includes(item.href));
+    return driftItems.filter((item) => ["/flyt", "/aabning", "/lukning", "/notifikationer"].includes(item.href));
   }
 
-  return [...driftItems.filter((item) => ["/flyt", "/lagerstatus", "/historik"].includes(item.href)), navSections[1].items[0]].filter((item) =>
+  return [...driftItems.filter((item) => ["/flyt", "/lagerstatus", "/historik", "/notifikationer"].includes(item.href)), navSections[1].items[0]].filter((item) =>
     hasRoleAtLeast(role, item.minRole),
   );
+}
+
+function useUnreadPushMessages(profileId: string | undefined) {
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  useEffect(() => {
+    if (!profileId) {
+      return;
+    }
+
+    let mounted = true;
+
+    async function loadUnreadCount() {
+      const token = await getAccessToken();
+      const response = await fetch("/api/push/messages?limit=1", {
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      }).catch(() => null);
+      const data = response ? ((await response.json().catch(() => null)) as { ok?: boolean; unreadCount?: number } | null) : null;
+
+      if (mounted && data?.ok) {
+        setUnreadCount(data.unreadCount ?? 0);
+      }
+    }
+
+    void loadUnreadCount();
+    const interval = window.setInterval(() => {
+      void loadUnreadCount();
+    }, 60000);
+
+    return () => {
+      mounted = false;
+      window.clearInterval(interval);
+    };
+  }, [profileId]);
+
+  return profileId ? unreadCount : 0;
+}
+
+async function getAccessToken() {
+  const supabase = createSupabaseBrowserClient();
+
+  if (!supabase) {
+    return null;
+  }
+
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
+  return session?.access_token ?? null;
 }

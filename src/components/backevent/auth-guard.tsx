@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useBackEventAuth } from "@/lib/backevent/auth";
 import { hasRoleAtLeast, type BackEventRole } from "@/lib/backevent/permissions";
+import { PushOnboardingPrompt } from "./push-onboarding";
 import { ButtonLink, Card } from "./ui";
 
 export function AuthGuard({
@@ -44,7 +45,12 @@ export function AuthGuard({
     return <AccessMessage title="Du har ikke adgang" href="/" action="Gå til Start" />;
   }
 
-  return <>{children}</>;
+  return (
+    <>
+      {children}
+      <PushOnboardingPrompt />
+    </>
+  );
 }
 
 function LoadingAccess() {

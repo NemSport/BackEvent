@@ -1,5 +1,6 @@
 import webPush from "web-push";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { buildMessageUrl, createPushMessage, pushPayload } from "./push-messages";
 
 const ALERT_GROUP_NAME = "Lageransvarlige";
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
@@ -123,8 +124,26 @@ export async function runInventoryAlerts(
     const members = await getActiveGroupMembers(supabase, group.id);
     const subscriptions = members.length > 0 ? await getActiveSubscriptions(supabase, members.map((member) => member.id)) : [];
     const membersWithSubscriptions = new Set(subscriptions.map((subscription) => subscription.user_id));
+    const payload = buildPayload(sendableAlerts);
+    const memberMessageIds = new Map<string, string>();
     let sentCount = 0;
     let failedCount = 0;
+
+    if (sendableAlerts.length > 0) {
+      for (const member of members) {
+        const message = await createPushMessage(supabase, {
+          recipientUserId: member.id,
+          recipientEmail: member.email,
+          senderName: "BackEvent",
+          groupId: group.id,
+          title: payload.title,
+          body: payload.body,
+          targetUrl: "/lagerstatus",
+          category: "inventory_alert",
+        });
+        memberMessageIds.set(member.id, message.id);
+      }
+    }
 
     for (const member of members) {
       if (!membersWithSubscriptions.has(member.id) && sendableAlerts.length > 0) {
@@ -155,10 +174,10 @@ export async function runInventoryAlerts(
         }
       } else {
         webPush.setVapidDetails(process.env.WEB_PUSH_SUBJECT!, getPublicVapidKey()!, process.env.WEB_PUSH_PRIVATE_KEY!);
-        const payload = buildPayload(sendableAlerts);
 
         for (const subscription of subscriptions) {
           const member = members.find((item) => item.id === subscription.user_id) ?? null;
+          const messageId = member ? memberMessageIds.get(member.id) ?? null : null;
 
           try {
             await webPush.sendNotification(
@@ -167,9 +186,14 @@ export async function runInventoryAlerts(
                 keys: {
                   p256dh: subscription.p256dh,
                   auth: subscription.auth,
-                },
               },
-              JSON.stringify(payload),
+            },
+              JSON.stringify(pushPayload({
+                title: payload.title,
+                body: payload.body,
+                messageId,
+                url: buildMessageUrl(messageId),
+              })),
             );
             sentCount += 1;
             await createPushLog(supabase, {

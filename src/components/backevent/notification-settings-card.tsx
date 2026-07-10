@@ -141,6 +141,38 @@ export function NotificationSettingsCard() {
     }
   }
 
+  async function disableNotifications() {
+    try {
+      setBusy(true);
+      setMessage(null);
+      const registration = isPushSupported() ? await navigator.serviceWorker.getRegistration("/sw.js") : null;
+      const subscription = await registration?.pushManager.getSubscription();
+      const token = await getAccessToken();
+      const response = await fetch("/api/push/subscribe", {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ endpoint: subscription?.endpoint ?? endpoint }),
+      });
+      const data = (await response.json()) as { ok: boolean; message?: string };
+
+      if (!response.ok || !data.ok) {
+        throw new Error(data.message ?? "Kunne ikke slå notifikationer fra");
+      }
+
+      await subscription?.unsubscribe().catch(() => undefined);
+      setEndpoint(null);
+      setStatus("not_enabled");
+      setMessage(data.message ?? "Notifikationer er slået fra på denne enhed.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Kunne ikke slå notifikationer fra.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <article className="rounded-2xl border border-line bg-macro p-5 shadow-soft">
       <div className="mb-4 flex items-start gap-3">
@@ -181,6 +213,16 @@ export function NotificationSettingsCard() {
           <Send className="h-4 w-4" aria-hidden />
           Send testnotifikation
         </button>
+        {status === "subscribed" ? (
+          <button
+            type="button"
+            onClick={disableNotifications}
+            disabled={busy}
+            className="rounded-xl border border-line bg-macro px-4 py-2 text-sm font-bold text-muted disabled:opacity-50"
+          >
+            Slå fra på denne enhed
+          </button>
+        ) : null}
       </div>
 
       {message ? <p className="mt-3 text-sm font-bold text-muted">{message}</p> : null}

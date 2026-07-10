@@ -7,6 +7,7 @@ import { Header } from "@/components/backevent/header";
 import { NotificationSettingsCard } from "@/components/backevent/notification-settings-card";
 import { useBackEventAuth } from "@/lib/backevent/auth";
 import { getMemberGroupMemberships } from "@/lib/backevent/data";
+import { isOperationalGroupName } from "@/lib/backevent/push-messages";
 import type { BackEventMemberGroup, BackEventMemberGroupMembership } from "@/lib/backevent/types";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
@@ -69,7 +70,7 @@ type LatestInventoryAlertRun = {
 };
 
 export default function AdminNotificationsPage() {
-  const { isOwner } = useBackEventAuth();
+  const { isOwner, isResponsible } = useBackEventAuth();
   const [groups, setGroups] = useState<BackEventMemberGroup[]>([]);
   const [memberships, setMemberships] = useState<BackEventMemberGroupMembership[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState("");
@@ -83,7 +84,10 @@ export default function AdminNotificationsPage() {
   const [runningInventoryAlert, setRunningInventoryAlert] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const activeGroups = useMemo(() => groups.filter((group) => group.active), [groups]);
+  const activeGroups = useMemo(
+    () => groups.filter((group) => group.active && (isOwner || isOperationalGroupName(group.name))),
+    [groups, isOwner],
+  );
   const lagerGroup = useMemo(() => groups.find((group) => group.name.toLowerCase() === "lageransvarlige") ?? null, [groups]);
   const lagerGroupMemberCount = useMemo(
     () => (lagerGroup ? memberships.filter((membership) => membership.groupId === lagerGroup.id).length : 0),
@@ -119,21 +123,25 @@ export default function AdminNotificationsPage() {
   }, []);
 
   const loadOwnerData = useCallback(async () => {
-    if (!isOwner) {
+    if (!isResponsible) {
       return;
     }
 
     try {
       setError(null);
-      const [memberGroupData] = await Promise.all([getMemberGroupMemberships(), loadLogs(), loadLatestAutomaticRun()]);
-      const onlyActiveGroups = memberGroupData.groups.filter((group) => group.active);
+      const [memberGroupData] = await Promise.all([
+        getMemberGroupMemberships(),
+        isOwner ? loadLogs() : Promise.resolve(),
+        isOwner ? loadLatestAutomaticRun() : Promise.resolve(),
+      ]);
+      const onlyActiveGroups = memberGroupData.groups.filter((group) => group.active && (isOwner || isOperationalGroupName(group.name)));
       setGroups(memberGroupData.groups);
       setMemberships(memberGroupData.memberships);
       setSelectedGroupId((current) => current || onlyActiveGroups[0]?.id || "");
     } catch {
       setError("Kunne ikke hente grupper og push-log lige nu.");
     }
-  }, [isOwner, loadLatestAutomaticRun, loadLogs]);
+  }, [isOwner, isResponsible, loadLatestAutomaticRun, loadLogs]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -168,8 +176,10 @@ export default function AdminNotificationsPage() {
         setError(data.message ?? "Push-besked kunne ikke sendes til alle.");
       }
 
-      await loadLogs();
-      await loadLatestAutomaticRun();
+      if (isOwner) {
+        await loadLogs();
+        await loadLatestAutomaticRun();
+      }
     } catch {
       setError("Push-besked kunne ikke sendes lige nu.");
     } finally {
@@ -213,8 +223,9 @@ export default function AdminNotificationsPage() {
         <section className="space-y-5">
           <NotificationSettingsCard />
 
-          {isOwner ? (
+          {isResponsible ? (
             <>
+              {isOwner ? (
               <section className="rounded-2xl border border-line bg-macro p-5 shadow-soft">
                 <div className="mb-5 flex items-center gap-3">
                   <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-pantone139/30 text-pantone140">
@@ -289,6 +300,7 @@ export default function AdminNotificationsPage() {
                   </div>
                 ) : null}
               </section>
+              ) : null}
 
               <section className="rounded-2xl border border-line bg-macro p-5 shadow-soft">
                 <div className="mb-5 flex items-center gap-3">
@@ -297,7 +309,9 @@ export default function AdminNotificationsPage() {
                   </span>
                   <div>
                     <h2 className="text-lg font-bold text-ink">Send besked til gruppe</h2>
-                    <p className="text-sm font-medium text-muted">Kun ejer kan sende push til grupper.</p>
+                    <p className="text-sm font-medium text-muted">
+                      {isOwner ? "Ejer kan sende til alle aktive grupper." : "Ansvarlig kan sende til driftsgrupper."}
+                    </p>
                   </div>
                 </div>
 
@@ -375,7 +389,7 @@ export default function AdminNotificationsPage() {
                 </span>
                 <div>
                   <h2 className="text-lg font-bold text-ink">Gruppebeskeder</h2>
-                  <p className="text-sm font-medium text-muted">Kun ejer kan sende push-beskeder til grupper.</p>
+                  <p className="text-sm font-medium text-muted">Frivillige kan ikke sende push-beskeder til grupper.</p>
                 </div>
               </div>
             </section>

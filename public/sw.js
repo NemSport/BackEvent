@@ -10,7 +10,8 @@ self.addEventListener("push", (event) => {
   let payload = {
     title: "BackEvent",
     body: "Ny besked fra BackEvent",
-    url: "/",
+    messageId: null,
+    url: "/notifikationer",
   };
 
   if (event.data) {
@@ -27,7 +28,8 @@ self.addEventListener("push", (event) => {
       icon: "/icons/backevent-icon.svg",
       badge: "/icons/backevent-icon.svg",
       data: {
-        url: payload.url || "/",
+        messageId: payload.messageId || null,
+        url: payload.url || (payload.messageId ? `/notifikationer/${payload.messageId}` : "/notifikationer"),
       },
     }),
   );
@@ -35,13 +37,16 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const targetUrl = event.notification.data?.url || "/";
+  const targetUrl = event.notification.data?.url || (event.notification.data?.messageId ? `/notifikationer/${event.notification.data.messageId}` : "/notifikationer");
 
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
       for (const client of clients) {
-        if ("focus" in client && new URL(client.url).pathname === targetUrl) {
-          return client.focus();
+        if ("focus" in client) {
+          const clientUrl = new URL(client.url);
+          if (clientUrl.pathname === targetUrl) {
+            return client.focus();
+          }
         }
       }
 

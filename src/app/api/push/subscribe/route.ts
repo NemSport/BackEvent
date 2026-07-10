@@ -10,7 +10,43 @@ type PushSubscribeBody = {
     };
   };
   userAgent?: unknown;
+  endpoint?: unknown;
 };
+
+export async function GET(request: Request) {
+  const auth = await requireBackEventRole(request, "frivillig");
+
+  if (!auth.ok) {
+    return NextResponse.json({ ok: false, message: auth.message, debug: auth.debug }, { status: auth.status });
+  }
+
+  if (!auth.supabase) {
+    return NextResponse.json({ ok: true, activeCount: 0, subscriptions: [] });
+  }
+
+  const { data, error } = await auth.supabase
+    .from("backevent_push_subscriptions")
+    .select("id,endpoint,active,created_at,updated_at")
+    .eq("user_id", auth.userId)
+    .eq("active", true)
+    .order("updated_at", { ascending: false });
+
+  if (error) {
+    return NextResponse.json({ ok: false, message: "Kunne ikke hente notifikationer" }, { status: 500 });
+  }
+
+  return NextResponse.json({
+    ok: true,
+    activeCount: data?.length ?? 0,
+    subscriptions: (data ?? []).map((subscription) => ({
+      id: subscription.id,
+      endpoint: subscription.endpoint,
+      active: subscription.active,
+      createdAt: subscription.created_at,
+      updatedAt: subscription.updated_at,
+    })),
+  });
+}
 
 export async function POST(request: Request) {
   const auth = await requireBackEventRole(request, "frivillig");
@@ -49,6 +85,35 @@ export async function POST(request: Request) {
   }
 
   return NextResponse.json({ ok: true, message: "Notifikationer er aktiveret" });
+}
+
+export async function DELETE(request: Request) {
+  const auth = await requireBackEventRole(request, "frivillig");
+
+  if (!auth.ok) {
+    return NextResponse.json({ ok: false, message: auth.message, debug: auth.debug }, { status: auth.status });
+  }
+
+  if (!auth.supabase) {
+    return NextResponse.json({ ok: true, message: "Mock mode: notifikation fjernet" });
+  }
+
+  const body = (await request.json().catch(() => null)) as PushSubscribeBody | null;
+  const endpoint = typeof body?.endpoint === "string" ? body.endpoint : null;
+
+  let query = auth.supabase.from("backevent_push_subscriptions").update({ active: false }).eq("user_id", auth.userId);
+
+  if (endpoint) {
+    query = query.eq("endpoint", endpoint);
+  }
+
+  const { error } = await query;
+
+  if (error) {
+    return NextResponse.json({ ok: false, message: "Kunne ikke fjerne notifikationer" }, { status: 500 });
+  }
+
+  return NextResponse.json({ ok: true, message: "Notifikationer er slået fra på denne enhed" });
 }
 
 function parseSubscription(body: PushSubscribeBody | null):

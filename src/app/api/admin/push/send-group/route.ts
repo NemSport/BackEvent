@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import webPush from "web-push";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { requireBackEventRole } from "@/lib/backevent/server-auth";
+import { buildMessageUrl, createPushMessage, isOperationalGroupName, pushPayload } from "@/lib/backevent/push-messages";
+import { isOwnerRole, isResponsibleRole } from "@/lib/backevent/permissions";
 
 type SendGroupPushBody = {
   groupId?: unknown;
@@ -31,13 +33,17 @@ type PushSubscriptionRow = {
 };
 
 export async function GET(request: Request) {
-  const auth = await requireBackEventRole(request, "ejer");
+  const auth = await requireBackEventRole(request, "ansvarlig");
 
   if (!auth.ok) {
     return NextResponse.json({ ok: false, message: auth.message, debug: auth.debug }, { status: auth.status });
   }
 
   if (!auth.supabase) {
+    return NextResponse.json({ ok: true, logs: [] });
+  }
+
+  if (!isOwnerRole(auth.profileRole)) {
     return NextResponse.json({ ok: true, logs: [] });
   }
 
@@ -68,7 +74,7 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const auth = await requireBackEventRole(request, "ejer");
+  const auth = await requireBackEventRole(request, "ansvarlig");
 
   if (!auth.ok) {
     return NextResponse.json({ ok: false, message: auth.message, debug: auth.debug }, { status: auth.status });
@@ -106,6 +112,10 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, message: "Gruppen findes ikke eller er inaktiv" }, { status: 404 });
     }
 
+    if (!canSendToGroup(auth.profileRole, group.name)) {
+      return NextResponse.json({ ok: false, message: "Du kan ikke sende til denne gruppe" }, { status: 403 });
+    }
+
     members = await getActiveGroupMembers(auth.supabase, group.id);
     subscriptions = members.length > 0 ? await getActiveSubscriptions(auth.supabase, members.map((member) => member.id)) : [];
   } catch {
@@ -113,9 +123,25 @@ export async function POST(request: Request) {
   }
 
   const membersWithSubscriptions = new Set(subscriptions.map((subscription) => subscription.user_id));
+  const memberMessageIds = new Map<string, string>();
   let sentCount = 0;
   let failedCount = 0;
   let skippedCount = 0;
+
+  for (const member of members) {
+    const inboxMessage = await createPushMessage(auth.supabase, {
+      recipientUserId: member.id,
+      recipientEmail: member.email,
+      senderUserId: auth.userId,
+      senderName: auth.userEmail,
+      groupId: group.id,
+      title: validation.title,
+      body: validation.message,
+      targetUrl: "/notifikationer",
+      category: "group",
+    });
+    memberMessageIds.set(member.id, inboxMessage.id);
+  }
 
   if (!isWebPushConfigured()) {
     for (const member of members) {
@@ -161,6 +187,7 @@ export async function POST(request: Request) {
 
   for (const subscription of subscriptions) {
     const member = members.find((item) => item.id === subscription.user_id) ?? null;
+    const messageId = member ? memberMessageIds.get(member.id) ?? null : null;
 
     try {
       await webPush.sendNotification(
@@ -171,11 +198,12 @@ export async function POST(request: Request) {
             auth: subscription.auth,
           },
         },
-        JSON.stringify({
+        JSON.stringify(pushPayload({
           title: validation.title,
           body: validation.message,
-          url: "/",
-        }),
+          messageId,
+          url: buildMessageUrl(messageId),
+        })),
       );
       sentCount += 1;
       await createPushLog(auth.supabase, {
@@ -240,6 +268,18 @@ function validateBody(body: SendGroupPushBody | null):
     title: body.title.trim().slice(0, 120),
     message: body.message.trim().slice(0, 500),
   };
+}
+
+function canSendToGroup(role: string | null, groupName: string) {
+  if (isOwnerRole(role)) {
+    return true;
+  }
+
+  if (!isResponsibleRole(role)) {
+    return false;
+  }
+
+  return isOperationalGroupName(groupName);
 }
 
 async function getActiveGroup(supabase: SupabaseClient, groupId: string) {

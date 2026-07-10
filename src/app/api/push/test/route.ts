@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import webPush from "web-push";
 import { requireBackEventRole } from "@/lib/backevent/server-auth";
+import { buildMessageUrl, createPushMessage, pushPayload } from "@/lib/backevent/push-messages";
 
 type PushTestBody = {
   endpoint?: unknown;
@@ -62,9 +63,24 @@ export async function POST(request: Request) {
 
   let sent = 0;
   let failed = 0;
+  let messageId: string | null = null;
 
   for (const subscription of subscriptions) {
     try {
+      if (!messageId) {
+        const message = await createPushMessage(auth.supabase, {
+          recipientUserId: auth.userId,
+          recipientEmail: auth.userEmail,
+          senderUserId: auth.userId,
+          senderName: "BackEvent",
+          title: "BackEvent",
+          body: "Testnotifikation fra BackEvent",
+          targetUrl: "/notifikationer",
+          category: "test",
+        });
+        messageId = message.id;
+      }
+
       await webPush.sendNotification(
         {
           endpoint: subscription.endpoint,
@@ -73,11 +89,12 @@ export async function POST(request: Request) {
             auth: subscription.auth,
           },
         },
-        JSON.stringify({
+        JSON.stringify(pushPayload({
           title: "BackEvent",
           body: "Testnotifikation fra BackEvent",
-          url: "/",
-        }),
+          messageId,
+          url: buildMessageUrl(messageId),
+        })),
       );
       sent += 1;
     } catch (error) {
