@@ -38,6 +38,55 @@ type PushSubscriptionRow = {
   auth: string;
 };
 
+type PushLogRow = {
+  id: string;
+  recipient_user_id: string | null;
+  recipient_email: string | null;
+  group_id: string | null;
+  title: string;
+  body: string;
+  status: "sent" | "failed" | "skipped";
+  error_message: string | null;
+  created_at: string;
+};
+
+export async function GET(request: Request) {
+  const auth = await requireBackEventRole(request, "ansvarlig");
+
+  if (!auth.ok) {
+    return NextResponse.json({ ok: false, message: auth.message, debug: auth.debug }, { status: auth.status });
+  }
+
+  if (!auth.supabase || !isOwnerRole(auth.profileRole)) {
+    return NextResponse.json({ ok: true, logs: [] });
+  }
+
+  const { data, error } = await auth.supabase
+    .from("backevent_push_logs")
+    .select("id,recipient_user_id,recipient_email,group_id,title,body,status,error_message,created_at")
+    .order("created_at", { ascending: false })
+    .limit(25);
+
+  if (error) {
+    return NextResponse.json({ ok: false, message: "Kunne ikke hente push-log" }, { status: 500 });
+  }
+
+  return NextResponse.json({
+    ok: true,
+    logs: ((data ?? []) as PushLogRow[]).map((row) => ({
+      id: row.id,
+      recipientUserId: row.recipient_user_id,
+      recipientEmail: row.recipient_email,
+      groupId: row.group_id,
+      title: row.title,
+      body: row.body,
+      status: row.status,
+      errorMessage: row.error_message,
+      createdAt: row.created_at,
+    })),
+  });
+}
+
 export async function POST(request: Request) {
   const auth = await requireBackEventRole(request, "ansvarlig");
   if (!auth.ok) {
@@ -75,14 +124,15 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, message: context.message }, { status: context.status });
     }
 
-    const subscriptions = context.members.length > 0 ? await getActiveSubscriptions(admin, context.members.map((member) => member.id)) : [];
+    const members = dedupeMembers(context.members);
+    const subscriptions = members.length > 0 ? await getActiveSubscriptions(admin, members.map((member) => member.id)) : [];
     const membersWithSubscriptions = new Set(subscriptions.map((subscription) => subscription.user_id));
     const memberMessageIds = new Map<string, string>();
     let sentCount = 0;
     let failedCount = 0;
     let skippedCount = 0;
 
-    for (const member of context.members) {
+    for (const member of members) {
       const inboxMessage = await createPushMessage(admin, {
         recipientUserId: member.id,
         recipientEmail: member.email,
@@ -98,7 +148,7 @@ export async function POST(request: Request) {
     }
 
     if (!isWebPushConfigured()) {
-      for (const member of context.members) {
+      for (const member of members) {
         skippedCount += 1;
         await createPushLog(admin, {
           senderUserId: auth.userId,
@@ -114,7 +164,7 @@ export async function POST(request: Request) {
 
       return NextResponse.json({
         ok: false,
-        memberCount: context.members.length,
+        memberCount: members.length,
         subscriptionCount: subscriptions.length,
         sentCount,
         failedCount,
@@ -126,7 +176,7 @@ export async function POST(request: Request) {
 
     webPush.setVapidDetails(process.env.WEB_PUSH_SUBJECT!, getPublicVapidKey()!, process.env.WEB_PUSH_PRIVATE_KEY!);
 
-    for (const member of context.members) {
+    for (const member of members) {
       if (!membersWithSubscriptions.has(member.id)) {
         skippedCount += 1;
         await createPushLog(admin, {
@@ -143,7 +193,7 @@ export async function POST(request: Request) {
     }
 
     for (const subscription of subscriptions) {
-      const member = context.members.find((item) => item.id === subscription.user_id) ?? null;
+      const member = members.find((item) => item.id === subscription.user_id) ?? null;
       const messageId = member ? memberMessageIds.get(member.id) ?? null : null;
 
       try {
@@ -193,7 +243,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       ok: sentCount > 0,
-      memberCount: context.members.length,
+      memberCount: members.length,
       subscriptionCount: subscriptions.length,
       sentCount,
       failedCount,
@@ -311,6 +361,22 @@ async function getActiveSubscriptions(supabase: SupabaseClient, userIds: string[
     .eq("active", true);
   if (error) throw error;
   return (data ?? []) as PushSubscriptionRow[];
+}
+
+function dedupeMembers(members: ProfileRow[]) {
+  const seen = new Set<string>();
+  const deduped: ProfileRow[] = [];
+
+  for (const member of members) {
+    if (seen.has(member.id)) {
+      continue;
+    }
+
+    seen.add(member.id);
+    deduped.push(member);
+  }
+
+  return deduped;
 }
 
 async function createPushLog(

@@ -90,6 +90,7 @@ export default function NotificationMessagePage() {
       }
 
       setMessage(data.message ?? null);
+      window.dispatchEvent(new Event("backevent:push-messages-updated"));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Kunne ikke markere besked som læst.");
     } finally {
@@ -117,6 +118,7 @@ export default function NotificationMessagePage() {
       }
 
       router.replace("/notifikationer");
+      window.dispatchEvent(new Event("backevent:push-messages-updated"));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Kunne ikke slette besked.");
     } finally {

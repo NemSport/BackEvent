@@ -283,12 +283,14 @@ function useUnreadPushMessages(profileId: string | undefined) {
     }
 
     void loadUnreadCount();
+    window.addEventListener("backevent:push-messages-updated", loadUnreadCount);
     const interval = window.setInterval(() => {
       void loadUnreadCount();
     }, 60000);
 
     return () => {
       mounted = false;
+      window.removeEventListener("backevent:push-messages-updated", loadUnreadCount);
       window.clearInterval(interval);
     };
   }, [profileId]);

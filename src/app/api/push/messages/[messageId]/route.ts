@@ -94,21 +94,37 @@ export async function DELETE(request: Request, context: { params: Promise<{ mess
     return NextResponse.json({ ok: true });
   }
 
-  const { data, error } = await auth.supabase
+  const { data: existing, error: readError } = await auth.supabase
+    .from("backevent_push_messages")
+    .select("id")
+    .eq("recipient_user_id", auth.userId)
+    .eq("id", messageId)
+    .is("deleted_at", null)
+    .maybeSingle();
+
+  if (readError) {
+    return NextResponse.json(
+      { ok: false, message: "Kunne ikke finde besked", ...(isDevelopment() ? { debug: readError.message } : {}) },
+      { status: 500 },
+    );
+  }
+
+  if (!existing) {
+    return NextResponse.json({ ok: false, message: "Besked findes ikke" }, { status: 404 });
+  }
+
+  const { error } = await auth.supabase
     .from("backevent_push_messages")
     .update({ deleted_at: new Date().toISOString() })
     .eq("recipient_user_id", auth.userId)
     .eq("id", messageId)
-    .is("deleted_at", null)
-    .select("id")
-    .maybeSingle();
+    .is("deleted_at", null);
 
   if (error) {
-    return NextResponse.json({ ok: false, message: "Kunne ikke slette besked" }, { status: 500 });
-  }
-
-  if (!data) {
-    return NextResponse.json({ ok: false, message: "Besked findes ikke" }, { status: 404 });
+    return NextResponse.json(
+      { ok: false, message: "Kunne ikke slette besked", ...(isDevelopment() ? { debug: error.message } : {}) },
+      { status: 500 },
+    );
   }
 
   return NextResponse.json({ ok: true });
@@ -130,4 +146,8 @@ function toMessage(row: PushMessageRow) {
     createdAt: row.created_at,
     unread: !row.read_at,
   };
+}
+
+function isDevelopment() {
+  return process.env.NODE_ENV !== "production";
 }

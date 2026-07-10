@@ -89,6 +89,7 @@ export default function NotificationsInboxPage() {
         const deleted = messages.find((message) => message.id === messageId);
         return deleted?.unread ? Math.max(0, current - 1) : current;
       });
+      window.dispatchEvent(new Event("backevent:push-messages-updated"));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Kunne ikke slette besked.");
     } finally {
