@@ -16,39 +16,39 @@ const volunteerActions = [
     minRole: "frivillig",
   },
   {
-    href: "/lagerstatus",
-    title: "Se lagerstatus",
-    description: "Se hvad der er på lager",
-    icon: PackageSearch,
-    minRole: "ansvarlig",
-  },
-  {
     href: "/aabning",
-    title: "Åbn container/bar",
-    description: "Tæl lageret ved start",
+    title: "Åbn",
+    description: "Tæl ved start",
     icon: DoorOpen,
     minRole: "frivillig",
   },
   {
     href: "/lukning",
-    title: "Luk container/bar",
+    title: "Luk",
     description: "Gem tal ved lukning",
     icon: DoorClosed,
     minRole: "frivillig",
   },
   {
-    href: "/historik",
-    title: "Historik",
-    description: "Se seneste handlinger",
-    icon: History,
+    href: "/steder",
+    title: "Sted",
+    description: "Åbn direkte link",
+    icon: MapPin,
+    minRole: "frivillig",
+  },
+  {
+    href: "/lagerstatus",
+    title: "Lager",
+    description: "Se beholdning",
+    icon: PackageSearch,
     minRole: "ansvarlig",
   },
   {
-    href: "/steder",
-    title: "Container/bar links",
-    description: "Åbn direkte ved et sted",
-    icon: MapPin,
-    minRole: "frivillig",
+    href: "/historik",
+    title: "Historik",
+    description: "Seneste handlinger",
+    icon: History,
+    minRole: "ansvarlig",
   },
 ] satisfies Array<{ href: string; title: string; description: string; icon: LucideIcon; minRole: BackEventRole }>;
 
@@ -60,35 +60,35 @@ export default function VolunteerHomePage() {
     <AuthGuard>
       <main className="min-h-screen px-4 py-5 sm:px-6 lg:py-6">
         <div className="mx-auto flex min-h-[calc(100vh-2.5rem)] w-full max-w-4xl flex-col lg:min-h-0">
-          <header className="rounded-[2rem] bg-pantone139 px-5 py-7 text-ink shadow-soft sm:px-8 sm:py-9 lg:rounded-[1.5rem] lg:px-6 lg:py-5">
+          <header className="rounded-3xl bg-pantone139 px-5 py-6 text-ink shadow-soft sm:px-7 sm:py-8 lg:rounded-2xl lg:px-6 lg:py-5">
             <p className="text-4xl font-bold leading-tight sm:text-5xl lg:text-4xl">BackEvent</p>
             <p className="mt-2 text-lg font-medium text-pantone140 lg:text-base">Backend for events, barer og beholdning</p>
             {isMock ? <p className="mt-3 inline-flex rounded-full bg-macro px-3 py-1 text-sm font-bold text-pantone140">Mock mode</p> : null}
           </header>
 
-          <section className="flex flex-1 flex-col justify-center py-8 sm:py-10 lg:justify-start lg:py-8">
+          <section className="flex flex-1 flex-col justify-center py-7 sm:py-9 lg:justify-start lg:py-7">
             <div className="mb-6">
               <h1 className="text-4xl font-bold text-ink sm:text-5xl lg:text-4xl">Hvad skal du?</h1>
               <p className="mt-2 text-lg font-medium text-muted lg:text-base">Vælg den opgave du står med lige nu</p>
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-2 lg:gap-5">
-              {visibleActions.map((action) => (
-                <VolunteerActionCard key={action.href} {...action} />
+            <div className="grid gap-3 sm:grid-cols-2 lg:gap-4">
+              {visibleActions.map((action, index) => (
+                <VolunteerActionCard key={action.href} {...action} primary={index === 0} />
               ))}
             </div>
 
             {isAdmin ? (
               <Link
                 href="/admin"
-                className="mt-6 flex min-h-20 items-center gap-4 rounded-[1.5rem] border border-line bg-macro p-4 shadow-sm transition hover:border-pantone139"
+                className="mt-5 flex min-h-16 items-center gap-3 rounded-2xl border border-line bg-macro p-3 shadow-sm transition hover:border-pantone139 focus:outline-none focus:ring-2 focus:ring-pantone139/60"
               >
-                <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-soft text-pantone140">
-                  <ShieldCheck className="h-6 w-6" aria-hidden />
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-soft text-pantone140">
+                  <ShieldCheck className="h-5 w-5" aria-hidden />
                 </span>
                 <span>
-                  <span className="block text-lg font-bold text-ink">Ansvarlig?</span>
-                  <span className="block text-base font-medium text-muted">Gå til admin-overblik</span>
+                  <span className="block text-base font-bold text-ink">Ansvarlig?</span>
+                  <span className="block text-sm font-medium text-muted">Gå til admin-overblik</span>
                 </span>
               </Link>
             ) : null}
@@ -104,23 +104,27 @@ function VolunteerActionCard({
   title,
   description,
   icon: Icon,
+  primary = false,
 }: {
   href: string;
   title: string;
   description: string;
   icon: LucideIcon;
+  primary?: boolean;
 }) {
   return (
     <Link
       href={href}
-      className="flex min-h-36 items-center gap-4 rounded-[1.75rem] bg-macro p-5 shadow-soft transition hover:-translate-y-0.5 hover:bg-soft lg:min-h-28 lg:p-4"
+      className={`flex min-h-28 items-center gap-3 rounded-2xl border p-4 shadow-sm transition hover:-translate-y-0.5 hover:shadow-soft focus:outline-none focus:ring-2 focus:ring-pantone139/60 lg:min-h-24 lg:px-4 lg:py-3 ${
+        primary ? "border-pantone139 bg-pantone139/85" : "border-line bg-macro hover:border-pantone139"
+      }`}
     >
-      <span className="flex h-16 w-16 shrink-0 items-center justify-center rounded-3xl bg-pantone139 text-pantone140 lg:h-12 lg:w-12 lg:rounded-2xl">
-        <Icon className="h-8 w-8 lg:h-6 lg:w-6" aria-hidden />
+      <span className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-xl text-pantone140 lg:h-10 lg:w-10 ${primary ? "bg-macro/70" : "bg-pantone139/35"}`}>
+        <Icon className="h-6 w-6 lg:h-5 lg:w-5" aria-hidden />
       </span>
       <span>
-        <span className="block text-2xl font-bold text-ink lg:text-xl">{title}</span>
-        <span className="mt-1 block text-lg font-medium text-muted lg:text-base">{description}</span>
+        <span className="block text-xl font-bold text-ink lg:text-base">{title}</span>
+        <span className="mt-0.5 block text-base font-medium text-muted lg:text-sm">{description}</span>
       </span>
     </Link>
   );

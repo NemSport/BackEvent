@@ -3,28 +3,20 @@
 import {
   AlertTriangle,
   BarChart3,
-  Bell,
   ClipboardCheck,
-  Download,
+  History,
   ListChecks,
-  Mail,
   PackageSearch,
-  PackagePlus,
   PencilLine,
-  PlugZap,
-  QrCode,
-  RefreshCw,
   Repeat,
   Settings,
-  Users,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ActionCard } from "@/components/backevent/action-card";
 import { AppShell } from "@/components/backevent/app-shell";
 import { Header } from "@/components/backevent/header";
 import { LocationCard } from "@/components/backevent/location-card";
 import { MovementList } from "@/components/backevent/movement-list";
-import { NotificationSettingsCard } from "@/components/backevent/notification-settings-card";
 import { useBackEventAuth } from "@/lib/backevent/auth";
 import {
   getFillPercentageFromTotal,
@@ -40,34 +32,19 @@ import {
 import { isOwnerRole } from "@/lib/backevent/permissions";
 import type { Location, Product, StockBalance, StockDiscrepancy, StockMovement } from "@/lib/backevent/types";
 
-const setupCards = [
-  { href: "/admin/setup", title: "Setup", description: "Kontrol før markedet", icon: Settings },
-  { href: "/admin/medlemmer", title: "Medlemmer", description: "Roller og adgang", icon: Users },
-  { href: "/admin/emails", title: "Emails", description: "Beskeder og lageralarmer", icon: Mail },
-  { href: "/admin/produkter", title: "Produkter", description: "Varer og OnlinePOS-mapping", icon: PackagePlus },
-  { href: "/admin/containere", title: "Steder", description: "Containere og barer", icon: PackageSearch },
-  { href: "/admin/qr", title: "QR-koder", description: "Direkte links til steder", icon: QrCode },
-];
-
-const driftCards = [
-  { href: "/admin/aabning-lukning", title: "Åbning/lukning", description: "Se status på optællinger", icon: ClipboardCheck },
+const quickActions = [
+  { href: "/lagerstatus", title: "Lagerstatus", description: "Aktuel beholdning", icon: PackageSearch, tone: "primary" as const },
   { href: "/admin/rettelser", title: "Ret lager", description: "Rettelser og svind", icon: PencilLine },
-  { href: "/admin/notifikationer", title: "Notifikationer", description: "Push på denne enhed", icon: Bell },
-  { href: "/flyt", title: "Flyt varer", description: "Flyt mellem steder", icon: Repeat },
-  { href: "/lagerstatus", title: "Lagerstatus", description: "Aktuel beholdning", icon: PackageSearch },
+  { href: "/flyt", title: "Flyt varer", description: "Mellem containere", icon: Repeat },
+  { href: "/admin/aabning-lukning", title: "Tællinger", description: "Åbning og lukning", icon: ClipboardCheck },
 ];
 
-function controlCards(discrepancyCount: number) {
-  return [
-    { href: "/admin/driftstjek", title: "Driftstjek", description: "Se om systemet er klar", icon: ListChecks, ownerOnly: true },
-    { href: "/admin/rapport", title: "Afvigelser", description: `${discrepancyCount} kræver tjek`, icon: AlertTriangle, ownerOnly: false },
-    { href: "/admin/rapport", title: "Forbrugsrapport", description: "Forbrug pr. sted og vare", icon: BarChart3, ownerOnly: false },
-    { href: "/onlinepos/mapping", title: "OnlinePOS mapping", description: "Godkend lagerpåvirkning", icon: PlugZap, ownerOnly: true },
-    { href: "/admin/onlinepos-test", title: "OnlinePOS test", description: "Mock salg og mapping", icon: PlugZap, ownerOnly: true },
-    { href: "/admin/onlinepos-probe", title: "OnlinePOS probe", description: "Læs rigtig API read-only", icon: RefreshCw, ownerOnly: true },
-    { href: "/admin/eksport", title: "Eksport", description: "CSV og backup", icon: Download, ownerOnly: true },
-  ];
-}
+const ownerLinks = [
+  { href: "/admin/setup", title: "Setup", description: "Klargøring", icon: Settings },
+  { href: "/admin/produkter", title: "Produkter", description: "Varer og grænser", icon: PackageSearch },
+  { href: "/admin/containere", title: "Steder", description: "Containere og barer", icon: PackageSearch },
+  { href: "/admin/driftstjek", title: "Driftstjek", description: "Systemstatus", icon: ListChecks },
+];
 
 export default function AdminDashboardPage() {
   const { profile } = useBackEventAuth();
@@ -78,21 +55,23 @@ export default function AdminDashboardPage() {
   const [movements, setMovements] = useState<StockMovement[]>([]);
   const [discrepancies, setDiscrepancies] = useState<StockDiscrepancy[]>([]);
   const [message, setMessage] = useState<string | null>(null);
-  const lowStockText = getLowStockText(products, balances);
+
+  const lowStockItems = useMemo(() => getLowStockItems(products, balances, locations), [balances, locations, products]);
+  const criticalCount = lowStockItems.filter((item) => item.severity === "critical").length;
+  const warningCount = lowStockItems.length + discrepancies.length;
 
   useEffect(() => {
     let mounted = true;
 
     async function loadData() {
       try {
-        const [loadedLocations, loadedProducts, loadedBalances, loadedMovements, loadedDiscrepancies] =
-          await Promise.all([
-            getLocations(),
-            getProducts(),
-            getStockBalances(),
-            getRecentMovements(),
-            getStockDiscrepancies(),
-          ]);
+        const [loadedLocations, loadedProducts, loadedBalances, loadedMovements, loadedDiscrepancies] = await Promise.all([
+          getLocations(),
+          getProducts(),
+          getStockBalances(),
+          getRecentMovements(),
+          getStockDiscrepancies(),
+        ]);
 
         if (!mounted) {
           return;
@@ -118,48 +97,40 @@ export default function AdminDashboardPage() {
   }, []);
 
   return (
-    <AppShell requiredRole="ansvarlig" aside={<DashboardAside lowStockText={lowStockText} discrepancyCount={discrepancies.length} movements={movements.length} />}>
+    <AppShell requiredRole="ansvarlig" aside={<DashboardAside lowStockItems={lowStockItems} discrepancyCount={discrepancies.length} movements={movements.length} />}>
       <Header title="Admin-overblik" subtitle="Samlet status for containere, barer og beholdning" />
 
-      {message ? <p className="mb-4 rounded-2xl bg-warmRed/10 px-4 py-3 text-base font-bold text-warmRed">{message}</p> : null}
+      {message ? <p className="mb-4 rounded-2xl bg-warmRed/10 px-4 py-3 text-sm font-bold text-warmRed">{message}</p> : null}
 
-      <div className="space-y-10">
-        <section>
-          <div className="mb-4">
-            <h2 className="text-2xl font-bold text-ink">Notifikationer</h2>
-            <p className="mt-1 text-base font-medium text-muted">Gør denne enhed klar til BackEvent-beskeder.</p>
+      {warningCount > 0 ? (
+        <section className="mb-6 rounded-2xl border border-warmRed/25 bg-warmRed/10 p-4">
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-macro text-warmRed">
+              <AlertTriangle className="h-5 w-5" aria-hidden />
+            </span>
+            <div>
+              <h2 className="text-lg font-bold text-ink">Kræver handling</h2>
+              <p className="mt-1 text-sm font-bold text-warmRed">
+                {criticalCount > 0 ? `${criticalCount} kritiske beholdninger` : `${warningCount} punkter kræver tjek`}
+              </p>
+            </div>
           </div>
-          <NotificationSettingsCard />
         </section>
+      ) : null}
 
-        {isOwner ? (
-          <CardSection title="Opsætning" description="Ejer kan klargøre produkter, steder, adgang og QR-koder.">
-            {setupCards.map((card) => (
+      <div className="space-y-8">
+        <section>
+          <SectionHeader title="Hurtige handlinger" description="De mest brugte opgaver under drift." />
+          <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-4">
+            {quickActions.map((card) => (
               <ActionCard key={card.href} {...card} />
             ))}
-          </CardSection>
-        ) : null}
-
-        <CardSection title="Drift" description="Daglige lageropgaver under markedet.">
-          {driftCards.map((card) => (
-            <ActionCard key={card.href} {...card} />
-          ))}
-        </CardSection>
-
-        <CardSection title="Kontrol" description="Tjek og rapporter.">
-          {controlCards(discrepancies.length)
-            .filter((card) => isOwner || !card.ownerOnly)
-            .map((card) => (
-              <ActionCard key={`${card.href}-${card.title}`} {...card} />
-            ))}
-        </CardSection>
+          </div>
+        </section>
 
         <section>
-          <div className="mb-5">
-            <h2 className="text-2xl font-bold text-ink">Status lige nu</h2>
-            <p className="mt-1 text-base font-medium text-muted">Lagerstyring for containere og barer</p>
-          </div>
-          <div className="grid gap-4 xl:grid-cols-2">
+          <SectionHeader title="Lagerstatus" description="Fysiske lagersteder lige nu." />
+          <div className="grid gap-3 xl:grid-cols-2">
             {locations.map((location) => {
               const total = getLocationTotal(location.id, balances);
               return (
@@ -177,44 +148,64 @@ export default function AdminDashboardPage() {
         </section>
 
         <section>
-          <h2 className="mb-5 text-2xl font-bold text-ink">Seneste flytninger</h2>
-          <MovementList movements={movements} locations={locations} products={products} />
+          <SectionHeader title="Seneste aktivitet" description="Nyeste lagerbevægelser." />
+          <MovementList movements={movements.slice(0, 5)} locations={locations} products={products} />
         </section>
+
+        <section>
+          <SectionHeader title="Kontrol og rapporter" description="Overblik uden at fylde forsiden." />
+          <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-4">
+            <ActionCard href="/admin/rapport" title="Rapport" description="Forbrug og afvigelser" icon={BarChart3} />
+            <ActionCard href="/historik" title="Historik" description="Handlinger og rettelser" icon={History} />
+            {isOwner
+              ? ownerLinks.slice(0, 2).map((card) => <ActionCard key={card.href} {...card} />)
+              : null}
+          </div>
+        </section>
+
+        {isOwner ? (
+          <section>
+            <SectionHeader title="Ejer" description="Sjældnere opsætning og kontrol." />
+            <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-4">
+              {ownerLinks.slice(2).map((card) => (
+                <ActionCard key={card.href} {...card} />
+              ))}
+            </div>
+          </section>
+        ) : null}
       </div>
     </AppShell>
   );
 }
 
-function CardSection({ title, description, children }: { title: string; description: string; children: React.ReactNode }) {
+function SectionHeader({ title, description }: { title: string; description: string }) {
   return (
-    <section>
-      <div className="mb-4">
-        <h2 className="text-2xl font-bold text-ink">{title}</h2>
-        <p className="mt-1 text-base font-medium text-muted">{description}</p>
-      </div>
-      <div className="grid gap-4 sm:grid-cols-2 2xl:grid-cols-4">{children}</div>
-    </section>
+    <div className="mb-3">
+      <h2 className="text-xl font-bold text-ink">{title}</h2>
+      <p className="mt-0.5 text-sm font-medium text-muted">{description}</p>
+    </div>
   );
 }
 
-function DashboardAside({ lowStockText, discrepancyCount, movements }: { lowStockText: string; discrepancyCount: number; movements: number }) {
+function DashboardAside({
+  lowStockItems,
+  discrepancyCount,
+  movements,
+}: {
+  lowStockItems: Array<{ productName: string; locationName: string; severity: "low" | "critical" }>;
+  discrepancyCount: number;
+  movements: number;
+}) {
   return (
     <div className="sticky top-5 space-y-3">
+      <AsideCard title="Lavt lager" icon={PackageSearch} urgent={lowStockItems.length > 0}>
+        <p>{lowStockItems.length > 0 ? `${lowStockItems.slice(0, 3).map((item) => item.productName).join(", ")} kræver opmærksomhed.` : "Ingen kritiske varer lige nu."}</p>
+      </AsideCard>
       <AsideCard title="Afvigelser" icon={AlertTriangle} urgent={discrepancyCount > 0}>
         <p>{discrepancyCount > 0 ? `${discrepancyCount} linjer kræver tjek.` : "Ingen afvigelser lige nu."}</p>
       </AsideCard>
-      <AsideCard title="Lavt lager" icon={PackageSearch} urgent={lowStockText !== "Ingen kritiske varer lige nu."}>
-        <p>{lowStockText}</p>
-      </AsideCard>
-      <AsideCard title="Seneste flytninger" icon={Repeat}>
+      <AsideCard title="Aktivitet" icon={Repeat}>
         <p>{movements > 0 ? `${movements} flytninger i historikken.` : "Ingen flytninger endnu."}</p>
-      </AsideCard>
-      <AsideCard title="Tjekliste" icon={ListChecks}>
-        <ul className="space-y-2 font-medium text-muted">
-          <li>Kontroller åbning/lukning</li>
-          <li>Hold øje med lavt lager</li>
-          <li>Eksporter backup ved behov</li>
-        </ul>
       </AsideCard>
     </div>
   );
@@ -232,35 +223,35 @@ function AsideCard({
   urgent?: boolean;
 }) {
   return (
-    <article className="rounded-[1.5rem] border border-line bg-macro p-4 shadow-soft">
+    <article className="rounded-2xl border border-line bg-macro p-4 shadow-sm">
       <div className="mb-2 flex items-center gap-3">
-        <span
-          className={`flex h-10 w-10 items-center justify-center rounded-xl ${
-            urgent ? "bg-warmRed/10 text-warmRed" : "bg-pantone139/30 text-pantone140"
-          }`}
-        >
+        <span className={`flex h-9 w-9 items-center justify-center rounded-xl ${urgent ? "bg-warmRed/10 text-warmRed" : "bg-pantone139/30 text-pantone140"}`}>
           <Icon className="h-5 w-5" aria-hidden />
         </span>
-        <h2 className="text-lg font-bold text-ink">{title}</h2>
+        <h2 className="text-base font-bold text-ink">{title}</h2>
       </div>
       <div className="text-sm font-medium text-muted">{children}</div>
     </article>
   );
 }
 
-function getLowStockText(products: Product[], balances: StockBalance[]) {
-  const lowProducts = balances
+type LowStockItem = { productName: string; locationName: string; severity: "low" | "critical" };
+
+function getLowStockItems(products: Product[], balances: StockBalance[], locations: Location[]): LowStockItem[] {
+  return balances
     .map((balance) => {
       const product = products.find((item) => item.id === balance.productId);
-      return product && balance.quantity <= product.lowThreshold ? product.name : null;
+      const location = locations.find((item) => item.id === balance.locationId);
+
+      if (!product || !location || balance.quantity > product.lowThreshold) {
+        return null;
+      }
+
+      return {
+        productName: product.name,
+        locationName: location.name,
+        severity: balance.quantity <= product.criticalThreshold || balance.quantity < 0 ? ("critical" as const) : ("low" as const),
+      };
     })
-    .filter(Boolean);
-
-  const uniqueLowProducts = Array.from(new Set(lowProducts));
-
-  if (uniqueLowProducts.length === 0) {
-    return "Ingen kritiske varer lige nu.";
-  }
-
-  return `${uniqueLowProducts.slice(0, 3).join(", ")} kræver opmærksomhed.`;
+    .filter((item): item is LowStockItem => item !== null);
 }
