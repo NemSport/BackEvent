@@ -6,6 +6,7 @@ import {
   ClipboardCheck,
   Download,
   ListChecks,
+  Mail,
   PackageSearch,
   PackagePlus,
   PencilLine,
@@ -22,6 +23,7 @@ import { AppShell } from "@/components/backevent/app-shell";
 import { Header } from "@/components/backevent/header";
 import { LocationCard } from "@/components/backevent/location-card";
 import { MovementList } from "@/components/backevent/movement-list";
+import { NotificationSettingsCard } from "@/components/backevent/notification-settings-card";
 import { useBackEventAuth } from "@/lib/backevent/auth";
 import {
   getFillPercentageFromTotal,
@@ -40,6 +42,7 @@ import type { Location, Product, StockBalance, StockDiscrepancy, StockMovement }
 const setupCards = [
   { href: "/admin/setup", title: "Setup", description: "Kontrol før markedet", icon: Settings },
   { href: "/admin/medlemmer", title: "Medlemmer", description: "Roller og adgang", icon: Users },
+  { href: "/admin/emails", title: "Emails", description: "Beskeder og lageralarmer", icon: Mail },
   { href: "/admin/produkter", title: "Produkter", description: "Varer og OnlinePOS-mapping", icon: PackagePlus },
   { href: "/admin/containere", title: "Steder", description: "Containere og barer", icon: PackageSearch },
   { href: "/admin/qr", title: "QR-koder", description: "Direkte links til steder", icon: QrCode },
@@ -119,6 +122,8 @@ export default function AdminDashboardPage() {
       {message ? <p className="mb-4 rounded-2xl bg-warmRed/10 px-4 py-3 text-base font-bold text-warmRed">{message}</p> : null}
 
       <div className="space-y-10">
+        <NotificationSettingsCard />
+
         {isOwner ? (
           <CardSection title="Opsætning" description="Ejer kan klargøre produkter, steder, adgang og QR-koder.">
             {setupCards.map((card) => (

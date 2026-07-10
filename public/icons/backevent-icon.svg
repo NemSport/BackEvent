@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="BackEvent">
+  <rect width="512" height="512" rx="112" fill="#e7352b"/>
+  <circle cx="256" cy="256" r="164" fill="#fcc146"/>
+  <path fill="#814f12" d="M157 172h118c48 0 80 27 80 67 0 24-12 43-32 54 25 10 40 31 40 59 0 45-35 74-88 74H157V172Zm99 101c23 0 37-11 37-30s-14-30-37-30h-35v60h35Zm10 112c26 0 41-12 41-33s-15-33-41-33h-45v66h45Z"/>
+</svg>
