@@ -3,6 +3,7 @@
 import {
   AlertTriangle,
   BarChart3,
+  Bell,
   ClipboardCheck,
   Download,
   ListChecks,
@@ -51,6 +52,7 @@ const setupCards = [
 const driftCards = [
   { href: "/admin/aabning-lukning", title: "Åbning/lukning", description: "Se status på optællinger", icon: ClipboardCheck },
   { href: "/admin/rettelser", title: "Ret lager", description: "Rettelser og svind", icon: PencilLine },
+  { href: "/admin/notifikationer", title: "Notifikationer", description: "Push på denne enhed", icon: Bell },
   { href: "/flyt", title: "Flyt varer", description: "Flyt mellem steder", icon: Repeat },
   { href: "/lagerstatus", title: "Lagerstatus", description: "Aktuel beholdning", icon: PackageSearch },
 ];
@@ -122,7 +124,13 @@ export default function AdminDashboardPage() {
       {message ? <p className="mb-4 rounded-2xl bg-warmRed/10 px-4 py-3 text-base font-bold text-warmRed">{message}</p> : null}
 
       <div className="space-y-10">
-        <NotificationSettingsCard />
+        <section>
+          <div className="mb-4">
+            <h2 className="text-2xl font-bold text-ink">Notifikationer</h2>
+            <p className="mt-1 text-base font-medium text-muted">Gør denne enhed klar til BackEvent-beskeder.</p>
+          </div>
+          <NotificationSettingsCard />
+        </section>
 
         {isOwner ? (
           <CardSection title="Opsætning" description="Ejer kan klargøre produkter, steder, adgang og QR-koder.">

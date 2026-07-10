@@ -3,6 +3,7 @@
 import Link from "next/link";
 import {
   BarChart3,
+  Bell,
   ClipboardCheck,
   DoorClosed,
   History,
@@ -27,6 +28,7 @@ import { hasRoleAtLeast, roleLabels, type BackEventRole } from "@/lib/backevent/
 const navItems = [
   { href: "/", label: "Start", icon: Home, minRole: "frivillig" },
   { href: "/admin", label: "Admin-overblik", icon: LayoutDashboard, minRole: "ansvarlig" },
+  { href: "/admin/notifikationer", label: "Notifikationer", icon: Bell, minRole: "ansvarlig" },
   { href: "/admin/medlemmer", label: "Medlemmer", icon: Users, minRole: "ejer" },
   { href: "/admin/emails", label: "Emails", icon: Mail, minRole: "ejer" },
   { href: "/admin/produkter", label: "Produkter", icon: PackagePlus, minRole: "ejer" },
