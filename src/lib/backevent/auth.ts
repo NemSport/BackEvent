@@ -4,8 +4,8 @@ import { useEffect, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { isSupabaseConfigured } from "@/lib/supabase/is-configured";
-import { isOwnerRole, isResponsibleRole, normalizeRole, type BackEventRole } from "./permissions";
-export type { BackEventRole } from "./permissions";
+import { hasPermission, isOwnerRole, isResponsibleRole, normalizeRole, type BackEventPermissionKey, type BackEventRole } from "./permissions";
+export type { BackEventPermissionKey, BackEventRole } from "./permissions";
 
 export type BackEventProfile = {
   id: string;
@@ -13,6 +13,7 @@ export type BackEventProfile = {
   email: string | null;
   role: BackEventRole;
   active: boolean;
+  permissions: BackEventPermissionKey[];
   isMock: boolean;
 };
 
@@ -22,6 +23,7 @@ const mockProfile: BackEventProfile = {
   email: null,
   role: "ejer",
   active: true,
+  permissions: [],
   isMock: true,
 };
 
@@ -44,11 +46,14 @@ export async function getCurrentProfile(): Promise<BackEventProfile | null> {
     return null;
   }
 
-  const { data } = await supabase
+  const [{ data }, permissionsResponse] = await Promise.all([
+    supabase
     .from("backevent_profiles")
     .select("id,full_name,role,active")
     .eq("id", user.id)
-    .single();
+      .single(),
+    supabase.from("backevent_profile_permissions").select("permission_key,enabled").eq("profile_id", user.id).eq("enabled", true),
+  ]);
 
   return {
     id: user.id,
@@ -56,6 +61,7 @@ export async function getCurrentProfile(): Promise<BackEventProfile | null> {
     email: user.email ?? null,
     role: normalizeRole(data?.role),
     active: data?.active ?? true,
+    permissions: (permissionsResponse.data ?? []).map((row) => row.permission_key as BackEventPermissionKey),
     isMock: false,
   };
 }
@@ -226,6 +232,7 @@ export function useBackEventAuth() {
     isAdmin: isResponsibleRole(profile?.role),
     isResponsible: isResponsibleRole(profile?.role),
     isOwner: isOwnerRole(profile?.role),
+    can: (permission: BackEventPermissionKey) => hasPermission(profile?.role, profile?.permissions, permission),
     isAuthenticated: Boolean(profile),
   };
 }

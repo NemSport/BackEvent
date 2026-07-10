@@ -5,9 +5,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/backevent/app-shell";
 import { Header } from "@/components/backevent/header";
 import { useBackEventAuth } from "@/lib/backevent/auth";
-import { roleLabels } from "@/lib/backevent/permissions";
+import { allPermissions, permissionLabels, roleDefaultPermissions, roleLabels } from "@/lib/backevent/permissions";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
-import type { BackEventMember, BackEventMemberGroup, MemberRole } from "@/lib/backevent/types";
+import type { BackEventMember, BackEventMemberGroup, BackEventPermissionKey, MemberRole } from "@/lib/backevent/types";
 
 type InvitationFilter = "all" | "accepted" | "pending" | "not_sent";
 type PushFilter = "all" | "active" | "missing";
@@ -32,6 +32,7 @@ type MemberFormState = {
   role: MemberRole;
   active: boolean;
   groupIds: string[];
+  permissions: BackEventPermissionKey[];
   sendInvite: boolean;
   confirmSelfDeactivate: boolean;
 };
@@ -45,6 +46,7 @@ const emptyForm: MemberFormState = {
   role: "frivillig",
   active: true,
   groupIds: [],
+  permissions: roleDefaultPermissions.frivillig,
   sendInvite: true,
   confirmSelfDeactivate: false,
 };
@@ -143,6 +145,7 @@ export default function MembersPage() {
       role: member.role,
       active: member.active,
       groupIds: member.groups?.map((group) => group.id) ?? [],
+      permissions: member.permissions ?? [],
       sendInvite: false,
       confirmSelfDeactivate: false,
     });
@@ -437,7 +440,7 @@ function MemberModal({
         <div className="mb-4 flex items-start justify-between gap-3">
           <div>
             <h2 className="text-xl font-bold text-ink">{editing ? "Redigér medlem" : "Opret medlem"}</h2>
-            <p className="text-sm font-medium text-muted">Ejer kan ændre rolle, status og grupper.</p>
+            <p className="text-sm font-medium text-muted">Ejer kan ændre rolle, status, grupper og konkrete tilladelser.</p>
           </div>
           <button type="button" onClick={onClose} className="rounded-lg bg-soft px-3 py-2 text-sm font-bold text-pantone140">
             Luk
@@ -450,7 +453,14 @@ function MemberModal({
           <Field label="Telefon" value={form.phone} onChange={(value) => patch({ phone: value })} />
           <label className="text-xs font-bold text-muted">
             Rolle
-            <select value={form.role} onChange={(event) => patch({ role: event.target.value as MemberRole })} className="mt-1 h-10 w-full rounded-xl border border-line bg-macro px-3 text-sm font-bold text-ink">
+            <select
+              value={form.role}
+              onChange={(event) => {
+                const role = event.target.value as MemberRole;
+                patch({ role, permissions: role === "ejer" ? allPermissions : roleDefaultPermissions[role] });
+              }}
+              className="mt-1 h-10 w-full rounded-xl border border-line bg-macro px-3 text-sm font-bold text-ink"
+            >
               {roles.map((role) => (
                 <option key={role} value={role}>{roleLabels[role]}</option>
               ))}
@@ -495,6 +505,36 @@ function MemberModal({
               );
             })}
           </div>
+        </div>
+
+        <div className="mt-4">
+          <p className="mb-2 text-xs font-bold uppercase text-muted">Tilladelser</p>
+          {form.role === "ejer" ? (
+            <p className="rounded-xl bg-pantone139/20 px-3 py-2 text-sm font-bold text-pantone140">Ejer har altid alle tilladelser.</p>
+          ) : (
+            <div className="grid gap-2 sm:grid-cols-2">
+              {allPermissions.map((permission) => {
+                const checked = form.permissions.includes(permission);
+                return (
+                  <label key={permission} className={`flex min-h-10 items-center gap-2 rounded-xl px-3 text-sm font-bold ${checked ? "bg-pantone139/25 text-ink" : "bg-soft text-muted"}`}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(event) =>
+                        patch({
+                          permissions: event.target.checked
+                            ? [...form.permissions, permission]
+                            : form.permissions.filter((item) => item !== permission),
+                        })
+                      }
+                      className="h-4 w-4 accent-pantone140"
+                    />
+                    {permissionLabels[permission]}
+                  </label>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         <div className="mt-5 flex justify-end gap-2">

@@ -76,14 +76,16 @@ export function AppShell({
   aside,
   adminOnly = false,
   requiredRole,
+  requiredPermission,
 }: {
   children: ReactNode;
   aside?: ReactNode;
   adminOnly?: boolean;
   requiredRole?: BackEventRole;
+  requiredPermission?: Parameters<typeof AuthGuard>[0]["requiredPermission"];
 }) {
   return (
-    <AuthGuard adminOnly={adminOnly} requiredRole={requiredRole}>
+    <AuthGuard adminOnly={adminOnly} requiredRole={requiredRole} requiredPermission={requiredPermission}>
       <ShellChrome aside={aside}>{children}</ShellChrome>
     </AuthGuard>
   );
@@ -101,6 +103,7 @@ function ShellChrome({ children, aside }: { children: ReactNode; aside?: ReactNo
         <main className="min-w-0 flex-1 pb-24 lg:py-5 lg:pb-8">
           <div className="lg:hidden">
             <UserHeader />
+            <MobileAdminMenu />
           </div>
           {children}
         </main>
@@ -126,6 +129,42 @@ function ShellChrome({ children, aside }: { children: ReactNode; aside?: ReactNo
         </div>
       </nav>
     </div>
+  );
+}
+
+function MobileAdminMenu() {
+  const { profile } = useBackEventAuth();
+  const adminSections = navSections
+    .filter((section) => section.title !== "Drift")
+    .map((section) => ({
+      ...section,
+      items: section.items.filter((item) => hasRoleAtLeast(profile?.role, item.minRole)),
+    }))
+    .filter((section) => section.items.length > 0);
+
+  if (!hasRoleAtLeast(profile?.role, "ansvarlig") || adminSections.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="mb-4 rounded-2xl border border-line bg-macro p-3 shadow-sm">
+      <h2 className="mb-2 text-sm font-bold text-ink">Administration</h2>
+      <div className="space-y-3">
+        {adminSections.map((section) => (
+          <div key={section.title}>
+            <p className="mb-1 text-[11px] font-bold uppercase text-muted">{section.title}</p>
+            <div className="grid grid-cols-2 gap-2">
+              {section.items.map((item) => (
+                <Link key={item.href} href={item.href} className="flex min-h-11 items-center gap-2 rounded-xl bg-soft px-3 text-sm font-bold text-pantone140">
+                  <item.icon className="h-4 w-4 shrink-0" aria-hidden />
+                  <span className="truncate">{item.label}</span>
+                </Link>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 

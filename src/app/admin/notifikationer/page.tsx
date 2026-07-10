@@ -8,7 +8,8 @@ import { NotificationSettingsCard } from "@/components/backevent/notification-se
 import { useBackEventAuth } from "@/lib/backevent/auth";
 import { getMemberGroupMemberships } from "@/lib/backevent/data";
 import { isOperationalGroupName } from "@/lib/backevent/push-messages";
-import type { BackEventMemberGroup, BackEventMemberGroupMembership } from "@/lib/backevent/types";
+import { roleLabels } from "@/lib/backevent/permissions";
+import type { BackEventMember, BackEventMemberGroup, BackEventMemberGroupMembership, MemberRole } from "@/lib/backevent/types";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 type GroupPushResult = {
@@ -22,6 +23,12 @@ type GroupPushResult = {
   skippedCount?: number;
   message?: string;
 };
+
+type SendPushResult = GroupPushResult & {
+  recipientSummary?: string;
+};
+
+type TargetMode = "all" | "roles" | "groups" | "members";
 
 type PushLog = {
   id: string;
@@ -74,10 +81,18 @@ export default function AdminNotificationsPage() {
   const [groups, setGroups] = useState<BackEventMemberGroup[]>([]);
   const [memberships, setMemberships] = useState<BackEventMemberGroupMembership[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState("");
+  const [members, setMembers] = useState<BackEventMember[]>([]);
+  const [targetMode, setTargetMode] = useState<TargetMode>("groups");
+  const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
+  const [selectedRoles, setSelectedRoles] = useState<MemberRole[]>(["ansvarlig"]);
+  const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([]);
+  const [targetUrl, setTargetUrl] = useState("/notifikationer");
   const [title, setTitle] = useState("");
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
+  const [confirmingSend, setConfirmingSend] = useState(false);
   const [result, setResult] = useState<GroupPushResult | null>(null);
+  const [sendResult, setSendResult] = useState<SendPushResult | null>(null);
   const [logs, setLogs] = useState<PushLog[]>([]);
   const [inventoryAlertResult, setInventoryAlertResult] = useState<InventoryAlertRunResult | null>(null);
   const [latestAutomaticRun, setLatestAutomaticRun] = useState<LatestInventoryAlertRun | null>(null);
@@ -88,6 +103,19 @@ export default function AdminNotificationsPage() {
     () => groups.filter((group) => group.active && (isOwner || isOperationalGroupName(group.name))),
     [groups, isOwner],
   );
+  const recipientCount = useMemo(() => {
+    if (targetMode === "all") return members.filter((member) => member.active).length;
+    if (targetMode === "roles") return members.filter((member) => member.active && selectedRoles.includes(member.role)).length;
+    if (targetMode === "groups") {
+      const memberIds = new Set(
+        memberships
+          .filter((membership) => selectedGroupIds.includes(membership.groupId))
+          .map((membership) => membership.profileId),
+      );
+      return members.filter((member) => member.active && memberIds.has(member.id)).length;
+    }
+    return members.filter((member) => member.active && selectedMemberIds.includes(member.id)).length;
+  }, [members, memberships, selectedGroupIds, selectedMemberIds, selectedRoles, targetMode]);
   const lagerGroup = useMemo(() => groups.find((group) => group.name.toLowerCase() === "lageransvarlige") ?? null, [groups]);
   const lagerGroupMemberCount = useMemo(
     () => (lagerGroup ? memberships.filter((membership) => membership.groupId === lagerGroup.id).length : 0),
@@ -129,8 +157,9 @@ export default function AdminNotificationsPage() {
 
     try {
       setError(null);
-      const [memberGroupData] = await Promise.all([
+      const [memberGroupData, membersResponse] = await Promise.all([
         getMemberGroupMemberships(),
+        isOwner ? fetchMembersForPush() : Promise.resolve(null),
         isOwner ? loadLogs() : Promise.resolve(),
         isOwner ? loadLatestAutomaticRun() : Promise.resolve(),
       ]);
@@ -138,6 +167,10 @@ export default function AdminNotificationsPage() {
       setGroups(memberGroupData.groups);
       setMemberships(memberGroupData.memberships);
       setSelectedGroupId((current) => current || onlyActiveGroups[0]?.id || "");
+      setSelectedGroupIds((current) => current.length > 0 ? current : onlyActiveGroups[0]?.id ? [onlyActiveGroups[0].id] : []);
+      if (membersResponse) {
+        setMembers(membersResponse);
+      }
     } catch {
       setError("Kunne ikke hente grupper og push-log lige nu.");
     }
@@ -187,6 +220,50 @@ export default function AdminNotificationsPage() {
     }
   }
 
+  async function sendPush() {
+    if (!confirmingSend) {
+      setConfirmingSend(true);
+      return;
+    }
+
+    try {
+      setSending(true);
+      setSendResult(null);
+      setError(null);
+      const token = await getAccessToken();
+      const response = await fetch("/api/admin/push/send", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          targetMode,
+          groupIds: selectedGroupIds,
+          roles: selectedRoles,
+          memberIds: selectedMemberIds,
+          title,
+          message,
+          targetUrl,
+        }),
+      });
+      const data = (await response.json()) as SendPushResult;
+      setSendResult(data);
+      if (!response.ok || !data.ok) {
+        setError(data.message ?? "Push-besked kunne ikke sendes.");
+      } else {
+        setConfirmingSend(false);
+      }
+      if (isOwner) {
+        await loadLogs();
+      }
+    } catch {
+      setError("Push-besked kunne ikke sendes lige nu.");
+    } finally {
+      setSending(false);
+    }
+  }
+
   async function runInventoryAlerts() {
     try {
       setRunningInventoryAlert(true);
@@ -225,6 +302,114 @@ export default function AdminNotificationsPage() {
 
           {isResponsible ? (
             <>
+              <section className="rounded-2xl border border-line bg-macro p-4 shadow-soft">
+                <div className="mb-4 flex items-center gap-3">
+                  <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-pantone139/30 text-pantone140">
+                    <Send className="h-5 w-5" aria-hidden />
+                  </span>
+                  <div>
+                    <h2 className="text-lg font-bold text-ink">Send notifikation</h2>
+                    <p className="text-sm font-medium text-muted">Vælg modtagere, se forhåndsvisning og send.</p>
+                  </div>
+                </div>
+
+                <div className="grid gap-3">
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    {(["groups", "roles", "members", "all"] as TargetMode[]).map((mode) => {
+                      const disabled = !isOwner && mode !== "groups";
+                      return (
+                        <button
+                          key={mode}
+                          type="button"
+                          disabled={disabled}
+                          onClick={() => setTargetMode(mode)}
+                          className={`min-h-11 rounded-xl px-3 text-sm font-bold disabled:opacity-40 ${targetMode === mode ? "bg-pantone139 text-ink" : "bg-soft text-pantone140"}`}
+                        >
+                          {mode === "groups" ? "Grupper" : mode === "roles" ? "Roller" : mode === "members" ? "Medlemmer" : "Alle"}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {targetMode === "groups" ? (
+                    <MultiPick
+                      items={activeGroups.map((group) => ({ id: group.id, label: group.name }))}
+                      selectedIds={selectedGroupIds}
+                      onToggle={(id) => toggleId(id, selectedGroupIds, setSelectedGroupIds)}
+                    />
+                  ) : null}
+
+                  {targetMode === "roles" ? (
+                    <MultiPick
+                      items={(["frivillig", "ansvarlig", "ejer"] as MemberRole[]).map((role) => ({ id: role, label: roleLabels[role] }))}
+                      selectedIds={selectedRoles}
+                      onToggle={(id) => toggleId(id as MemberRole, selectedRoles, setSelectedRoles)}
+                    />
+                  ) : null}
+
+                  {targetMode === "members" ? (
+                    <MultiPick
+                      items={members.map((member) => ({ id: member.id, label: member.fullName || member.email || "Navn mangler" }))}
+                      selectedIds={selectedMemberIds}
+                      onToggle={(id) => toggleId(id, selectedMemberIds, setSelectedMemberIds)}
+                    />
+                  ) : null}
+
+                  <label className="text-sm font-bold text-ink">
+                    Titel
+                    <input value={title} onChange={(event) => setTitle(event.target.value)} className="mt-1 h-11 w-full rounded-xl border border-line bg-macro px-3 text-sm font-bold text-ink" />
+                  </label>
+                  <label className="text-sm font-bold text-ink">
+                    Besked
+                    <textarea value={message} onChange={(event) => setMessage(event.target.value)} rows={4} className="mt-1 w-full rounded-xl border border-line bg-macro px-3 py-2 text-sm font-medium text-ink" />
+                  </label>
+                  <label className="text-sm font-bold text-ink">
+                    Link
+                    <select value={targetUrl} onChange={(event) => setTargetUrl(event.target.value)} className="mt-1 h-11 w-full rounded-xl border border-line bg-macro px-3 text-sm font-bold text-ink">
+                      <option value="/notifikationer">Indbakke</option>
+                      <option value="/lagerstatus">Lagerstatus</option>
+                      <option value="/admin">Admin</option>
+                      <option value="/flyt">Flyt varer</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div className="mt-4 rounded-2xl bg-soft p-3">
+                  <p className="text-xs font-bold uppercase text-muted">Forhåndsvisning</p>
+                  <p className="mt-1 text-sm font-bold text-ink">{title || "Titel"}</p>
+                  <p className="text-sm font-medium text-muted">{message || "Besked vises her."}</p>
+                  <p className="mt-2 text-sm font-bold text-pantone140">{recipientCount} modtagere</p>
+                </div>
+
+                {confirmingSend ? (
+                  <div className="mt-3 rounded-xl bg-pantone139/20 p-3 text-sm font-bold text-ink">
+                    Send til {recipientCount} modtagere?
+                    <button type="button" onClick={() => setConfirmingSend(false)} className="ml-3 text-pantone140">Ret</button>
+                  </div>
+                ) : null}
+
+                <div className="sticky bottom-20 z-10 mt-4 rounded-2xl bg-macro/95 py-2 backdrop-blur lg:static">
+                  <button
+                    type="button"
+                    onClick={sendPush}
+                    disabled={sending || recipientCount === 0 || title.trim().length < 2 || message.trim().length < 2}
+                    className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-pantone139 px-4 text-sm font-bold text-ink disabled:opacity-50"
+                  >
+                    <Send className="h-4 w-4" aria-hidden />
+                    {sending ? "Sender..." : confirmingSend ? "Bekræft og send" : "Send notifikation"}
+                  </button>
+                </div>
+
+                {sendResult ? (
+                  <div className="mt-4 grid gap-3 rounded-2xl bg-soft p-4 text-sm font-bold text-ink sm:grid-cols-3">
+                    <ResultStat label="Modtagere" value={sendResult.memberCount ?? 0} />
+                    <ResultStat label="Sendt" value={sendResult.sentCount ?? 0} />
+                    <ResultStat label="Fejlet" value={sendResult.failedCount ?? 0} />
+                    <p className="sm:col-span-3 text-muted">{sendResult.recipientSummary ?? ""}</p>
+                  </div>
+                ) : null}
+              </section>
+
               {isOwner ? (
               <section className="rounded-2xl border border-line bg-macro p-5 shadow-soft">
                 <div className="mb-5 flex items-center gap-3">
@@ -457,6 +642,48 @@ function StatusChip({ status }: { status: PushLog["status"] }) {
         : "bg-pantone139/30 text-pantone140";
 
   return <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-bold ${className}`}>{label}</span>;
+}
+
+function MultiPick({
+  items,
+  selectedIds,
+  onToggle,
+}: {
+  items: Array<{ id: string; label: string }>;
+  selectedIds: string[];
+  onToggle: (id: string) => void;
+}) {
+  return (
+    <div className="grid gap-2 sm:grid-cols-2">
+      {items.length === 0 ? <p className="rounded-xl bg-soft px-3 py-2 text-sm font-bold text-muted">Ingen valg fundet.</p> : null}
+      {items.map((item) => {
+        const selected = selectedIds.includes(item.id);
+        return (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => onToggle(item.id)}
+            className={`min-h-11 rounded-xl px-3 text-left text-sm font-bold ${selected ? "bg-pantone139 text-ink" : "bg-soft text-muted"}`}
+          >
+            {item.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function toggleId<T extends string>(id: T, selectedIds: T[], setter: (value: T[]) => void) {
+  setter(selectedIds.includes(id) ? selectedIds.filter((item) => item !== id) : [...selectedIds, id]);
+}
+
+async function fetchMembersForPush() {
+  const token = await getAccessToken();
+  const response = await fetch("/api/admin/members", {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+  const data = (await response.json()) as { ok: boolean; members?: BackEventMember[] };
+  return data.ok ? data.members ?? [] : [];
 }
 
 async function getAccessToken() {

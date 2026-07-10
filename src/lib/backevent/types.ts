@@ -208,6 +208,20 @@ export type OperationalChecklistItem = {
 
 export type MemberRole = "frivillig" | "ansvarlig" | "ejer";
 
+export type BackEventPermissionKey =
+  | "opening"
+  | "closing"
+  | "move_stock"
+  | "view_stock"
+  | "adjust_stock"
+  | "view_history"
+  | "view_reports"
+  | "manage_thresholds"
+  | "send_notifications"
+  | "manage_members"
+  | "manage_onlinepos"
+  | "manage_settings";
+
 export type BackEventMember = {
   id: string;
   fullName: string | null;
@@ -220,6 +234,7 @@ export type BackEventMember = {
   invitationAcceptedAt?: string | null;
   lastLoginAt?: string | null;
   pushSubscriptionCount?: number;
+  permissions?: BackEventPermissionKey[];
   createdAt?: string | null;
   groups?: BackEventMemberGroup[];
 };

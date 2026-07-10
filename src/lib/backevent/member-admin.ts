@@ -1,7 +1,7 @@
 import type { User } from "@supabase/supabase-js";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { normalizeRole, type BackEventRole } from "./permissions";
-import type { BackEventMember, BackEventMemberGroup, BackEventMemberGroupMembership, MemberRole } from "./types";
+import { allPermissions, normalizeRole, type BackEventRole } from "./permissions";
+import type { BackEventMember, BackEventMemberGroup, BackEventMemberGroupMembership, BackEventPermissionKey, MemberRole } from "./types";
 
 type AdminClient = NonNullable<ReturnType<typeof createSupabaseAdminClient>>;
 
@@ -21,6 +21,12 @@ type ProfileRow = {
 
 type PushRow = {
   user_id: string;
+};
+
+type PermissionRow = {
+  profile_id: string;
+  permission_key: string;
+  enabled: boolean | null;
 };
 
 export type MemberAdminList = {
@@ -46,6 +52,7 @@ export type UpsertMemberInput = {
   role: MemberRole;
   active: boolean;
   groupIds: string[];
+  permissions: BackEventPermissionKey[];
   sendInvite?: boolean;
   confirmSelfDeactivate?: boolean;
 };
@@ -55,7 +62,7 @@ export function getMemberAdminClient() {
 }
 
 export async function listMembersForAdmin(admin: AdminClient): Promise<MemberAdminList> {
-  const [profilesResponse, groupsResponse, membershipsResponse, pushResponse, auditResponse, usersResponse] = await Promise.all([
+  const [profilesResponse, groupsResponse, membershipsResponse, pushResponse, permissionsResponse, auditResponse, usersResponse] = await Promise.all([
     admin
       .from("backevent_profiles")
       .select("id,full_name,email,phone,role,active,invitation_status,invitation_sent_at,invitation_accepted_at,last_login_at,created_at")
@@ -63,6 +70,7 @@ export async function listMembersForAdmin(admin: AdminClient): Promise<MemberAdm
     admin.from("backevent_member_groups").select("id,name,description,active,created_at,updated_at").order("name", { ascending: true }),
     admin.from("backevent_member_group_members").select("id,group_id,profile_id,created_at"),
     admin.from("backevent_push_subscriptions").select("user_id").eq("active", true),
+    admin.from("backevent_profile_permissions").select("profile_id,permission_key,enabled").eq("enabled", true),
     admin
       .from("backevent_member_audit_logs")
       .select("id,actor_user_id,member_user_id,action,details,created_at")
@@ -75,6 +83,7 @@ export async function listMembersForAdmin(admin: AdminClient): Promise<MemberAdm
   if (groupsResponse.error) throw groupsResponse.error;
   if (membershipsResponse.error) throw membershipsResponse.error;
   if (pushResponse.error) throw pushResponse.error;
+  if (permissionsResponse.error) throw permissionsResponse.error;
   if (auditResponse.error) throw auditResponse.error;
   if (usersResponse.error) throw usersResponse.error;
 
@@ -82,6 +91,7 @@ export async function listMembersForAdmin(admin: AdminClient): Promise<MemberAdm
   const memberships = (membershipsResponse.data ?? []).map(toMembership);
   const usersById = new Map((usersResponse.data.users ?? []).map((user) => [user.id, user]));
   const pushCountByUser = countBy((pushResponse.data ?? []) as PushRow[], (row) => row.user_id);
+  const permissionsByUser = groupPermissions((permissionsResponse.data ?? []) as PermissionRow[]);
 
   const members = ((profilesResponse.data ?? []) as ProfileRow[]).map((profile) => {
     const user = usersById.get(profile.id) ?? null;
@@ -101,6 +111,7 @@ export async function listMembersForAdmin(admin: AdminClient): Promise<MemberAdm
       invitationAcceptedAt,
       lastLoginAt,
       pushSubscriptionCount: pushCountByUser.get(profile.id) ?? 0,
+      permissions: permissionsByUser.get(profile.id) ?? [],
       createdAt: profile.created_at,
       groups: groups.filter((group) => memberships.some((membership) => membership.profileId === profile.id && membership.groupId === group.id)),
     } satisfies BackEventMember;
@@ -154,10 +165,12 @@ export async function createMember(admin: AdminClient, actorUserId: string, inpu
     invitationSentAt,
   });
   await setGroups(admin, userId, input.groupIds);
+  await setPermissions(admin, userId, input.role, input.permissions);
   await createAuditLog(admin, actorUserId, userId, input.sendInvite ? "member_created_invited" : "member_created", {
     email: normalizedEmail,
     role: input.role,
     groupCount: input.groupIds.length,
+    permissions: input.permissions,
   });
 
   return userId;
@@ -188,6 +201,7 @@ export async function updateMember(admin: AdminClient, actorUserId: string, memb
     invitationSentAt: current.invitation_sent_at,
   });
   await setGroups(admin, memberId, input.groupIds);
+  await setPermissions(admin, memberId, input.role, input.permissions);
 
   const roleChanged = normalizeRole(current.role) !== input.role;
   const activeChanged = (current.active ?? true) !== input.active;
@@ -199,6 +213,7 @@ export async function updateMember(admin: AdminClient, actorUserId: string, memb
     activeChanged,
     groupChanged,
     groupCount: input.groupIds.length,
+    permissions: input.permissions,
   });
 }
 
@@ -323,6 +338,33 @@ async function setGroups(admin: AdminClient, memberId: string, groupIds: string[
   if (error) throw error;
 }
 
+async function setPermissions(admin: AdminClient, memberId: string, role: MemberRole, permissions: BackEventPermissionKey[]) {
+  const { error: deleteError } = await admin.from("backevent_profile_permissions").delete().eq("profile_id", memberId);
+  if (deleteError) throw deleteError;
+
+  if (role === "ejer") {
+    return;
+  }
+
+  const uniquePermissions = Array.from(new Set(permissions)).filter((permission): permission is BackEventPermissionKey =>
+    allPermissions.includes(permission as BackEventPermissionKey),
+  );
+
+  if (uniquePermissions.length === 0) {
+    return;
+  }
+
+  const { error } = await admin.from("backevent_profile_permissions").insert(
+    uniquePermissions.map((permission) => ({
+      profile_id: memberId,
+      permission_key: permission,
+      enabled: true,
+    })),
+  );
+
+  if (error) throw error;
+}
+
 async function getProfile(admin: AdminClient, memberId: string): Promise<ProfileRow> {
   const { data, error } = await admin
     .from("backevent_profiles")
@@ -366,6 +408,18 @@ function countBy<T>(items: T[], keyFn: (item: T) => string | null | undefined) {
   return counts;
 }
 
+function groupPermissions(rows: PermissionRow[]) {
+  const grouped = new Map<string, BackEventPermissionKey[]>();
+  for (const row of rows) {
+    if (!row.enabled || !allPermissions.includes(row.permission_key as BackEventPermissionKey)) {
+      continue;
+    }
+
+    grouped.set(row.profile_id, [...(grouped.get(row.profile_id) ?? []), row.permission_key as BackEventPermissionKey]);
+  }
+  return grouped;
+}
+
 export function parseMemberInput(body: unknown): UpsertMemberInput {
   if (!body || typeof body !== "object") {
     throw new Error("Ugyldige felter.");
@@ -376,6 +430,11 @@ export function parseMemberInput(body: unknown): UpsertMemberInput {
   const email = normalizeEmail(String(value.email ?? ""));
   const role = normalizeRole(value.role as BackEventRole);
   const groupIds = Array.isArray(value.groupIds) ? value.groupIds.map((id) => String(id)).filter(Boolean) : [];
+  const permissions = Array.isArray(value.permissions)
+    ? value.permissions
+        .map((permission) => String(permission))
+        .filter((permission): permission is BackEventPermissionKey => allPermissions.includes(permission as BackEventPermissionKey))
+    : [];
 
   if (!fullName) throw new Error("Navn mangler.");
   if (!email) throw new Error("E-mail mangler.");
@@ -387,6 +446,7 @@ export function parseMemberInput(body: unknown): UpsertMemberInput {
     role,
     active: value.active !== false,
     groupIds,
+    permissions,
     sendInvite: value.sendInvite === true,
     confirmSelfDeactivate: value.confirmSelfDeactivate === true,
   };

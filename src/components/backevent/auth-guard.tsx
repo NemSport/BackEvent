@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useBackEventAuth } from "@/lib/backevent/auth";
-import { hasRoleAtLeast, type BackEventRole } from "@/lib/backevent/permissions";
+import { hasPermission, hasRoleAtLeast, type BackEventPermissionKey, type BackEventRole } from "@/lib/backevent/permissions";
 import { PushOnboardingPrompt } from "./push-onboarding";
 import { ButtonLink, Card } from "./ui";
 
@@ -11,10 +11,12 @@ export function AuthGuard({
   children,
   adminOnly = false,
   requiredRole,
+  requiredPermission,
 }: {
   children: React.ReactNode;
   adminOnly?: boolean;
   requiredRole?: BackEventRole;
+  requiredPermission?: BackEventPermissionKey;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -42,6 +44,10 @@ export function AuthGuard({
   }
 
   if (!hasRoleAtLeast(profile?.role, minimumRole)) {
+    return <AccessMessage title="Du har ikke adgang" href="/" action="Gå til Start" />;
+  }
+
+  if (requiredPermission && !hasPermission(profile?.role, profile?.permissions, requiredPermission)) {
     return <AccessMessage title="Du har ikke adgang" href="/" action="Gå til Start" />;
   }
 
