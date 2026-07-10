@@ -11,6 +11,8 @@ import {
 import type {
   AdminSetupStatus,
   BackEventMember,
+  BackEventMemberGroup,
+  BackEventMemberGroupMembership,
   ConsumptionLine,
   ConsumptionReport,
   HistoryEntry,
@@ -80,8 +82,20 @@ const mockStore = {
       role: "ejer" as MemberRole,
       active: true,
       createdAt: new Date().toISOString(),
+      groups: [],
     },
   ],
+  memberGroups: [
+    {
+      id: "mock-group-lagerhold",
+      name: "Lagerhold",
+      description: "Folk der hjælper med lager og containere",
+      active: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+  ] as BackEventMemberGroup[],
+  memberGroupMemberships: [] as BackEventMemberGroupMembership[],
 };
 
 export async function getLocations(): Promise<Location[]> {
@@ -773,13 +787,19 @@ export async function getMembers(): Promise<BackEventMember[]> {
   const supabase = createSupabaseBrowserClient();
 
   if (!supabase) {
-    return mockStore.members.map((member) => ({ ...member }));
+    return mockStore.members.map((member) => ({
+      ...member,
+      groups: groupsForMember(member.id),
+    }));
   }
 
-  const { data, error } = await supabase
+  const [{ data, error }, memberships] = await Promise.all([
+    supabase
     .from("backevent_profiles")
     .select("id,full_name,email,role,active,created_at")
-    .order("created_at", { ascending: true });
+      .order("created_at", { ascending: true }),
+    getMemberGroupMemberships(),
+  ]);
 
   if (error) throw error;
 
@@ -790,6 +810,9 @@ export async function getMembers(): Promise<BackEventMember[]> {
     role: normalizeRole(row.role),
     active: row.active ?? true,
     createdAt: row.created_at,
+    groups: memberships.groups.filter((group) =>
+      memberships.memberships.some((membership) => membership.profileId === row.id && membership.groupId === group.id),
+    ),
   }));
 }
 
@@ -812,6 +835,182 @@ export async function updateMemberRole(memberId: string, role: MemberRole) {
   const { error } = await supabase.from("backevent_profiles").update({ role }).eq("id", memberId);
 
   if (error) throw error;
+}
+
+export async function getMemberGroups(): Promise<BackEventMemberGroup[]> {
+  const supabase = createSupabaseBrowserClient();
+
+  if (!supabase) {
+    return [...mockStore.memberGroups].sort(sortByName);
+  }
+
+  const { data, error } = await supabase
+    .from("backevent_member_groups")
+    .select("id,name,description,active,created_at,updated_at")
+    .order("name", { ascending: true });
+
+  if (error) throw error;
+
+  return data.map(toMemberGroup);
+}
+
+export async function getMemberGroupMemberships(): Promise<{
+  groups: BackEventMemberGroup[];
+  memberships: BackEventMemberGroupMembership[];
+}> {
+  const supabase = createSupabaseBrowserClient();
+
+  if (!supabase) {
+    return {
+      groups: [...mockStore.memberGroups].sort(sortByName),
+      memberships: mockStore.memberGroupMemberships.map((membership) => ({ ...membership })),
+    };
+  }
+
+  const [groupsResponse, membershipsResponse] = await Promise.all([
+    supabase.from("backevent_member_groups").select("id,name,description,active,created_at,updated_at").order("name", { ascending: true }),
+    supabase.from("backevent_member_group_members").select("id,group_id,profile_id,created_at"),
+  ]);
+
+  if (groupsResponse.error) throw groupsResponse.error;
+  if (membershipsResponse.error) throw membershipsResponse.error;
+
+  return {
+    groups: (groupsResponse.data ?? []).map(toMemberGroup),
+    memberships: (membershipsResponse.data ?? []).map((row) => ({
+      id: row.id,
+      groupId: row.group_id,
+      profileId: row.profile_id,
+      createdAt: row.created_at,
+    })),
+  };
+}
+
+export async function createMemberGroup(input: { name: string; description?: string | null; active?: boolean }) {
+  const name = input.name.trim();
+
+  if (!name) {
+    throw new Error("Gruppenavn mangler");
+  }
+
+  const supabase = createSupabaseBrowserClient();
+
+  if (!supabase) {
+    const group: BackEventMemberGroup = {
+      id: createMockId(),
+      name,
+      description: input.description?.trim() || null,
+      active: input.active ?? true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    mockStore.memberGroups.push(group);
+    return group.id;
+  }
+
+  await ensureOwner();
+
+  const { data, error } = await supabase
+    .from("backevent_member_groups")
+    .insert({
+      name,
+      description: input.description?.trim() || null,
+      active: input.active ?? true,
+    })
+    .select("id")
+    .single();
+
+  if (error) throw error;
+  return data.id as string;
+}
+
+export async function updateMemberGroup(
+  groupId: string,
+  input: { name: string; description?: string | null; active: boolean },
+) {
+  const name = input.name.trim();
+
+  if (!name) {
+    throw new Error("Gruppenavn mangler");
+  }
+
+  const supabase = createSupabaseBrowserClient();
+
+  if (!supabase) {
+    const group = mockStore.memberGroups.find((item) => item.id === groupId);
+    if (group) {
+      group.name = name;
+      group.description = input.description?.trim() || null;
+      group.active = input.active;
+      group.updatedAt = new Date().toISOString();
+    }
+    return;
+  }
+
+  await ensureOwner();
+
+  const { error } = await supabase
+    .from("backevent_member_groups")
+    .update({
+      name,
+      description: input.description?.trim() || null,
+      active: input.active,
+    })
+    .eq("id", groupId);
+
+  if (error) throw error;
+}
+
+export async function deleteMemberGroup(groupId: string) {
+  const supabase = createSupabaseBrowserClient();
+
+  if (!supabase) {
+    mockStore.memberGroups = mockStore.memberGroups.filter((group) => group.id !== groupId);
+    mockStore.memberGroupMemberships = mockStore.memberGroupMemberships.filter((membership) => membership.groupId !== groupId);
+    return;
+  }
+
+  await ensureOwner();
+
+  const { error } = await supabase.from("backevent_member_groups").delete().eq("id", groupId);
+
+  if (error) throw error;
+}
+
+export async function setMemberGroups(memberId: string, groupIds: string[]) {
+  const uniqueGroupIds = Array.from(new Set(groupIds));
+  const supabase = createSupabaseBrowserClient();
+
+  if (!supabase) {
+    mockStore.memberGroupMemberships = mockStore.memberGroupMemberships.filter((membership) => membership.profileId !== memberId);
+    mockStore.memberGroupMemberships.push(
+      ...uniqueGroupIds.map((groupId) => ({
+        id: createMockId(),
+        groupId,
+        profileId: memberId,
+        createdAt: new Date().toISOString(),
+      })),
+    );
+    return;
+  }
+
+  await ensureOwner();
+
+  const { error: deleteError } = await supabase.from("backevent_member_group_members").delete().eq("profile_id", memberId);
+  if (deleteError) throw deleteError;
+
+  if (uniqueGroupIds.length === 0) {
+    return;
+  }
+
+  const { error: insertError } = await supabase.from("backevent_member_group_members").insert(
+    uniqueGroupIds.map((groupId) => ({
+      group_id: groupId,
+      profile_id: memberId,
+    })),
+  );
+
+  if (insertError) throw insertError;
 }
 
 export async function getAdminSetupStatus(): Promise<AdminSetupStatus> {
@@ -1304,6 +1503,41 @@ function withLocationDefaults(location: Partial<Location> & { id: string; name: 
 
 function sortByOrder<T extends { sortOrder?: number }>(a: T, b: T) {
   return (a.sortOrder ?? 0) - (b.sortOrder ?? 0);
+}
+
+function sortByName<T extends { name: string }>(a: T, b: T) {
+  return a.name.localeCompare(b.name, "da");
+}
+
+function toMemberGroup(row: {
+  id: string;
+  name: string;
+  description?: string | null;
+  active?: boolean | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}): BackEventMemberGroup {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description ?? null,
+    active: row.active ?? true,
+    createdAt: row.created_at ?? null,
+    updatedAt: row.updated_at ?? null,
+  };
+}
+
+function groupsForMember(memberId: string) {
+  return mockStore.memberGroups
+    .filter((group) => mockStore.memberGroupMemberships.some((membership) => membership.profileId === memberId && membership.groupId === group.id))
+    .sort(sortByName);
+}
+
+async function ensureOwner() {
+  const profile = await getCurrentProfile();
+  if (!isOwnerRole(profile?.role)) {
+    throw new Error("Kun ejer kan gøre dette");
+  }
 }
 
 function matchesDate(createdAt: string, statusDate?: string, date?: string) {

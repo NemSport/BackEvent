@@ -191,4 +191,21 @@ export type BackEventMember = {
   role: MemberRole;
   active: boolean;
   createdAt?: string | null;
+  groups?: BackEventMemberGroup[];
+};
+
+export type BackEventMemberGroup = {
+  id: string;
+  name: string;
+  description: string | null;
+  active: boolean;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+};
+
+export type BackEventMemberGroupMembership = {
+  id: string;
+  groupId: string;
+  profileId: string;
+  createdAt?: string | null;
 };
