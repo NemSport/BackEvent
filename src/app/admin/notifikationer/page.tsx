@@ -42,6 +42,8 @@ type InventoryAlertRunResult = {
   sentCount: number;
   skippedCount: number;
   failedCount: number;
+  suppressedCount?: number;
+  runStatus?: "success" | "partial" | "failed" | "skipped";
   alerts: Array<{
     productName: string;
     locationName: string;
@@ -52,6 +54,18 @@ type InventoryAlertRunResult = {
     skippedReason?: string;
   }>;
   message?: string;
+};
+
+type LatestInventoryAlertRun = {
+  id: string;
+  runType: "manual" | "cron";
+  status: "success" | "partial" | "failed" | "skipped";
+  checkedItems: number;
+  sentAlerts: number;
+  suppressedAlerts: number;
+  failedCount: number;
+  errorMessage: string | null;
+  createdAt: string;
 };
 
 export default function AdminNotificationsPage() {
@@ -65,6 +79,7 @@ export default function AdminNotificationsPage() {
   const [result, setResult] = useState<GroupPushResult | null>(null);
   const [logs, setLogs] = useState<PushLog[]>([]);
   const [inventoryAlertResult, setInventoryAlertResult] = useState<InventoryAlertRunResult | null>(null);
+  const [latestAutomaticRun, setLatestAutomaticRun] = useState<LatestInventoryAlertRun | null>(null);
   const [runningInventoryAlert, setRunningInventoryAlert] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -89,6 +104,20 @@ export default function AdminNotificationsPage() {
     setLogs(data.logs ?? []);
   }, []);
 
+  const loadLatestAutomaticRun = useCallback(async () => {
+    const token = await getAccessToken();
+    const response = await fetch("/api/admin/push/inventory-alerts/run", {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    });
+    const data = (await response.json()) as { ok: boolean; latestAutomaticRun?: LatestInventoryAlertRun | null; message?: string };
+
+    if (!response.ok || !data.ok) {
+      throw new Error(data.message ?? "Kunne ikke hente seneste lageralarm");
+    }
+
+    setLatestAutomaticRun(data.latestAutomaticRun ?? null);
+  }, []);
+
   const loadOwnerData = useCallback(async () => {
     if (!isOwner) {
       return;
@@ -96,7 +125,7 @@ export default function AdminNotificationsPage() {
 
     try {
       setError(null);
-      const [memberGroupData] = await Promise.all([getMemberGroupMemberships(), loadLogs()]);
+      const [memberGroupData] = await Promise.all([getMemberGroupMemberships(), loadLogs(), loadLatestAutomaticRun()]);
       const onlyActiveGroups = memberGroupData.groups.filter((group) => group.active);
       setGroups(memberGroupData.groups);
       setMemberships(memberGroupData.memberships);
@@ -104,7 +133,7 @@ export default function AdminNotificationsPage() {
     } catch {
       setError("Kunne ikke hente grupper og push-log lige nu.");
     }
-  }, [isOwner, loadLogs]);
+  }, [isOwner, loadLatestAutomaticRun, loadLogs]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -140,6 +169,7 @@ export default function AdminNotificationsPage() {
       }
 
       await loadLogs();
+      await loadLatestAutomaticRun();
     } catch {
       setError("Push-besked kunne ikke sendes lige nu.");
     } finally {
@@ -165,6 +195,7 @@ export default function AdminNotificationsPage() {
       }
 
       await loadLogs();
+      await loadLatestAutomaticRun();
     } catch {
       setError("Lageralarm kunne ikke køres lige nu.");
     } finally {
@@ -191,7 +222,7 @@ export default function AdminNotificationsPage() {
                   </span>
                   <div>
                     <h2 className="text-lg font-bold text-ink">Automatiske lageralarmer</h2>
-                    <p className="text-sm font-medium text-muted">Manuel kørsel til gruppen Lageransvarlige. Ingen cron endnu.</p>
+                    <p className="text-sm font-medium text-muted">Automatisk hvert 10. minut og manuel test til Lageransvarlige.</p>
                   </div>
                 </div>
 
@@ -202,6 +233,23 @@ export default function AdminNotificationsPage() {
                   <p className="sm:col-span-3 text-muted">
                     {lagerGroup ? "Lageransvarlige er klar. Medlemmer tildeles under Medlemmer." : "Gruppen oprettes ved migration eller første kørsel."}
                   </p>
+                </div>
+
+                <div className="mt-4 rounded-2xl border border-line bg-macro p-4">
+                  <h3 className="text-sm font-bold uppercase text-muted">Seneste automatiske kørsel</h3>
+                  {latestAutomaticRun ? (
+                    <div className="mt-3 grid gap-3 text-sm font-bold text-ink sm:grid-cols-2 lg:grid-cols-4">
+                      <ResultStat label="Tidspunkt" value={new Date(latestAutomaticRun.createdAt).toLocaleString("da-DK")} />
+                      <ResultStat label="Status" value={runStatusLabel(latestAutomaticRun.status)} />
+                      <ResultStat label="Tjekket" value={latestAutomaticRun.checkedItems} />
+                      <ResultStat label="Sendt" value={latestAutomaticRun.sentAlerts} />
+                      <ResultStat label="Undertrykt" value={latestAutomaticRun.suppressedAlerts} />
+                      <ResultStat label="Fejl" value={latestAutomaticRun.failedCount} />
+                      {latestAutomaticRun.errorMessage ? <p className="sm:col-span-2 lg:col-span-4 text-warmRed">{latestAutomaticRun.errorMessage}</p> : null}
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-sm font-bold text-muted">Ingen automatisk kørsel endnu.</p>
+                  )}
                 </div>
 
                 <button
@@ -223,6 +271,7 @@ export default function AdminNotificationsPage() {
                       <ResultStat label="Sendt" value={inventoryAlertResult.sentCount} />
                       <ResultStat label="Fejlet" value={inventoryAlertResult.failedCount} />
                       <ResultStat label="Sprunget over" value={inventoryAlertResult.skippedCount} />
+                      <ResultStat label="Undertrykt" value={inventoryAlertResult.suppressedCount ?? 0} />
                     </div>
                     {inventoryAlertResult.alerts.length > 0 ? (
                       <div className="mt-4 space-y-2">
@@ -375,6 +424,13 @@ function ResultStat({ label, value }: { label: string; value: number | string })
 
 function formatNumber(value: number) {
   return Number.isInteger(value) ? value.toString() : value.toLocaleString("da-DK", { maximumFractionDigits: 1 });
+}
+
+function runStatusLabel(status: LatestInventoryAlertRun["status"]) {
+  if (status === "partial") return "Delvist";
+  if (status === "failed") return "Fejl";
+  if (status === "skipped") return "Undertrykt";
+  return "OK";
 }
 
 function StatusChip({ status }: { status: PushLog["status"] }) {
