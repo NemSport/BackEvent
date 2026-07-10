@@ -8,12 +8,12 @@ import { LocationPicker } from "@/components/backevent/pickers";
 import { StatusBadge } from "@/components/backevent/status-badge";
 import {
   getLocationStatus,
-  getLocationTotal,
   getLocations,
   getProducts,
   getStockBalances,
   isPhysicalStockLocation,
 } from "@/lib/backevent/data";
+import { formatStockQuantity } from "@/lib/backevent/quantity-format";
 import type { Location, Product, StockBalance } from "@/lib/backevent/types";
 
 export function InventoryStatus() {
@@ -71,7 +71,6 @@ export function InventoryStatus() {
         balances.find((item) => item.locationId === location.id && item.productId === product.id)?.quantity ?? 0,
     }));
   }, [location, products, balances]);
-  const total = location ? getLocationTotal(location.id, balances) : 0;
   const status = location ? getLocationStatus(location.id, products, balances) : "good";
 
   return (
@@ -95,7 +94,7 @@ export function InventoryStatus() {
           <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
             <div>
               <h2 className="text-3xl font-bold text-ink">{location.name}</h2>
-              <p className="mt-1 text-lg font-bold text-pantone140">{total.toLocaleString("da-DK")} kasser i alt</p>
+              <p className="mt-1 text-lg font-bold text-pantone140">{stock.length} varer på lager</p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
               <StatusBadge status={status} />
@@ -128,9 +127,8 @@ export function InventoryStatus() {
                       {critical ? "Kritisk lavt" : low ? "Hold øje" : "OK"}
                     </p>
                   </div>
-                  <p className={`text-3xl font-bold ${critical ? "text-warmRed" : "text-pantone140"}`}>
-                    {balance.toLocaleString("da-DK")}
-                    <span className="ml-1 text-base text-muted">{product.unit}</span>
+                  <p className={`text-right text-2xl font-bold sm:text-3xl ${critical ? "text-warmRed" : "text-pantone140"}`}>
+                    {formatStockQuantity(balance, product)}
                   </p>
                 </article>
               );

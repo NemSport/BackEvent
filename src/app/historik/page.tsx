@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { AppShell } from "@/components/backevent/app-shell";
 import { BackButton } from "@/components/backevent/buttons";
 import { getHistoryEntries, getLocations, getProducts } from "@/lib/backevent/data";
+import { formatPlainQuantity, formatStockQuantity } from "@/lib/backevent/quantity-format";
 import type { HistoryEntry, Location, Product } from "@/lib/backevent/types";
 
 export default function HistorikPage() {
@@ -84,7 +85,7 @@ function HistoryCard({
           <IconBubble icon={Repeat} />
           <div className="min-w-0 flex-1">
             <p className="text-lg font-bold text-ink">
-              {entry.quantity.toLocaleString("da-DK")} {entry.unit} {product?.name}
+              {product ? formatStockQuantity(entry.quantity, product) : formatPlainQuantity(entry.quantity, entry.unit)} {product?.name}
             </p>
             <p className="mt-1 flex flex-wrap items-center gap-2 text-sm font-medium text-muted">
               {from?.name}
@@ -114,7 +115,9 @@ function HistoryCard({
             </p>
             <p className="mt-1 text-sm font-medium text-muted">{location?.name}</p>
             <p className={`mt-2 text-base font-bold ${isWaste ? "text-warmRed" : "text-pantone140"}`}>
-              {entry.quantityBefore.toLocaleString("da-DK")} → {entry.quantityAfter.toLocaleString("da-DK")} {entry.unit}
+              {product
+                ? `${formatStockQuantity(entry.quantityBefore, product)} → ${formatStockQuantity(entry.quantityAfter, product)}`
+                : `${formatPlainQuantity(entry.quantityBefore, entry.unit)} → ${formatPlainQuantity(entry.quantityAfter, entry.unit)}`}
             </p>
             {entry.note ? <p className="mt-1 text-sm font-medium text-muted">{entry.note}</p> : null}
             <Meta createdBy={entry.createdBy} createdAt={entry.createdAt} />

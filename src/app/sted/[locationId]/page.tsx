@@ -9,12 +9,12 @@ import { BackButton } from "@/components/backevent/buttons";
 import { useBackEventAuth } from "@/lib/backevent/auth";
 import { hasRoleAtLeast } from "@/lib/backevent/permissions";
 import {
-  getLocationTotal,
   getLocations,
   getOpeningClosingOverview,
   getProducts,
   getStockBalances,
 } from "@/lib/backevent/data";
+import { formatStockQuantity } from "@/lib/backevent/quantity-format";
 import type { Location, OpeningClosingLocationOverview, Product, StockBalance } from "@/lib/backevent/types";
 
 export default function LocationQuickPage() {
@@ -70,7 +70,6 @@ export default function LocationQuickPage() {
       })),
     [balances, locationId, products],
   );
-  const total = getLocationTotal(locationId, balances);
 
   if (!location && locations.length > 0) {
     return (
@@ -106,7 +105,7 @@ export default function LocationQuickPage() {
             <StatusPill overview={locationOverview} />
             {canSeeStock ? (
               <span className="rounded-full bg-macro px-3 py-1 text-sm font-bold text-pantone140">
-                {total.toLocaleString("da-DK")} kasser i alt
+                {stock.length} varer på lager
               </span>
             ) : null}
           </div>
@@ -128,9 +127,8 @@ export default function LocationQuickPage() {
             {stock.map(({ product, balance }) => (
               <article key={product.id} className="flex items-center justify-between gap-4 rounded-3xl bg-soft p-4">
                 <h3 className="text-xl font-bold text-ink">{product.name}</h3>
-                <p className={`text-3xl font-bold ${balance < 0 ? "text-warmRed" : "text-pantone140"}`}>
-                  {balance.toLocaleString("da-DK")}
-                  <span className="ml-1 text-base text-muted">{product.unit}</span>
+                <p className={`text-right text-2xl font-bold sm:text-3xl ${balance < 0 ? "text-warmRed" : "text-pantone140"}`}>
+                  {formatStockQuantity(balance, product)}
                 </p>
               </article>
             ))}

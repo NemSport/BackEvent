@@ -10,6 +10,7 @@ import {
   getProducts,
   getStockBalances,
 } from "@/lib/backevent/data";
+import { formatPlainQuantity, formatStockQuantity } from "@/lib/backevent/quantity-format";
 import type { Location, Product, StockAdjustmentType, StockBalance } from "@/lib/backevent/types";
 
 export default function AdminRettelserPage() {
@@ -140,7 +141,7 @@ export default function AdminRettelserPage() {
           <div className="mt-5 rounded-3xl bg-soft p-4">
             <p className="text-base font-bold text-muted">Nuværende lager</p>
             <p className="mt-1 text-4xl font-bold text-pantone140">
-              {currentBalance.toLocaleString("da-DK")} {product?.unit ?? "kasser"}
+              {product ? formatStockQuantity(currentBalance, product) : formatPlainQuantity(currentBalance, "kasser")}
             </p>
           </div>
           <label className="mt-5 block">

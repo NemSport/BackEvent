@@ -6,7 +6,9 @@ import { useEffect, useMemo, useState } from "react";
 import { Button, Card, Notice, PageHeader, cn } from "@/components/backevent/ui";
 import { useBackEventAuth } from "@/lib/backevent/auth";
 import { isResponsibleRole } from "@/lib/backevent/permissions";
+import { formatStockQuantity } from "@/lib/backevent/quantity-format";
 import { clampQrMoveQuantity, validateQrMoveLines } from "@/lib/backevent/qr-move-validation";
+import type { Product } from "@/lib/backevent/types";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 type QrLocation = {
@@ -19,7 +21,7 @@ type QrProduct = {
   id: string;
   name: string;
   unit: string;
-};
+} & Pick<Product, "purchaseUnitLabel" | "unitsPerPurchaseUnit" | "unitsPerCase" | "stockUnitLabel" | "contentPerStockUnit" | "consumptionUnitLabel">;
 
 type QrBalance = {
   productId: string;
@@ -298,7 +300,7 @@ export default function QrMovePage() {
                       <div>
                         <h2 className="text-lg font-bold text-ink">{product.name}</h2>
                         <p className="text-sm font-bold text-muted">
-                          Enhed: {product.unit} · Aktuel beholdning: {available.toLocaleString("da-DK")}
+                          Enhed: {product.unit} · Aktuel beholdning: {formatStockQuantity(available, product)}
                         </p>
                       </div>
                       <p className="text-sm font-bold text-pantone140">{product.unit}</p>
@@ -307,7 +309,7 @@ export default function QrMovePage() {
                       <RoundButton label="Minus" disabled={quantity <= 0} onClick={() => changeQuantity(product.id, -1, available)}>
                         <Minus className="h-5 w-5" aria-hidden />
                       </RoundButton>
-                      <p className="rounded-2xl bg-soft px-4 py-3 text-center text-3xl font-bold text-ink">{quantity.toLocaleString("da-DK")}</p>
+                      <p className="rounded-2xl bg-soft px-4 py-3 text-center text-2xl font-bold text-ink">{formatStockQuantity(quantity, product)}</p>
                       <RoundButton label="Plus" disabled={quantity >= available} onClick={() => changeQuantity(product.id, 1, available)}>
                         <Plus className="h-5 w-5" aria-hidden />
                       </RoundButton>
@@ -484,7 +486,7 @@ function ReceiptSummary({
           <div key={line.product.id} className="flex items-center justify-between gap-3 rounded-2xl bg-macro px-3 py-2">
             <p className="font-bold text-ink">{line.product.name}</p>
             <p className="font-bold text-pantone140">
-              {line.quantity.toLocaleString("da-DK")} {line.product.unit}
+              {formatStockQuantity(line.quantity, line.product)}
             </p>
           </div>
         ))}

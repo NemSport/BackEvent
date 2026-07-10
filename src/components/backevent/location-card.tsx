@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { MapPin } from "lucide-react";
+import { formatPlainQuantity } from "@/lib/backevent/quantity-format";
 import { getFillPercentage, getLocationTotal, getStockStatus } from "@/lib/backevent/mock-data";
 import type { Location, StockStatus } from "@/lib/backevent/types";
 import { StatusBadge } from "./status-badge";
@@ -38,7 +39,7 @@ export function LocationCard({
           <div>
             <h3 className="text-lg font-bold">{location.name}</h3>
             <p className={cn("mt-1 text-sm font-medium", selected ? "text-macro/80" : "text-muted")}>
-              {displayedTotal.toLocaleString("da-DK")} kasser i alt
+              {formatPlainQuantity(displayedTotal, "enheder")} i alt
             </p>
           </div>
         </div>

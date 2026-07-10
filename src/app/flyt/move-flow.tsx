@@ -7,6 +7,7 @@ import { AppShell } from "@/components/backevent/app-shell";
 import { BackButton, PrimaryButton } from "@/components/backevent/buttons";
 import { LocationPicker, ProductPicker, QuantityControl } from "@/components/backevent/pickers";
 import { createStockMovement, getLocations, getProducts, isPhysicalStockLocation, reverseStockMovement } from "@/lib/backevent/data";
+import { formatStockQuantity } from "@/lib/backevent/quantity-format";
 import { useBackEventAuth } from "@/lib/backevent/auth";
 import type { Location, Product } from "@/lib/backevent/types";
 
@@ -80,7 +81,8 @@ function MoveFlowContent() {
   const product = useMemo(() => products.find((item) => item.id === productId), [productId, products]);
   const toLocations = useMemo(() => locations.filter((location) => location.id !== fromId), [fromId, locations]);
   const canSave = Boolean(from && to && product && quantity > 0 && fromId !== toId && !isSaving);
-  const summaryText = `${quantity.toLocaleString("da-DK")} ${product?.unit ?? "kasser"} ${product?.name ?? "vare"} fra ${
+  const formattedQuantity = product ? formatStockQuantity(quantity, product) : `${quantity.toLocaleString("da-DK")} kasser`;
+  const summaryText = `${formattedQuantity} ${product?.name ?? "vare"} fra ${
     from?.name ?? "ikke valgt"
   } til ${to?.name ?? "ikke valgt"}`;
 
@@ -212,7 +214,7 @@ function MoveFlowContent() {
           </FlowStep>
 
           <FlowStep title="Hvor meget?" label="Antal">
-            <QuantityControl value={quantity} onChange={setQuantity} unit={product?.unit ?? "kasser"} />
+            <QuantityControl value={quantity} onChange={setQuantity} unit={product?.unit ?? "kasser"} product={product} />
           </FlowStep>
         </div>
 
@@ -221,6 +223,7 @@ function MoveFlowContent() {
             fromName={from?.name}
             toName={to?.name}
             productName={product?.name}
+            product={product}
             quantity={quantity}
             unit={product?.unit ?? "kasser"}
             canSave={canSave}
@@ -240,6 +243,7 @@ function MoveFlowContent() {
         <MobileConfirmSheet
           toName={to?.name}
           productName={product?.name}
+          product={product}
           quantity={quantity}
           unit={product?.unit ?? "kasser"}
           isSaving={isSaving}
@@ -254,6 +258,7 @@ function MoveFlowContent() {
 function MobileConfirmSheet({
   toName,
   productName,
+  product,
   quantity,
   unit,
   isSaving,
@@ -262,6 +267,7 @@ function MobileConfirmSheet({
 }: {
   toName?: string;
   productName?: string;
+  product?: Product;
   quantity: number;
   unit: string;
   isSaving: boolean;
@@ -274,7 +280,7 @@ function MobileConfirmSheet({
         <p className="text-sm font-bold uppercase tracking-wide text-pantone140">Bekræft</p>
         <h2 className="mt-1 text-2xl font-bold text-ink">Du er ved at flytte</h2>
         <p className="mt-4 rounded-2xl bg-soft p-4 text-xl font-bold text-ink">
-          {productName ?? "Ikke valgt endnu"} · {quantity.toLocaleString("da-DK")} {unit}
+          {productName ?? "Ikke valgt endnu"} · {product ? formatStockQuantity(quantity, product) : `${quantity.toLocaleString("da-DK")} ${unit}`}
         </p>
         <p className="mt-3 text-base font-bold text-muted">Til: {toName ?? "Ikke valgt endnu"}</p>
         <div className="mt-5 grid grid-cols-2 gap-3">
@@ -320,6 +326,7 @@ function MoveSummaryCard({
   fromName,
   toName,
   productName,
+  product,
   quantity,
   unit,
   canSave,
@@ -329,6 +336,7 @@ function MoveSummaryCard({
   fromName?: string;
   toName?: string;
   productName?: string;
+  product?: Product;
   quantity: number;
   unit: string;
   canSave: boolean;
@@ -344,7 +352,7 @@ function MoveSummaryCard({
         <SummaryRow label="Fra" value={fromName} />
         <SummaryRow label="Til" value={toName} />
         <SummaryRow label="Vare" value={productName} />
-        <SummaryRow label="Antal" value={`${quantity.toLocaleString("da-DK")} ${unit}`} />
+        <SummaryRow label="Antal" value={product ? formatStockQuantity(quantity, product) : `${quantity.toLocaleString("da-DK")} ${unit}`} />
       </dl>
 
       <div className="mt-6 rounded-[1.5rem] bg-soft p-4">
@@ -352,7 +360,7 @@ function MoveSummaryCard({
           {productName ?? "Ikke valgt endnu"}
           <br />
           <span className="text-pantone140">
-            {quantity.toLocaleString("da-DK")} {unit}
+            {product ? formatStockQuantity(quantity, product) : `${quantity.toLocaleString("da-DK")} ${unit}`}
           </span>
         </p>
       </div>

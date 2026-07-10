@@ -1,4 +1,5 @@
 import { ArrowRight } from "lucide-react";
+import { formatPlainQuantity, formatStockQuantity } from "@/lib/backevent/quantity-format";
 import { getLocation, getProduct, locations as mockLocations, products as mockProducts } from "@/lib/backevent/mock-data";
 import type { Location, Product, StockMovement } from "@/lib/backevent/types";
 import { cn, StatusPill } from "./ui";
@@ -28,7 +29,7 @@ export function MovementList({
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-lg font-bold text-ink">
-                  {movement.quantity.toLocaleString("da-DK")} {movement.unit} {product?.name}
+                  {product ? formatStockQuantity(movement.quantity, product) : formatPlainQuantity(movement.quantity, movement.unit)} {product?.name}
                 </p>
                 <p className="mt-1 flex flex-wrap items-center gap-2 text-sm font-medium text-muted">
                   {from?.name}

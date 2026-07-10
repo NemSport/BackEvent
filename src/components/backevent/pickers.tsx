@@ -1,6 +1,7 @@
 "use client";
 
 import { Check, Minus, Package, Plus } from "lucide-react";
+import { formatStockQuantity } from "@/lib/backevent/quantity-format";
 import type { Location, Product } from "@/lib/backevent/types";
 import { cn } from "./ui";
 
@@ -93,10 +94,12 @@ export function QuantityControl({
   value,
   onChange,
   unit = "kasser",
+  product,
 }: {
   value: number;
   onChange: (value: number) => void;
   unit?: string;
+  product?: Product;
 }) {
   const update = (change: number) => onChange(Math.max(0.5, Number((value + change).toFixed(1))));
 
@@ -104,8 +107,12 @@ export function QuantityControl({
     <div className="rounded-2xl bg-soft p-4">
       <div className="flex items-center justify-center rounded-2xl bg-macro px-4 py-7 text-center shadow-sm">
         <p className="text-5xl font-bold text-ink sm:text-6xl">
-          {value.toLocaleString("da-DK")}
-          <span className="ml-2 text-2xl text-pantone140">{unit}</span>
+          {product ? formatStockQuantity(value, product) : (
+            <>
+              {value.toLocaleString("da-DK")}
+              <span className="ml-2 text-2xl text-pantone140">{unit}</span>
+            </>
+          )}
         </p>
       </div>
       <div className="mt-4 grid grid-cols-4 gap-2 sm:gap-3">
@@ -164,7 +171,7 @@ export function ProductStepper({
     <div className="flex items-center justify-between gap-3 rounded-2xl border border-line bg-macro p-3 shadow-sm">
       <div className="min-w-0">
         <p className="text-lg font-bold text-ink">{product.name}</p>
-        <p className="text-sm font-bold text-muted">{product.unit}</p>
+        <p className="text-sm font-bold text-muted">{formatStockQuantity(value, product)}</p>
       </div>
       <div className="flex items-center gap-2">
         <button
@@ -175,7 +182,7 @@ export function ProductStepper({
         >
           <Minus className="h-5 w-5" aria-hidden />
         </button>
-        <span className="w-12 text-center text-2xl font-bold text-ink">{value}</span>
+        <span className="w-12 text-center text-2xl font-bold text-ink">{value.toLocaleString("da-DK")}</span>
         <button
           type="button"
           onClick={() => onChange(value + 1)}

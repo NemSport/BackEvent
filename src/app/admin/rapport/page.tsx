@@ -14,6 +14,7 @@ import {
   getStockAdjustments,
   getStockDiscrepancies,
 } from "@/lib/backevent/data";
+import { formatPlainQuantity, formatStockQuantity } from "@/lib/backevent/quantity-format";
 import type {
   ConsumptionReport,
   Location,
@@ -166,7 +167,7 @@ function AdminRapportContent() {
                 <div>
                   <h2 className="text-3xl font-bold text-ink">{location?.name}</h2>
                   <p className="mt-1 text-lg font-bold text-pantone140">
-                    Samlet forbrug: {sumConsumption(filteredLines).toLocaleString("da-DK")} enheder
+                    Samlet forbrug: {formatPlainQuantity(sumConsumption(filteredLines), "enheder")}
                   </p>
                 </div>
                 <StatusPill overview={locationOverview} />
@@ -196,15 +197,15 @@ function AdminRapportContent() {
                           </p>
                         </div>
                         <p className={`text-3xl font-bold ${urgent ? "text-warmRed" : "text-pantone140"}`}>
-                          {line.calculatedConsumption === null ? "-" : line.calculatedConsumption.toLocaleString("da-DK")}
+                          {line.calculatedConsumption === null || !product ? "-" : formatStockQuantity(line.calculatedConsumption, product)}
                         </p>
                       </div>
                       <div className="mt-4 grid gap-2 sm:grid-cols-5">
-                        <MiniMetric label="Åbning" value={formatMaybe(line.openingQuantity)} />
-                        <MiniMetric label="Flyttet ind" value={line.movedIn.toLocaleString("da-DK")} />
-                        <MiniMetric label="Flyttet ud" value={line.movedOut.toLocaleString("da-DK")} />
-                        <MiniMetric label="Lukning" value={formatMaybe(line.closingQuantity)} />
-                        <MiniMetric label="Svind/just." value={line.adjustmentDelta.toLocaleString("da-DK")} />
+                        <MiniMetric label="Åbning" value={formatMaybe(line.openingQuantity, product)} />
+                        <MiniMetric label="Flyttet ind" value={product ? formatStockQuantity(line.movedIn, product) : formatPlainQuantity(line.movedIn)} />
+                        <MiniMetric label="Flyttet ud" value={product ? formatStockQuantity(line.movedOut, product) : formatPlainQuantity(line.movedOut)} />
+                        <MiniMetric label="Lukning" value={formatMaybe(line.closingQuantity, product)} />
+                        <MiniMetric label="Svind/just." value={product ? formatStockQuantity(line.adjustmentDelta, product) : formatPlainQuantity(line.adjustmentDelta)} />
                       </div>
                     </article>
                   );
@@ -224,7 +225,9 @@ function AdminRapportContent() {
                 return (
                   <p key={adjustment.id} className="rounded-2xl bg-soft p-3 text-base font-bold text-ink">
                     {adjustment.type === "waste" ? "Svind" : "Rettelse"} · {product?.name} · {location?.name} ·{" "}
-                    {adjustment.quantityBefore.toLocaleString("da-DK")} → {adjustment.quantityAfter.toLocaleString("da-DK")}
+                    {product
+                      ? `${formatStockQuantity(adjustment.quantityBefore, product)} → ${formatStockQuantity(adjustment.quantityAfter, product)}`
+                      : `${formatPlainQuantity(adjustment.quantityBefore, adjustment.unit)} → ${formatPlainQuantity(adjustment.quantityAfter, adjustment.unit)}`}
                   </p>
                 );
               })
@@ -244,7 +247,7 @@ function AdminRapportContent() {
                 const to = locations.find((item) => item.id === movement.toLocationId);
                 return (
                   <p key={movement.id} className="flex flex-wrap items-center gap-2 rounded-2xl bg-soft p-3 text-base font-bold text-ink">
-                    {movement.quantity.toLocaleString("da-DK")} {movement.unit} {product?.name}
+                    {product ? formatStockQuantity(movement.quantity, product) : formatPlainQuantity(movement.quantity, movement.unit)} {product?.name}
                     <span className="text-muted">{from?.name}</span>
                     <ArrowRight className="h-4 w-4 text-pantone140" aria-hidden />
                     <span className="text-muted">{to?.name}</span>
@@ -292,8 +295,8 @@ function MiniMetric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function formatMaybe(value: number | null) {
-  return value === null ? "-" : value.toLocaleString("da-DK");
+function formatMaybe(value: number | null, product?: Product) {
+  return value === null ? "-" : product ? formatStockQuantity(value, product) : formatPlainQuantity(value);
 }
 
 function sumConsumption(lines: Array<{ calculatedConsumption: number | null }>) {

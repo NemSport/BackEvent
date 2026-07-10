@@ -8,6 +8,7 @@ import {
   ListChecks,
   PackageSearch,
   PencilLine,
+  PlugZap,
   Repeat,
   Settings,
   SlidersHorizontal,
@@ -161,6 +162,7 @@ export default function AdminDashboardPage() {
             {isOwner
               ? ownerLinks.slice(0, 2).map((card) => <ActionCard key={card.href} {...card} />)
               : null}
+            {isOwner ? <ActionCard href="/admin/onlinepos-sync" title="OnlinePOS-sync" description="Salg til lager" icon={PlugZap} /> : null}
           </div>
         </section>
 
