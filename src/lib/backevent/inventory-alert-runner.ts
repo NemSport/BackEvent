@@ -62,11 +62,11 @@ type BalanceRow = {
 
 type AlertSettingRow = {
   id: string;
-  inventory_item_id: string;
-  location_id: string | null;
+  product_id: string;
+  location_id: string;
   low_threshold: number | string | null;
   critical_threshold: number | string | null;
-  active: boolean | null;
+  alerts_enabled: boolean | null;
 };
 
 type GroupRow = {
@@ -342,9 +342,9 @@ async function calculateAlerts(supabase: SupabaseClient): Promise<CalculatedAler
     supabase.from("backevent_locations").select("id,name,type,active").eq("active", true),
     supabase.from("backevent_stock_balances").select("product_id,location_id,quantity"),
     supabase
-      .from("backevent_inventory_alert_settings")
-      .select("id,inventory_item_id,location_id,low_threshold,critical_threshold,active")
-      .eq("active", true),
+      .from("backevent_location_product_thresholds")
+      .select("id,product_id,location_id,low_threshold,critical_threshold,alerts_enabled")
+      .eq("alerts_enabled", true),
   ]);
 
   if (productsResponse.error || locationsResponse.error || balancesResponse.error || settingsResponse.error) {
@@ -399,11 +399,7 @@ async function calculateAlerts(supabase: SupabaseClient): Promise<CalculatedAler
 }
 
 function findSetting(settings: AlertSettingRow[], productId: string, locationId: string) {
-  return (
-    settings.find((setting) => setting.inventory_item_id === productId && setting.location_id === locationId) ??
-    settings.find((setting) => setting.inventory_item_id === productId && !setting.location_id) ??
-    null
-  );
+  return settings.find((setting) => setting.product_id === productId && setting.location_id === locationId) ?? null;
 }
 
 async function shouldSendAlert(supabase: SupabaseClient, alert: InventoryAlert, now: Date) {

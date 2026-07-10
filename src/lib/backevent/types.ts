@@ -33,6 +33,17 @@ export type ProductAlertSetting = {
   updatedAt?: string | null;
 };
 
+export type LocationProductThreshold = {
+  id?: string;
+  locationId: string;
+  productId: string;
+  lowThreshold: number | null;
+  criticalThreshold: number | null;
+  alertsEnabled: boolean;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+};
+
 export type Location = {
   id: string;
   name: string;

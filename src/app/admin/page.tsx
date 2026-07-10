@@ -10,6 +10,7 @@ import {
   PencilLine,
   Repeat,
   Settings,
+  SlidersHorizontal,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { ActionCard } from "@/components/backevent/action-card";
@@ -35,8 +36,8 @@ import type { Location, Product, StockBalance, StockDiscrepancy, StockMovement }
 const quickActions = [
   { href: "/lagerstatus", title: "Lagerstatus", description: "Aktuel beholdning", icon: PackageSearch, tone: "primary" as const },
   { href: "/admin/rettelser", title: "Ret lager", description: "Rettelser og svind", icon: PencilLine },
+  { href: "/admin/lagergraenser", title: "Lagergrænser", description: "Lav og kritisk", icon: SlidersHorizontal },
   { href: "/flyt", title: "Flyt varer", description: "Mellem containere", icon: Repeat },
-  { href: "/admin/aabning-lukning", title: "Tællinger", description: "Åbning og lukning", icon: ClipboardCheck },
 ];
 
 const ownerLinks = [

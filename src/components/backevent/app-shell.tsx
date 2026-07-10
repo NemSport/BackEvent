@@ -20,6 +20,7 @@ import {
   QrCode,
   Repeat,
   Settings,
+  SlidersHorizontal,
   Users,
 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
@@ -49,6 +50,7 @@ const navSections = [
     items: [
       { href: "/admin", label: "Admin", icon: LayoutDashboard, minRole: "ansvarlig" },
       { href: "/admin/rettelser", label: "Ret lager", icon: PencilLine, minRole: "ansvarlig" },
+      { href: "/admin/lagergraenser", label: "Grænser", icon: SlidersHorizontal, minRole: "ansvarlig" },
       { href: "/admin/aabning-lukning", label: "Tællinger", icon: ClipboardCheck, minRole: "ansvarlig" },
       { href: "/admin/produkter", label: "Produkter", icon: PackagePlus, minRole: "ejer" },
       { href: "/admin/containere", label: "Steder", icon: MapPin, minRole: "ejer" },

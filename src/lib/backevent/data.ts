@@ -18,6 +18,7 @@ import type {
   HistoryEntry,
   LocationConsumption,
   Location,
+  LocationProductThreshold,
   MissingOpeningClosing,
   OperationalChecklistItem,
   OpeningClosingStatus,
@@ -81,6 +82,7 @@ const mockStore = {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   })) as ProductAlertSetting[],
+  locationProductThresholds: [] as LocationProductThreshold[],
   balances: mockBalancesSource.map((balance) => ({ ...balance })),
   movements: mockMovementsSource.map((movement) => ({ ...movement })),
   statuses: mockStatusesSource.map((status) => ({ ...status })),
@@ -1108,6 +1110,93 @@ export async function getProductAlertSettings(): Promise<ProductAlertSetting[]> 
   }));
 }
 
+export async function getLocationProductThresholds(): Promise<LocationProductThreshold[]> {
+  const supabase = createSupabaseBrowserClient();
+
+  if (!supabase) {
+    return getMockLocationProductThresholds();
+  }
+
+  const { data, error } = await supabase
+    .from("backevent_location_product_thresholds")
+    .select("id,location_id,product_id,low_threshold,critical_threshold,alerts_enabled,created_at,updated_at")
+    .order("created_at", { ascending: true });
+
+  if (error) throw error;
+
+  return (data ?? []).map((row) => ({
+    id: row.id,
+    locationId: row.location_id,
+    productId: row.product_id,
+    lowThreshold: row.low_threshold === null ? null : Number(row.low_threshold),
+    criticalThreshold: row.critical_threshold === null ? null : Number(row.critical_threshold),
+    alertsEnabled: row.alerts_enabled ?? true,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+}
+
+export async function saveLocationProductThresholds(
+  thresholds: Array<{
+    locationId: string;
+    productId: string;
+    lowThreshold: number | null;
+    criticalThreshold: number | null;
+    alertsEnabled: boolean;
+  }>,
+) {
+  if (thresholds.length === 0) {
+    return;
+  }
+
+  const supabase = createSupabaseBrowserClient();
+
+  if (!supabase) {
+    const now = new Date().toISOString();
+    for (const threshold of thresholds) {
+      const existing = mockStore.locationProductThresholds.find(
+        (item) => item.locationId === threshold.locationId && item.productId === threshold.productId,
+      );
+
+      if (existing) {
+        existing.lowThreshold = threshold.lowThreshold;
+        existing.criticalThreshold = threshold.criticalThreshold;
+        existing.alertsEnabled = threshold.alertsEnabled;
+        existing.updatedAt = now;
+      } else {
+        mockStore.locationProductThresholds.push({
+          id: createMockId(),
+          ...threshold,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+    }
+    return;
+  }
+
+  const profile = await getCurrentProfile();
+  if (!isResponsibleRole(profile?.role)) {
+    throw new Error("Kun ansvarlig kan gøre dette");
+  }
+
+  const now = new Date().toISOString();
+  const rows = thresholds.map((threshold) => ({
+    location_id: threshold.locationId,
+    product_id: threshold.productId,
+    low_threshold: threshold.lowThreshold,
+    critical_threshold: threshold.criticalThreshold,
+    alerts_enabled: threshold.alertsEnabled,
+    updated_at: now,
+  }));
+
+  const { error } = await supabase.from("backevent_location_product_thresholds").upsert(rows, {
+    onConflict: "location_id,product_id",
+  });
+
+  if (error) throw error;
+}
+
 export async function upsertProductAlertSetting(
   productId: string,
   input: {
@@ -1629,6 +1718,30 @@ function groupsForMember(memberId: string) {
   return mockStore.memberGroups
     .filter((group) => mockStore.memberGroupMemberships.some((membership) => membership.profileId === memberId && membership.groupId === group.id))
     .sort(sortByName);
+}
+
+function getMockLocationProductThresholds() {
+  if (mockStore.locationProductThresholds.length === 0) {
+    const now = new Date().toISOString();
+    const locations = mockStore.locations.filter(isPhysicalStockLocation);
+
+    for (const location of locations) {
+      for (const product of mockStore.products.filter((item) => item.active !== false && item.trackingMode === "inventory")) {
+        mockStore.locationProductThresholds.push({
+          id: `mock-threshold-${location.id}-${product.id}`,
+          locationId: location.id,
+          productId: product.id,
+          lowThreshold: product.lowThreshold,
+          criticalThreshold: product.criticalThreshold,
+          alertsEnabled: true,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+    }
+  }
+
+  return mockStore.locationProductThresholds.map((setting) => ({ ...setting }));
 }
 
 async function ensureOwner() {
