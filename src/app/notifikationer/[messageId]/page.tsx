@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { Bell, Check } from "lucide-react";
-import { useParams } from "next/navigation";
+import { Bell, Check, Trash2 } from "lucide-react";
+import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/backevent/app-shell";
 import { BackButton } from "@/components/backevent/buttons";
@@ -14,6 +14,7 @@ type PushMessage = {
   senderName: string | null;
   title: string;
   body: string;
+  targetUrl: string;
   category: string;
   readAt: string | null;
   createdAt: string;
@@ -22,10 +23,12 @@ type PushMessage = {
 
 export default function NotificationMessagePage() {
   const params = useParams<{ messageId: string }>();
+  const router = useRouter();
   const messageId = params.messageId;
   const [message, setMessage] = useState<PushMessage | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -94,6 +97,33 @@ export default function NotificationMessagePage() {
     }
   }
 
+  async function deleteMessage() {
+    if (!window.confirm("Vil du slette beskeden?")) {
+      return;
+    }
+
+    try {
+      setDeleting(true);
+      setError(null);
+      const token = await getAccessToken();
+      const response = await fetch(`/api/push/messages/${messageId}`, {
+        method: "DELETE",
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      });
+      const data = (await response.json()) as { ok?: boolean; message?: string };
+
+      if (!response.ok || !data.ok) {
+        throw new Error(data.message ?? "Kunne ikke slette besked");
+      }
+
+      router.replace("/notifikationer");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Kunne ikke slette besked.");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   return (
     <AppShell>
       <div className="mb-5">
@@ -124,12 +154,25 @@ export default function NotificationMessagePage() {
             <p className="whitespace-pre-wrap rounded-2xl bg-soft p-4 text-lg font-medium leading-relaxed text-ink">{message.body}</p>
 
             <div className="mt-5 grid gap-3 sm:grid-cols-2">
+              {message.category === "inventory_alert" ? (
+                <ButtonLink href={message.targetUrl || "/lagerstatus"} tone="primary">
+                  Se lagerstatus
+                </ButtonLink>
+              ) : message.targetUrl && message.targetUrl !== "/notifikationer" ? (
+                <ButtonLink href={message.targetUrl} tone="primary">
+                  Åbn link
+                </ButtonLink>
+              ) : null}
               {!message.readAt ? (
                 <Button type="button" onClick={markAsRead} disabled={saving}>
                   <Check className="h-5 w-5" aria-hidden />
                   {saving ? "Gemmer..." : "Marker som læst"}
                 </Button>
               ) : null}
+              <Button type="button" tone="danger" onClick={deleteMessage} disabled={deleting}>
+                <Trash2 className="h-5 w-5" aria-hidden />
+                {deleting ? "Sletter..." : "Slet besked"}
+              </Button>
               <ButtonLink href="/notifikationer" tone="secondary">
                 Til indbakke
               </ButtonLink>
@@ -162,4 +205,3 @@ async function getAccessToken() {
 
   return session?.access_token ?? null;
 }
-

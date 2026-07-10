@@ -1,6 +1,6 @@
 import webPush from "web-push";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { buildMessageUrl, createPushMessage, pushPayload } from "./push-messages";
+import { createPushMessage, pushPayload } from "./push-messages";
 
 const ALERT_GROUP_NAME = "Lageransvarlige";
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
@@ -190,9 +190,9 @@ export async function runInventoryAlerts(
             },
               JSON.stringify(pushPayload({
                 title: payload.title,
-                body: payload.body,
+                body: payload.pushBody,
                 messageId,
-                url: buildMessageUrl(messageId),
+                url: "/lagerstatus",
               })),
             );
             sentCount += 1;
@@ -541,20 +541,62 @@ async function createRunLog(supabase: SupabaseClient, runType: InventoryAlertRun
 }
 
 function buildPayload(alerts: InventoryAlert[]) {
-  const criticalCount = alerts.filter((alert) => alert.alertLevel === "critical").length;
-  const lowCount = alerts.filter((alert) => alert.alertLevel === "low").length;
-  const firstAlert = alerts[0];
-  const title = criticalCount > 0 ? "Kritisk lageralarm" : "Lavt lager";
-  const body =
-    alerts.length === 1 && firstAlert
-      ? `${firstAlert.productName} i ${firstAlert.locationName}: ${formatNumber(firstAlert.stockValue)} ${firstAlert.unit}`
-      : `${criticalCount} kritiske og ${lowCount} lave lageralarmer`;
+  const sortedAlerts = sortAlerts(alerts);
+  const visibleAlerts = sortedAlerts.slice(0, 15);
+  const hiddenCount = Math.max(0, sortedAlerts.length - visibleAlerts.length);
+  const criticalAlerts = visibleAlerts.filter((alert) => alert.alertLevel === "critical");
+  const lowAlerts = visibleAlerts.filter((alert) => alert.alertLevel === "low");
+  const firstAlert = sortedAlerts[0];
+  const title = sortedAlerts.some((alert) => alert.alertLevel === "critical") ? "Kritisk lager" : "Lav lagerbeholdning";
+  const bodySections = [
+    buildAlertSection("Kritisk lager", criticalAlerts),
+    buildAlertSection("Lav lagerbeholdning", lowAlerts),
+    hiddenCount > 0 ? `+ ${hiddenCount} yderligere lageralarmer` : null,
+  ].filter(Boolean);
+  const body = bodySections.join("\n\n");
+  const otherCount = Math.max(0, sortedAlerts.length - 1);
+  const pushBody = firstAlert
+    ? `${firstAlert.alertLevel === "critical" ? "Kritisk lager" : "Lavt lager"}: ${firstAlert.productName} i ${firstAlert.locationName}${otherCount > 0 ? ` og ${otherCount} andre varer` : ""} er under ${firstAlert.alertLevel === "critical" ? "kritisk" : "lav"} grænse.`
+    : "Ingen lageralarmer lige nu.";
 
   return {
     title,
     body,
+    pushBody,
     url: "/lagerstatus",
   };
+}
+
+function sortAlerts(alerts: InventoryAlert[]) {
+  return [...alerts].sort((a, b) => {
+    if (a.alertLevel !== b.alertLevel) {
+      return a.alertLevel === "critical" ? -1 : 1;
+    }
+    return a.locationName.localeCompare(b.locationName, "da") || a.productName.localeCompare(b.productName, "da");
+  });
+}
+
+function buildAlertSection(title: string, alerts: InventoryAlert[]) {
+  if (alerts.length === 0) {
+    return null;
+  }
+
+  const byLocation = new Map<string, InventoryAlert[]>();
+  for (const alert of alerts) {
+    byLocation.set(alert.locationName, [...(byLocation.get(alert.locationName) ?? []), alert]);
+  }
+
+  const lines = [title];
+  for (const [locationName, locationAlerts] of byLocation) {
+    lines.push("", locationName);
+    for (const alert of locationAlerts) {
+      lines.push(
+        `- ${alert.productName}: ${formatNumber(alert.stockValue)} ${alert.unit} tilbage · ${alert.alertLevel === "critical" ? "kritisk" : "lav"} grænse: ${formatNumber(alert.threshold)}`,
+      );
+    }
+  }
+
+  return lines.join("\n");
 }
 
 function getRunStatus(input: { sendableAlerts: InventoryAlert[]; sentCount: number; failedCount: number; skippedCount: number }): InventoryAlertRunStatus {

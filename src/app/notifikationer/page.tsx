@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Bell, CheckCircle2 } from "lucide-react";
+import { Bell, CheckCircle2, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/backevent/app-shell";
 import { Header } from "@/components/backevent/header";
@@ -23,6 +23,7 @@ export default function NotificationsInboxPage() {
   const [messages, setMessages] = useState<PushMessage[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -64,6 +65,37 @@ export default function NotificationsInboxPage() {
     };
   }, []);
 
+  async function deleteMessage(messageId: string) {
+    if (!window.confirm("Vil du slette beskeden?")) {
+      return;
+    }
+
+    try {
+      setDeletingId(messageId);
+      setError(null);
+      const token = await getAccessToken();
+      const response = await fetch(`/api/push/messages/${messageId}`, {
+        method: "DELETE",
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      });
+      const data = (await response.json()) as { ok?: boolean; message?: string };
+
+      if (!response.ok || !data.ok) {
+        throw new Error(data.message ?? "Kunne ikke slette besked");
+      }
+
+      setMessages((current) => current.filter((message) => message.id !== messageId));
+      setUnreadCount((current) => {
+        const deleted = messages.find((message) => message.id === messageId);
+        return deleted?.unread ? Math.max(0, current - 1) : current;
+      });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Kunne ikke slette besked.");
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
   return (
     <AppShell>
       <Header title="Notifikationer" subtitle="Beskeder fra BackEvent" />
@@ -95,26 +127,36 @@ export default function NotificationsInboxPage() {
         ) : (
           <div className="space-y-3">
             {messages.map((message) => (
-              <Link
+              <article
                 key={message.id}
-                href={`/notifikationer/${message.id}`}
-                className={`block rounded-2xl border p-4 transition hover:border-pantone139 hover:bg-soft/70 ${
+                className={`rounded-2xl border p-4 transition hover:border-pantone139 hover:bg-soft/70 ${
                   message.unread ? "border-pantone139 bg-pantone139/15" : "border-line bg-macro"
                 }`}
               >
                 <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
+                  <Link href={`/notifikationer/${message.id}`} className="min-w-0 flex-1">
                     <p className="truncate text-lg font-bold text-ink">{message.title}</p>
-                    <p className="mt-1 line-clamp-2 text-sm font-medium text-muted">{message.body}</p>
+                    <p className="mt-1 line-clamp-2 whitespace-pre-wrap text-sm font-medium text-muted">{message.body}</p>
+                  </Link>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {message.unread ? <span className="h-3 w-3 rounded-full bg-pantone139" aria-label="Ulæst" /> : null}
+                    <button
+                      type="button"
+                      onClick={() => deleteMessage(message.id)}
+                      disabled={deletingId === message.id}
+                      className="flex h-9 w-9 items-center justify-center rounded-xl bg-warmRed/10 text-warmRed disabled:opacity-50"
+                      aria-label="Slet besked"
+                    >
+                      <Trash2 className="h-4 w-4" aria-hidden />
+                    </button>
                   </div>
-                  {message.unread ? <span className="mt-1 h-3 w-3 shrink-0 rounded-full bg-pantone139" aria-label="Ulæst" /> : null}
                 </div>
                 <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-bold text-muted">
                   <span>{message.senderName ?? "BackEvent"}</span>
                   <span>·</span>
                   <span>{new Date(message.createdAt).toLocaleString("da-DK")}</span>
                 </div>
-              </Link>
+              </article>
             ))}
           </div>
         )}
@@ -142,4 +184,3 @@ async function getAccessToken() {
 
   return session?.access_token ?? null;
 }
-
