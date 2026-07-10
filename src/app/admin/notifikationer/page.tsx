@@ -1,17 +1,287 @@
 "use client";
 
+import { Bell, Send, Users } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/backevent/app-shell";
 import { Header } from "@/components/backevent/header";
 import { NotificationSettingsCard } from "@/components/backevent/notification-settings-card";
+import { useBackEventAuth } from "@/lib/backevent/auth";
+import { getMemberGroups } from "@/lib/backevent/data";
+import type { BackEventMemberGroup } from "@/lib/backevent/types";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+
+type GroupPushResult = {
+  ok: boolean;
+  groupId?: string;
+  groupName?: string;
+  memberCount?: number;
+  subscriptionCount?: number;
+  sentCount?: number;
+  failedCount?: number;
+  skippedCount?: number;
+  message?: string;
+};
+
+type PushLog = {
+  id: string;
+  recipientUserId: string | null;
+  recipientEmail: string | null;
+  groupId: string | null;
+  title: string;
+  body: string;
+  status: "sent" | "failed" | "skipped";
+  errorMessage: string | null;
+  createdAt: string;
+};
 
 export default function AdminNotificationsPage() {
+  const { isOwner } = useBackEventAuth();
+  const [groups, setGroups] = useState<BackEventMemberGroup[]>([]);
+  const [selectedGroupId, setSelectedGroupId] = useState("");
+  const [title, setTitle] = useState("");
+  const [message, setMessage] = useState("");
+  const [sending, setSending] = useState(false);
+  const [result, setResult] = useState<GroupPushResult | null>(null);
+  const [logs, setLogs] = useState<PushLog[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  const activeGroups = useMemo(() => groups.filter((group) => group.active), [groups]);
+
+  const loadLogs = useCallback(async () => {
+    const token = await getAccessToken();
+    const response = await fetch("/api/admin/push/send-group", {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    });
+    const data = (await response.json()) as { ok: boolean; logs?: PushLog[]; message?: string };
+
+    if (!response.ok || !data.ok) {
+      throw new Error(data.message ?? "Kunne ikke hente push-log");
+    }
+
+    setLogs(data.logs ?? []);
+  }, []);
+
+  const loadOwnerData = useCallback(async () => {
+    if (!isOwner) {
+      return;
+    }
+
+    try {
+      setError(null);
+      const [loadedGroups] = await Promise.all([getMemberGroups(), loadLogs()]);
+      const onlyActiveGroups = loadedGroups.filter((group) => group.active);
+      setGroups(loadedGroups);
+      setSelectedGroupId((current) => current || onlyActiveGroups[0]?.id || "");
+    } catch {
+      setError("Kunne ikke hente grupper og push-log lige nu.");
+    }
+  }, [isOwner, loadLogs]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadOwnerData();
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [loadOwnerData]);
+
+  async function sendGroupPush() {
+    try {
+      setSending(true);
+      setResult(null);
+      setError(null);
+      const token = await getAccessToken();
+      const response = await fetch("/api/admin/push/send-group", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          groupId: selectedGroupId,
+          title,
+          message,
+        }),
+      });
+      const data = (await response.json()) as GroupPushResult;
+      setResult(data);
+
+      if (!response.ok || !data.ok) {
+        setError(data.message ?? "Push-besked kunne ikke sendes til alle.");
+      }
+
+      await loadLogs();
+    } catch {
+      setError("Push-besked kunne ikke sendes lige nu.");
+    } finally {
+      setSending(false);
+    }
+  }
+
   return (
     <AppShell requiredRole="ansvarlig">
-      <Header title="Notifikationer" subtitle="Aktivér push-notifikationer på denne enhed" />
+      <Header title="Notifikationer" subtitle="Aktivér push-notifikationer og send beskeder" />
 
-      <section className="max-w-3xl">
-        <NotificationSettingsCard />
-      </section>
+      {error ? <p className="mb-4 rounded-2xl bg-warmRed/10 px-4 py-3 text-sm font-bold text-warmRed">{error}</p> : null}
+
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_24rem]">
+        <section className="space-y-5">
+          <NotificationSettingsCard />
+
+          {isOwner ? (
+            <section className="rounded-2xl border border-line bg-macro p-5 shadow-soft">
+              <div className="mb-5 flex items-center gap-3">
+                <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-pantone139/30 text-pantone140">
+                  <Users className="h-5 w-5" aria-hidden />
+                </span>
+                <div>
+                  <h2 className="text-lg font-bold text-ink">Send besked til gruppe</h2>
+                  <p className="text-sm font-medium text-muted">Kun ejer kan sende push til grupper.</p>
+                </div>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="block md:col-span-2">
+                  <span className="mb-2 block text-sm font-bold text-ink">Gruppe</span>
+                  <select
+                    value={selectedGroupId}
+                    onChange={(event) => setSelectedGroupId(event.target.value)}
+                    className="h-11 w-full rounded-xl border border-line bg-macro px-3 text-sm font-bold text-ink outline-none focus:border-pantone140"
+                  >
+                    {activeGroups.length === 0 ? <option value="">Ingen aktive grupper</option> : null}
+                    {activeGroups.map((group) => (
+                      <option key={group.id} value={group.id}>
+                        {group.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="block md:col-span-2">
+                  <span className="mb-2 block text-sm font-bold text-ink">Titel</span>
+                  <input
+                    value={title}
+                    onChange={(event) => setTitle(event.target.value)}
+                    maxLength={120}
+                    className="h-11 w-full rounded-xl border border-line bg-macro px-3 text-sm font-bold text-ink outline-none focus:border-pantone140"
+                    placeholder="Kort titel"
+                  />
+                </label>
+
+                <label className="block md:col-span-2">
+                  <span className="mb-2 block text-sm font-bold text-ink">Besked</span>
+                  <textarea
+                    value={message}
+                    onChange={(event) => setMessage(event.target.value)}
+                    maxLength={500}
+                    rows={4}
+                    className="w-full rounded-xl border border-line bg-macro px-3 py-2 text-sm font-medium text-ink outline-none focus:border-pantone140"
+                    placeholder="Skriv beskeden til gruppen"
+                  />
+                </label>
+              </div>
+
+              <div className="mt-5 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={sendGroupPush}
+                  disabled={sending || !selectedGroupId || title.trim().length < 2 || message.trim().length < 2}
+                  className="inline-flex items-center gap-2 rounded-xl bg-pantone139 px-4 py-2.5 text-sm font-bold text-ink shadow-soft disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Send className="h-4 w-4" aria-hidden />
+                  {sending ? "Sender..." : "Send push-besked"}
+                </button>
+                <p className="text-sm font-bold text-muted">{activeGroups.length} aktive grupper</p>
+              </div>
+
+              {result ? (
+                <div className="mt-5 grid gap-3 rounded-2xl bg-soft p-4 text-sm font-bold text-ink sm:grid-cols-2 lg:grid-cols-5">
+                  <ResultStat label="Medlemmer" value={result.memberCount ?? 0} />
+                  <ResultStat label="Enheder" value={result.subscriptionCount ?? 0} />
+                  <ResultStat label="Sendt" value={result.sentCount ?? 0} />
+                  <ResultStat label="Fejlet" value={result.failedCount ?? 0} />
+                  <ResultStat label="Sprunget over" value={result.skippedCount ?? 0} />
+                  {result.message ? <p className="sm:col-span-2 lg:col-span-5 text-warmRed">{result.message}</p> : null}
+                </div>
+              ) : null}
+            </section>
+          ) : (
+            <section className="rounded-2xl border border-line bg-macro p-5 shadow-soft">
+              <div className="flex items-center gap-3">
+                <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-soft text-pantone140">
+                  <Bell className="h-5 w-5" aria-hidden />
+                </span>
+                <div>
+                  <h2 className="text-lg font-bold text-ink">Gruppebeskeder</h2>
+                  <p className="text-sm font-medium text-muted">Kun ejer kan sende push-beskeder til grupper.</p>
+                </div>
+              </div>
+            </section>
+          )}
+        </section>
+
+        <aside className="rounded-2xl border border-line bg-macro p-5 shadow-soft">
+          <h2 className="text-lg font-bold text-ink">Seneste push-log</h2>
+          <p className="mt-1 text-sm font-medium text-muted">Beskeder sendt fra BackEvent.</p>
+
+          {!isOwner ? (
+            <p className="mt-4 rounded-xl bg-soft px-3 py-2 text-sm font-bold text-muted">Kun ejer kan se gruppe-push log.</p>
+          ) : logs.length === 0 ? (
+            <p className="mt-4 rounded-xl bg-soft px-3 py-2 text-sm font-bold text-muted">Ingen push-beskeder endnu.</p>
+          ) : (
+            <div className="mt-4 space-y-3">
+              {logs.map((log) => (
+                <article key={log.id} className="rounded-xl border border-line bg-soft px-3 py-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="truncate text-sm font-bold text-ink">{log.title}</p>
+                    <StatusChip status={log.status} />
+                  </div>
+                  <p className="mt-1 line-clamp-2 text-xs font-medium text-muted">{log.body}</p>
+                  <p className="mt-2 text-xs font-bold text-muted">
+                    {log.recipientEmail ?? "Ukendt"} · {new Date(log.createdAt).toLocaleString("da-DK")}
+                  </p>
+                  {log.errorMessage ? <p className="mt-1 text-xs font-bold text-warmRed">{log.errorMessage}</p> : null}
+                </article>
+              ))}
+            </div>
+          )}
+        </aside>
+      </div>
     </AppShell>
   );
+}
+
+function ResultStat({ label, value }: { label: string; value: number }) {
+  return (
+    <div>
+      <p className="text-xs uppercase text-muted">{label}</p>
+      <p className="text-xl text-ink">{value}</p>
+    </div>
+  );
+}
+
+function StatusChip({ status }: { status: PushLog["status"] }) {
+  const label = status === "sent" ? "Sendt" : status === "failed" ? "Fejlet" : "Sprunget over";
+  const className =
+    status === "sent"
+      ? "bg-emerald-50 text-emerald-700"
+      : status === "failed"
+        ? "bg-warmRed/10 text-warmRed"
+        : "bg-pantone139/30 text-pantone140";
+
+  return <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-bold ${className}`}>{label}</span>;
+}
+
+async function getAccessToken() {
+  const supabase = createSupabaseBrowserClient();
+
+  if (!supabase) {
+    return null;
+  }
+
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
+  return session?.access_token ?? null;
 }
