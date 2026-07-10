@@ -58,6 +58,8 @@ export type StockMovement = {
   unit: string;
   createdAt: string;
   createdBy: string;
+  source?: string | null;
+  batchId?: string | null;
   reversedAt?: string | null;
   reversedBy?: string | null;
   reversalReason?: string | null;

@@ -218,7 +218,7 @@ export async function getRecentMovements(): Promise<StockMovement[]> {
   const { data, error } = await supabase
     .from("backevent_stock_movements")
     .select(
-      "id,product_id,from_location_id,to_location_id,quantity,unit,created_by_name,created_at,reversed_at,reversed_by_name,reversal_reason",
+      "id,batch_id,product_id,from_location_id,to_location_id,quantity,unit,created_by_name,created_at,source,reversed_at,reversed_by_name,reversal_reason",
     )
     .order("created_at", { ascending: false })
     .limit(50);
@@ -236,6 +236,8 @@ export async function getRecentMovements(): Promise<StockMovement[]> {
     unit: row.unit ?? "kasser",
     createdAt: row.created_at,
     createdBy: row.created_by_name ?? "Frivillig",
+    source: row.source ?? null,
+    batchId: row.batch_id ?? null,
     reversedAt: row.reversed_at,
     reversedBy: row.reversed_by_name,
     reversalReason: row.reversal_reason,

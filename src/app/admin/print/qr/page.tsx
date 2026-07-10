@@ -38,7 +38,7 @@ export default function PrintQrPage() {
           </header>
           <div className="grid gap-6 md:grid-cols-2 print:grid-cols-2">
             {locations.map((location) => {
-              const url = `${origin}/sted/${location.id}`;
+              const url = `${origin}/qr/flyt/${location.id}`;
               return (
                 <section key={location.id} className="qr-page rounded-[1.5rem] border border-line bg-macro p-6 text-center shadow-sm print:shadow-none">
                   <h2 className="text-3xl font-bold text-ink">{location.name}</h2>

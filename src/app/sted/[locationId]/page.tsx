@@ -117,8 +117,7 @@ export default function LocationQuickPage() {
         <section className="grid gap-4 sm:grid-cols-2 lg:gap-5">
           <QuickAction href={`/aabning?locationId=${locationId}`} title="Åbn denne" text="Gem åbningstal" icon={DoorOpen} />
           <QuickAction href={`/lukning?locationId=${locationId}`} title="Luk denne" text="Gem lukketal" icon={DoorClosed} />
-          <QuickAction href={`/flyt?toLocationId=${locationId}`} title="Flyt varer hertil" text="Modtag varer" icon={Repeat} />
-          <QuickAction href={`/flyt?fromLocationId=${locationId}`} title="Flyt varer herfra" text="Send varer videre" icon={Repeat} />
+          <QuickAction href={`/qr/flyt/${locationId}`} title="Flyt varer" text="Start QR-flow" icon={Repeat} />
           {canSeeStock ? <QuickAction href="#lager" title="Se lager her" text="Vis varer på stedet" icon={PackageSearch} /> : null}
         </section>
 

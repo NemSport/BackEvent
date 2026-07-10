@@ -39,7 +39,7 @@ export default function AdminQrPage() {
   }, []);
 
   async function copyLink(location: Location) {
-    const url = `${origin}/sted/${location.id}`;
+    const url = `${origin}/qr/flyt/${location.id}`;
     await navigator.clipboard.writeText(url);
     setCopiedId(location.id);
   }
@@ -66,7 +66,7 @@ export default function AdminQrPage() {
 
       <div className="grid gap-4 xl:grid-cols-2">
         {locations.map((location) => {
-          const url = `${origin}/sted/${location.id}`;
+          const url = `${origin}/qr/flyt/${location.id}`;
           return (
             <article key={location.id} className="rounded-[1.75rem] border border-line bg-macro p-5 shadow-soft">
               <div className="flex gap-4">
@@ -78,7 +78,7 @@ export default function AdminQrPage() {
                   <p className="mt-2 break-all text-sm font-bold text-muted">{url}</p>
                   <div className="mt-4 flex flex-wrap gap-3">
                     <Link
-                      href={`/sted/${location.id}`}
+                      href={`/qr/flyt/${location.id}`}
                       className="inline-flex min-h-11 items-center rounded-2xl border border-line bg-macro px-4 py-2 text-base font-bold text-pantone140"
                     >
                       Åbn link
