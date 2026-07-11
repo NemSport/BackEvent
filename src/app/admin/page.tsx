@@ -10,6 +10,7 @@ import {
   PencilLine,
   PlugZap,
   Repeat,
+  RotateCcw,
   Settings,
   SlidersHorizontal,
 } from "lucide-react";
@@ -159,8 +160,9 @@ export default function AdminDashboardPage() {
           <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-4">
             <ActionCard href="/admin/rapport" title="Rapport" description="Forbrug og afvigelser" icon={BarChart3} />
             <ActionCard href="/historik" title="Historik" description="Handlinger og rettelser" icon={History} />
+            <ActionCard href="/retur" title="Retur" description="Kontrol af OnlinePOS-retur" icon={RotateCcw} />
             {isOwner
-              ? ownerLinks.slice(0, 2).map((card) => <ActionCard key={card.href} {...card} />)
+              ? ownerLinks.slice(0, 1).map((card) => <ActionCard key={card.href} {...card} />)
               : null}
             {isOwner ? <ActionCard href="/admin/onlinepos-sync" title="OnlinePOS-sync" description="Salg til lager" icon={PlugZap} /> : null}
           </div>

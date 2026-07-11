@@ -7,6 +7,10 @@
     {
       "path": "/api/cron/onlinepos-sync",
       "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/api/cron/returns-sync",
+      "schedule": "*/10 * * * *"
     }
   ]
 }

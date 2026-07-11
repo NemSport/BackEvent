@@ -20,6 +20,7 @@ import {
   QrCode,
   RefreshCw,
   Repeat,
+  RotateCcw,
   Settings,
   SlidersHorizontal,
   Users,
@@ -44,6 +45,13 @@ const navSections = [
       { href: "/notifikationer", label: "Beskeder", icon: Bell, minRole: "frivillig" },
       { href: "/lagerstatus", label: "Lager", icon: PackageSearch, minRole: "ansvarlig" },
       { href: "/historik", label: "Historik", icon: History, minRole: "ansvarlig" },
+    ],
+  },
+  {
+    title: "Retur & kontrol",
+    items: [
+      { href: "/retur", label: "Returer", icon: RotateCcw, minRole: "ansvarlig" },
+      { href: "/retur/kontrol", label: "Kontrol", icon: RotateCcw, minRole: "ansvarlig" },
     ],
   },
   {
@@ -137,7 +145,7 @@ function ShellChrome({ children, aside }: { children: ReactNode; aside?: ReactNo
 function MobileAdminMenu() {
   const { profile } = useBackEventAuth();
   const adminSections = navSections
-    .filter((section) => section.title !== "Drift")
+    .filter((section) => section.title !== "Drift" && section.title !== "Retur & kontrol")
     .map((section) => ({
       ...section,
       items: section.items.filter((item) => hasRoleAtLeast(profile?.role, item.minRole)),
@@ -257,7 +265,7 @@ function getMobileNavItems(role: BackEventRole | undefined) {
     return driftItems.filter((item) => ["/flyt", "/aabning", "/lukning", "/notifikationer"].includes(item.href));
   }
 
-  return [...driftItems.filter((item) => ["/flyt", "/lagerstatus", "/historik", "/notifikationer"].includes(item.href)), navSections[1].items[0]].filter((item) =>
+  return [...driftItems.filter((item) => ["/flyt", "/lagerstatus", "/historik", "/notifikationer"].includes(item.href)), navSections[1].items[0], navSections[2].items[0]].filter((item) =>
     hasRoleAtLeast(role, item.minRole),
   );
 }

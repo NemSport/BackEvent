@@ -1,6 +1,7 @@
 "use client";
 
-import { ArrowRight, ClipboardCheck, PencilLine, Repeat } from "lucide-react";
+import Link from "next/link";
+import { ArrowRight, ClipboardCheck, PencilLine, Repeat, RotateCcw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/backevent/app-shell";
 import { BackButton } from "@/components/backevent/buttons";
@@ -127,6 +128,24 @@ function HistoryCard({
     );
   }
 
+  if (entry.kind === "return") {
+    return (
+      <article className="rounded-3xl border border-line bg-macro p-4 shadow-sm">
+        <div className="flex items-start gap-3">
+          <IconBubble icon={RotateCcw} urgent={Boolean(entry.errorMessage)} />
+          <div className="min-w-0 flex-1">
+            <p className="text-lg font-bold text-ink">{returnActionLabel(entry.action)}</p>
+            {entry.errorMessage ? <p className="mt-1 text-sm font-bold text-warmRed">{entry.errorMessage}</p> : null}
+            <Link href={`/retur/${entry.returnId}`} className="mt-2 inline-flex text-sm font-bold text-pantone140">
+              Åbn retur
+            </Link>
+            <Meta createdBy={entry.actorName ?? "BackEvent"} createdAt={entry.createdAt} />
+          </div>
+        </div>
+      </article>
+    );
+  }
+
   const location = locations.find((item) => item.id === entry.locationId);
 
   return (
@@ -165,4 +184,14 @@ function Meta({ createdBy, createdAt }: { createdBy: string; createdAt: string }
       {createdBy} · {new Date(createdAt).toLocaleString("da-DK", { dateStyle: "short", timeStyle: "short" })}
     </p>
   );
+}
+
+function returnActionLabel(action: string) {
+  if (action === "registered") return "Retur registreret";
+  if (action === "return_to_stock") return "Lagt tilbage på lager";
+  if (action === "waste_registered") return "Registreret som svind";
+  if (action === "marked_reviewed") return "Retur kontrolleret";
+  if (action === "reopened") return "Retur genåbnet";
+  if (action === "reprocessed") return "Retur genbehandlet";
+  return "Returhændelse";
 }

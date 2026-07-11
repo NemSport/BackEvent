@@ -45,7 +45,7 @@ type CreateStockMovementInput = {
 };
 
 const productSelectColumns =
-  "id,name,unit,tracking_mode,onlinepos_product_id,onlinepos_name,sales_unit_quantity,liters_per_sale,units_per_case,purchase_unit_label,units_per_purchase_unit,stock_unit_label,content_per_stock_unit,consumption_unit_label,sort_order,active";
+  "id,name,unit,tracking_mode,return_handling,onlinepos_product_id,onlinepos_name,sales_unit_quantity,liters_per_sale,units_per_case,purchase_unit_label,units_per_purchase_unit,stock_unit_label,content_per_stock_unit,consumption_unit_label,sort_order,active";
 
 type CreateOpeningClosingStatusInput = {
   locationId: string;
@@ -162,6 +162,7 @@ export async function getProducts(): Promise<Product[]> {
     name: row.name,
     unit: row.unit ?? "kasser",
     trackingMode: row.tracking_mode,
+    returnHandling: row.return_handling,
     onlineposProductId: row.onlinepos_product_id,
     onlineposName: row.onlinepos_name,
     salesUnitQuantity: Number(row.sales_unit_quantity ?? 1),
@@ -529,10 +530,11 @@ export async function getOpeningClosingStatuses(): Promise<OpeningClosingStatus[
 }
 
 export async function getHistoryEntries(): Promise<HistoryEntry[]> {
-  const [movements, adjustments, statuses] = await Promise.all([
+  const [movements, adjustments, statuses, returns] = await Promise.all([
     getRecentMovements(),
     getStockAdjustments(),
     getOpeningClosingStatuses(),
+    getReturnHistoryEntries(),
   ]);
 
   return [
@@ -571,7 +573,36 @@ export async function getHistoryEntries(): Promise<HistoryEntry[]> {
       createdBy: status.createdBy,
       lineCount: status.counts.length,
     })),
+    ...returns,
   ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+async function getReturnHistoryEntries(): Promise<HistoryEntry[]> {
+  const supabase = createSupabaseBrowserClient();
+
+  if (!supabase) {
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from("backevent_return_history")
+    .select("id,return_id,action,actor_name,error_message,created_at")
+    .order("created_at", { ascending: false })
+    .limit(50);
+
+  if (error) {
+    return [];
+  }
+
+  return (data ?? []).map((row) => ({
+    id: row.id,
+    kind: "return" as const,
+    createdAt: row.created_at,
+    returnId: row.return_id,
+    action: row.action,
+    actorName: row.actor_name,
+    errorMessage: row.error_message,
+  }));
 }
 
 export async function getOpeningClosingOverview(date?: string): Promise<OpeningClosingLocationOverview[]> {
@@ -1069,6 +1100,7 @@ export async function getProductsAdmin() {
     name: row.name,
     unit: row.unit ?? "kasser",
     trackingMode: row.tracking_mode,
+    returnHandling: row.return_handling,
     onlineposProductId: row.onlinepos_product_id,
     onlineposName: row.onlinepos_name,
     salesUnitQuantity: Number(row.sales_unit_quantity ?? 1),
@@ -1260,6 +1292,7 @@ export async function createProduct(input: {
   name: string;
   unit: string;
   trackingMode?: Product["trackingMode"];
+  returnHandling?: Product["returnHandling"];
   onlineposProductId?: string | null;
   onlineposName?: string | null;
   salesUnitQuantity?: number;
@@ -1281,6 +1314,7 @@ export async function createProduct(input: {
       name: input.name,
       unit: input.unit || "kasser",
       trackingMode: input.trackingMode ?? "inventory",
+      returnHandling: input.returnHandling ?? "manual_review",
       onlineposProductId: input.onlineposProductId ?? null,
       onlineposName: input.onlineposName ?? null,
       salesUnitQuantity: input.salesUnitQuantity ?? 1,
@@ -1305,6 +1339,7 @@ export async function createProduct(input: {
       name: input.name,
       unit: input.unit || "kasser",
       tracking_mode: input.trackingMode ?? "inventory",
+      return_handling: input.returnHandling ?? "manual_review",
       onlinepos_product_id: input.onlineposProductId ?? null,
       onlinepos_name: input.onlineposName ?? null,
       sales_unit_quantity: input.salesUnitQuantity ?? 1,
@@ -1331,6 +1366,7 @@ export async function updateProduct(
     name: string;
     unit: string;
     trackingMode: Product["trackingMode"];
+    returnHandling?: Product["returnHandling"];
     onlineposProductId?: string | null;
     onlineposName?: string | null;
     salesUnitQuantity: number;
@@ -1353,6 +1389,7 @@ export async function updateProduct(
       product.name = input.name;
       product.unit = input.unit || "kasser";
       product.trackingMode = input.trackingMode;
+      product.returnHandling = input.returnHandling ?? "manual_review";
       product.onlineposProductId = input.onlineposProductId ?? null;
       product.onlineposName = input.onlineposName ?? null;
       product.salesUnitQuantity = input.salesUnitQuantity;
@@ -1375,6 +1412,7 @@ export async function updateProduct(
       name: input.name,
       unit: input.unit || "kasser",
       tracking_mode: input.trackingMode,
+      return_handling: input.returnHandling ?? "manual_review",
       onlinepos_product_id: input.onlineposProductId ?? null,
       onlinepos_name: input.onlineposName ?? null,
       sales_unit_quantity: input.salesUnitQuantity,

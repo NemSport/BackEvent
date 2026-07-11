@@ -4,12 +4,13 @@ import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/backevent/app-shell";
 import { BackButton, PrimaryButton } from "@/components/backevent/buttons";
 import { createProduct, getProductAlertSettings, getProductsAdmin, updateProduct, upsertProductAlertSetting } from "@/lib/backevent/data";
-import type { Product, ProductAlertSetting, ProductTrackingMode } from "@/lib/backevent/types";
+import type { Product, ProductAlertSetting, ProductReturnHandling, ProductTrackingMode } from "@/lib/backevent/types";
 
 type ProductFormInput = {
   name: string;
   unit: string;
   trackingMode?: ProductTrackingMode;
+  returnHandling?: ProductReturnHandling;
   onlineposProductId?: string | null;
   onlineposName?: string | null;
   salesUnitQuantity?: number;
@@ -28,7 +29,7 @@ type ProductFormInput = {
 };
 
 type SortDirection = "asc" | "desc";
-type ProductSortKey = "name" | "purchase" | "stock" | "consumption" | "trackingMode" | "onlinepos" | "sortOrder" | "active";
+type ProductSortKey = "name" | "purchase" | "stock" | "consumption" | "trackingMode" | "returnHandling" | "onlinepos" | "sortOrder" | "active";
 type ProductSort = { key: ProductSortKey; direction: SortDirection } | null;
 
 export default function AdminProdukterPage() {
@@ -38,7 +39,12 @@ export default function AdminProdukterPage() {
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [sort, setSort] = useState<ProductSort>(null);
-  const sortedProducts = useMemo(() => sortProducts(products, sort), [products, sort]);
+  const [manualReturnOnly, setManualReturnOnly] = useState(false);
+  const visibleProducts = useMemo(
+    () => manualReturnOnly ? products.filter((product) => product.returnHandling === "manual_review") : products,
+    [manualReturnOnly, products],
+  );
+  const sortedProducts = useMemo(() => sortProducts(visibleProducts, sort), [visibleProducts, sort]);
 
   async function reload() {
     const [loadedProducts, loadedAlertSettings] = await Promise.all([getProductsAdmin(), getProductAlertSettings()]);
@@ -77,6 +83,7 @@ export default function AdminProdukterPage() {
       await updateProduct(editingProduct.id, {
         ...input,
         trackingMode: input.trackingMode ?? "inventory",
+        returnHandling: input.returnHandling ?? "manual_review",
         salesUnitQuantity: input.salesUnitQuantity ?? 1,
         purchaseUnitLabel: input.purchaseUnitLabel ?? input.unit,
         unitsPerPurchaseUnit: input.unitsPerPurchaseUnit ?? input.unitsPerCase,
@@ -143,13 +150,24 @@ export default function AdminProdukterPage() {
 
       {message ? <p className="mb-4 rounded-2xl bg-soft p-4 text-base font-bold text-pantone140">{message}</p> : null}
 
+      <section className="mb-4 rounded-2xl border border-line bg-macro p-4 shadow-sm">
+        <label className="flex items-start gap-3 text-sm font-bold text-ink">
+          <input type="checkbox" checked={manualReturnOnly} onChange={(event) => setManualReturnOnly(event.target.checked)} className="mt-1" />
+          <span>
+            Vis kun varer der kræver manuel returkontrol
+            <span className="block text-xs font-bold text-muted">Varer med manuel returkontrol stopper automatisk lagerbehandling, indtil Ejer vælger en sikker returbehandling.</span>
+          </span>
+        </label>
+      </section>
+
       <section className="overflow-hidden rounded-[1.5rem] border border-line bg-macro shadow-soft">
-        <div className="hidden grid-cols-[1.4fr_0.95fr_0.95fr_0.95fr_0.85fr_1fr_0.55fr_0.5fr_0.65fr] gap-3 border-b border-line bg-soft px-4 py-3 text-xs font-bold uppercase tracking-wide text-muted xl:grid">
+        <div className="hidden grid-cols-[1.35fr_0.85fr_0.85fr_0.85fr_0.78fr_0.85fr_0.9fr_0.45fr_0.45fr_0.65fr] gap-3 border-b border-line bg-soft px-4 py-3 text-xs font-bold uppercase tracking-wide text-muted xl:grid">
           <SortableHeader label="Navn" sortKey="name" sort={sort} onSort={toggleSort} />
           <SortableHeader label="IndkÃ¸b" sortKey="purchase" sort={sort} onSort={toggleSort} />
           <SortableHeader label="Lager" sortKey="stock" sort={sort} onSort={toggleSort} />
           <SortableHeader label="Forbrug" sortKey="consumption" sort={sort} onSort={toggleSort} />
           <SortableHeader label="Lagerstyring" sortKey="trackingMode" sort={sort} onSort={toggleSort} />
+          <SortableHeader label="Retur" sortKey="returnHandling" sort={sort} onSort={toggleSort} />
           <SortableHeader label="OnlinePOS" sortKey="onlinepos" sort={sort} onSort={toggleSort} />
           <SortableHeader label="Sortering" sortKey="sortOrder" sort={sort} onSort={toggleSort} />
           <SortableHeader label="Aktiv" sortKey="active" sort={sort} onSort={toggleSort} />
@@ -200,15 +218,16 @@ function SortableHeader({
 
 function ProductRow({ product, onEdit }: { product: Product; onEdit: () => void }) {
   return (
-    <article className="grid gap-2 px-4 py-3 text-sm font-medium text-ink xl:grid-cols-[1.4fr_0.95fr_0.95fr_0.95fr_0.85fr_1fr_0.55fr_0.5fr_0.65fr] xl:items-center">
+    <article className="grid gap-2 px-4 py-3 text-sm font-medium text-ink xl:grid-cols-[1.35fr_0.85fr_0.85fr_0.85fr_0.78fr_0.85fr_0.9fr_0.45fr_0.45fr_0.65fr] xl:items-center">
       <div>
         <p className="font-bold">{product.name}</p>
-        <p className="text-xs text-muted xl:hidden">{trackingLabel(product.trackingMode)} · {formatPackage(product)}</p>
+        <p className="text-xs text-muted xl:hidden">{trackingLabel(product.trackingMode)} · {returnHandlingLabel(product.returnHandling)} · {formatPackage(product)}</p>
       </div>
       <span className="hidden xl:block">{formatPurchase(product)}</span>
       <span className="hidden xl:block">{formatStock(product)}</span>
       <span className="hidden xl:block">{formatConsumption(product)}</span>
       <span className="hidden xl:block">{trackingLabel(product.trackingMode)}</span>
+      <span className="hidden xl:block">{returnHandlingLabel(product.returnHandling)}</span>
       <span className="text-muted xl:text-ink">{product.onlineposName || product.onlineposProductId || "-"}</span>
       <span className="hidden xl:block">{product.sortOrder ?? "-"}</span>
       <span className="hidden xl:block">{product.active === false ? "Nej" : "Ja"}</span>
@@ -232,6 +251,7 @@ function ProductModal({
 }) {
   const [name, setName] = useState(product?.name ?? "");
   const [trackingMode, setTrackingMode] = useState<ProductTrackingMode>(product?.trackingMode ?? "inventory");
+  const [returnHandling, setReturnHandling] = useState<ProductReturnHandling>(product?.returnHandling ?? "manual_review");
   const [salesUnitQuantity, setSalesUnitQuantity] = useState((product?.salesUnitQuantity ?? 1).toString());
   const [litersPerSale, setLitersPerSale] = useState(product?.litersPerSale?.toString() ?? "");
   const [onlineposProductId, setOnlineposProductId] = useState(product?.onlineposProductId ?? "");
@@ -254,6 +274,7 @@ function ProductModal({
       name,
       unit: purchaseUnitLabel || "kasser",
       trackingMode,
+      returnHandling,
       salesUnitQuantity: salesUnitQuantity ? Number(salesUnitQuantity) : 1,
       litersPerSale: litersPerSale ? Number(litersPerSale) : null,
       onlineposProductId: onlineposProductId.trim() || null,
@@ -299,6 +320,20 @@ function ProductModal({
         <p className="mt-3 text-sm font-bold text-muted">
           1 {purchaseUnitLabel || "indkøbsenhed"} = {formatCalculatedConsumption(unitsPerPurchaseUnit, contentPerStockUnit)} {consumptionUnitLabel || "forbrugsenheder"}
         </p>
+      </section>
+
+      <section className="mt-5 rounded-2xl border border-line bg-soft p-4">
+        <h3 className="text-lg font-bold text-ink">Retur fra OnlinePOS</h3>
+        <p className="mt-1 text-sm font-bold text-muted">Vælg hvad BackEvent må gøre, når varen kommer retur.</p>
+        <label className="mt-3 block">
+          <span className="text-base font-bold text-ink">Behandling ved retur</span>
+          <select value={returnHandling} onChange={(event) => setReturnHandling(event.target.value as ProductReturnHandling)} className="mt-2 min-h-12 w-full rounded-2xl border border-line px-3 py-2 font-bold outline-none focus:border-pantone140">
+            <option value="waste">Svind/kassation</option>
+            <option value="return_to_stock">Tilbage på lager</option>
+            <option value="manual_review">Manuel kontrol</option>
+            <option value="no_stock_effect">Ingen lagerpåvirkning</option>
+          </select>
+        </label>
       </section>
 
       <details className="mt-5 rounded-2xl border border-line bg-macro p-4">
@@ -367,6 +402,13 @@ function trackingLabel(mode?: ProductTrackingMode) {
   if (mode === "flow") return "Flow";
   if (mode === "ignore") return "Ignorer";
   return "Lagerstyret";
+}
+
+function returnHandlingLabel(mode?: ProductReturnHandling) {
+  if (mode === "waste") return "Svind";
+  if (mode === "return_to_stock") return "Til lager";
+  if (mode === "no_stock_effect") return "Ingen lager";
+  return "Manuel kontrol";
 }
 
 function formatPurchase(product: Product) {
@@ -442,6 +484,7 @@ function productSortValue(product: Product, key: ProductSortKey) {
   if (key === "stock") return product.stockUnitLabel ?? product.unit;
   if (key === "consumption") return product.consumptionUnitLabel ?? product.unit;
   if (key === "trackingMode") return trackingLabel(product.trackingMode);
+  if (key === "returnHandling") return returnHandlingLabel(product.returnHandling);
   if (key === "onlinepos") return product.onlineposName || product.onlineposProductId;
   if (key === "sortOrder") return product.sortOrder;
   return product.active === false ? "Nej" : "Ja";

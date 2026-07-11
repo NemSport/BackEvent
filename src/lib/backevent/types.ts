@@ -1,11 +1,13 @@
 export type StockStatus = "good" | "low" | "critical";
 export type ProductTrackingMode = "inventory" | "flow" | "ignore";
+export type ProductReturnHandling = "waste" | "return_to_stock" | "manual_review" | "no_stock_effect";
 
 export type Product = {
   id: string;
   name: string;
   unit: string;
   trackingMode?: ProductTrackingMode;
+  returnHandling?: ProductReturnHandling;
   onlineposProductId?: string | null;
   onlineposName?: string | null;
   salesUnitQuantity?: number;
@@ -141,6 +143,15 @@ export type HistoryEntry =
       statusType: "opening" | "closing";
       createdBy: string;
       lineCount: number;
+    }
+  | {
+      id: string;
+      kind: "return";
+      createdAt: string;
+      returnId: string;
+      action: string;
+      actorName?: string | null;
+      errorMessage?: string | null;
     };
 
 export type OpeningClosingLocationOverview = {
