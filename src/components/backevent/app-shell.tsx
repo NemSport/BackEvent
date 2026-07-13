@@ -52,6 +52,7 @@ const navSections = [
     items: [
       { href: "/retur", label: "Returer", icon: RotateCcw, minRole: "ansvarlig" },
       { href: "/retur/kontrol", label: "Kontrol", icon: RotateCcw, minRole: "ansvarlig" },
+      { href: "/admin/retur-test", label: "Retur-test", icon: RotateCcw, minRole: "ejer" },
     ],
   },
   {
@@ -74,8 +75,10 @@ const navSections = [
       { href: "/admin/rapport", label: "Rapport", icon: BarChart3, minRole: "ansvarlig" },
       { href: "/admin/driftstjek", label: "Driftstjek", icon: Settings, minRole: "ejer" },
       { href: "/admin/qr", label: "QR", icon: QrCode, minRole: "ejer" },
-      { href: "/onlinepos/mapping", label: "OnlinePOS", icon: PlugZap, minRole: "ejer" },
-      { href: "/admin/onlinepos-sync", label: "POS-sync", icon: RefreshCw, minRole: "ejer" },
+      { href: "/onlinepos/mapping", label: "Produktmapping", icon: PlugZap, minRole: "ejer" },
+      { href: "/admin/onlinepos/lokationer", label: "Lokationsmapping", icon: MapPin, minRole: "ejer" },
+      { href: "/admin/onlinepos-sync", label: "Syncstatus", icon: RefreshCw, minRole: "ejer" },
+      { href: "/admin/onlinepos-replay", label: "POS-replay", icon: RefreshCw, minRole: "ejer" },
       { href: "/admin/eksport", label: "Eksport", icon: PackageSearch, minRole: "ejer" },
     ],
   },
@@ -145,7 +148,7 @@ function ShellChrome({ children, aside }: { children: ReactNode; aside?: ReactNo
 function MobileAdminMenu() {
   const { profile } = useBackEventAuth();
   const adminSections = navSections
-    .filter((section) => section.title !== "Drift" && section.title !== "Retur & kontrol")
+    .filter((section) => section.title !== "Drift")
     .map((section) => ({
       ...section,
       items: section.items.filter((item) => hasRoleAtLeast(profile?.role, item.minRole)),

@@ -8,6 +8,7 @@ export type Product = {
   unit: string;
   trackingMode?: ProductTrackingMode;
   returnHandling?: ProductReturnHandling;
+  returnHandlingExplicit?: ProductReturnHandling | null;
   onlineposProductId?: string | null;
   onlineposName?: string | null;
   salesUnitQuantity?: number;

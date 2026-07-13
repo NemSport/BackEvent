@@ -1,8 +1,13 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import webPush from "web-push";
 import type { OnlinePosInventoryMapping, OnlinePosMappingAction } from "./inventory-mappings";
+import {
+  getOnlinePosLocationMappings,
+  resolveOnlinePosLocation,
+} from "./location-mappings";
 
 export type ReturnHandling = "waste" | "return_to_stock" | "manual_review" | "no_stock_effect";
+export type ReturnEconomicDirection = "refund" | "charge" | "neutral";
 
 export type ParsedOnlinePosReturnLine = {
   onlineposLineId: string | null;
@@ -11,8 +16,11 @@ export type ParsedOnlinePosReturnLine = {
   productDescription: string;
   productGroupName: string | null;
   returnedQuantity: number;
+  inputUnit: string | null;
+  parentOnlineposLineId: string | null;
   unitPrice: number | null;
   lineAmount: number;
+  economicDirection: ReturnEconomicDirection;
   lineType: string;
   isDeposit: boolean;
   isCup: boolean;
@@ -43,6 +51,12 @@ type ProductRow = {
   id: string;
   name: string;
   unit: string | null;
+  units_per_case?: number | string | null;
+  purchase_unit_label?: string | null;
+  units_per_purchase_unit?: number | string | null;
+  stock_unit_label?: string | null;
+  content_per_stock_unit?: number | string | null;
+  consumption_unit_label?: string | null;
   return_handling: ReturnHandling | null;
   active: boolean | null;
 };
@@ -53,6 +67,15 @@ type LocationRow = {
   type: string | null;
   source_location_id: string | null;
   active: boolean | null;
+};
+
+export type ReturnRegistrationOptions = {
+  source?: "onlinepos" | "test_harness";
+  testScenario?: string | null;
+  createdByUserId?: string | null;
+  createdByName?: string | null;
+  extraMappings?: OnlinePosInventoryMapping[];
+  forceControlReasons?: string[];
 };
 
 type TokenResponse = {
@@ -92,14 +115,19 @@ export async function runOnlinePosReturnSync({
     let duplicateCount = 0;
 
     for (const parsedReturn of returns) {
-      const result = await registerAndProcessReturn(supabase, parsedReturn, context);
-      registered.push(result);
-      processedLineCount += result.processedLineCount;
-      reviewCount += result.reviewCount;
-      duplicateCount += result.duplicate ? 1 : 0;
+      try {
+        const result = await registerAndProcessReturn(supabase, parsedReturn, context);
+        registered.push(result);
+        processedLineCount += result.processedLineCount;
+        reviewCount += result.reviewCount;
+        if (result.duplicate) duplicateCount += 1;
+      } catch (error) {
+        reviewCount += 1;
+        registered.push({ error: safeErrorMessage(error), duplicate: false, processedLineCount: 0, reviewCount: 1 });
+      }
     }
 
-    const status = fetched.pageErrors.length > 0 ? "partial" : "completed";
+    const status = reviewCount > 0 || fetched.pageErrors.length > 0 ? "partial" : "completed";
     await updateReturnSyncRun(supabase, run.id, {
       status,
       pageCount: fetched.pageCount,
@@ -108,25 +136,21 @@ export async function runOnlinePosReturnSync({
       processedLineCount,
       reviewCount,
       duplicateCount,
-      errorMessage: fetched.pageErrors.length > 0 ? fetched.pageErrors.join("; ") : null,
+      errorMessage: fetched.pageErrors.join(" | ") || null,
     });
 
     return {
-      ok: fetched.pageErrors.length === 0,
-      source,
+      ok: true,
       runId: run.id,
       status,
-      datetimeFrom,
-      datetimeTo,
-      pageCount: fetched.pageCount,
       transactionCount: fetched.transactions.length,
       returnCount: returns.length,
       processedLineCount,
       reviewCount,
       duplicateCount,
-      pagination: fetched.pagination,
+      pageCount: fetched.pageCount,
       pageErrors: fetched.pageErrors,
-      returns: registered,
+      registered,
     };
   } catch (error) {
     await updateReturnSyncRun(supabase, run.id, {
@@ -138,104 +162,79 @@ export async function runOnlinePosReturnSync({
       reviewCount: 0,
       duplicateCount: 0,
       errorMessage: safeErrorMessage(error),
-    }).catch(() => undefined);
-
-    return {
-      ok: false,
-      source,
-      runId: run.id,
-      status: "failed",
-      datetimeFrom,
-      datetimeTo,
-      message: safeErrorMessage(error),
-      pageCount: 0,
-      transactionCount: 0,
-      returnCount: 0,
-      processedLineCount: 0,
-      reviewCount: 0,
-      duplicateCount: 0,
-      pageErrors: [safeErrorMessage(error)],
-      returns: [],
-    };
+    });
+    return { ok: false, runId: run.id, message: safeErrorMessage(error) };
   }
 }
 
 export function parseOnlinePosReturn(transaction: Record<string, unknown>, transactionIndex = 0): ParsedOnlinePosReturn | null {
-  const lines = findTransactionLines(transaction);
-  const returnSignal = hasReturnSignal(transaction, lines);
+  const rawLines = findTransactionLines(transaction);
+  const returnSignal = hasReturnSignal(transaction, rawLines);
+  if (!returnSignal.isReturn) return null;
 
-  if (!returnSignal.isReturn) {
-    return null;
-  }
+  const parsedLines = rawLines
+    .map((line, lineIndex) => toReturnLine(line, stringOrNull(pickField(transaction, ["transaction_id", "transactionId", "id"])), stringOrNull(pickField(transaction, ["receipt_number", "receiptNumber"])), lineIndex))
+    .filter((line) => line.returnedQuantity > 0 || line.lineAmount !== 0);
 
-  const transactionId = stringOrNull(pickField(transaction, ["transaction_id", "transactionId", "id"]));
-  const receiptNumber = stringOrNull(pickField(transaction, ["receipt_number", "receiptNumber"]));
-  const returnId = stringOrNull(pickField(transaction, ["return_id", "refund_id", "returnId", "refundId"]));
-  const originalTransactionId = stringOrNull(pickField(transaction, ["original_transaction_id", "originalTransactionId", "parent_transaction_id"]));
-  const onlineposReturnedAt = stringOrNull(pickField(transaction, ["datetime", "created_at", "createdAt", "returned_at", "returnedAt"]));
+  if (parsedLines.length === 0) return null;
+
+  const onlineposTransactionId = stringOrNull(pickField(transaction, ["transaction_id", "transactionId", "id"])) ?? `transaction-${transactionIndex}`;
+  const receiptNumber = stringOrNull(pickField(transaction, ["receipt_number", "receiptNumber", "receipt"]));
+  const onlineposReturnId = stringOrNull(pickField(transaction, ["return_id", "returnId", "refund_id", "refundId"]));
+  const originalTransactionId = stringOrNull(pickField(transaction, ["original_transaction_id", "originalTransactionId", "parent_transaction_id", "parentTransactionId"]));
+  const returnedAt = stringOrNull(pickField(transaction, ["datetime", "created_at", "createdAt", "returned_at", "returnedAt"]));
   const cashRegister = toSafeCashRegister(pickField(transaction, ["cash_register", "cashRegister"]));
-  const parsedLines = lines
-    .map((line, lineIndex) => toReturnLine(line, transactionId, receiptNumber, transactionIndex * 10000 + lineIndex))
-    .filter((line) => line.returnedQuantity > 0 || line.lineAmount < 0);
-
-  if (parsedLines.length === 0) {
-    return null;
-  }
-
-  const totalAmount = numberValue(pickField(transaction, ["total", "amount", "net_price", "netPrice", "price"])) ?? parsedLines.reduce((sum, line) => sum + line.lineAmount, 0);
-  const depositAmount = parsedLines.filter((line) => line.isDeposit || line.isCup || line.isFee).reduce((sum, line) => sum + line.lineAmount, 0);
-  const productAmount = parsedLines.reduce((sum, line) => sum + line.lineAmount, 0) - depositAmount;
-  const cupAmount = parsedLines.filter((line) => line.isCup).reduce((sum, line) => sum + line.lineAmount, 0);
-  const externalIdempotencyKey = [
-    "return",
-    returnId ?? transactionId ?? receiptNumber ?? `tx-${transactionIndex}`,
-    receiptNumber ?? "receipt",
-    Math.abs(roundNumber(totalAmount)),
-    onlineposReturnedAt ?? "time",
-  ].join(":");
-  const contentHash = stableHash({
-    transactionId,
-    receiptNumber,
-    totalAmount: roundNumber(totalAmount),
-    lines: parsedLines.map((line) => ({
-      id: line.onlineposLineId,
-      product: line.onlineposProductId ?? line.productDescription,
-      qty: line.returnedQuantity,
-      amount: line.lineAmount,
-    })),
-  });
+  const cashRegisterId = cashRegister?.id ?? stringOrNull(pickField(transaction, ["cash_register_id", "cashRegisterId", "department_id", "departmentId"]));
+  const cashRegisterName = cashRegister?.name ?? stringOrNull(pickField(transaction, ["cash_register_name", "cashRegisterName", "department", "department_name", "departmentName"]));
+  const rawTotalAmount = numberValue(pickField(transaction, ["total", "amount", "net_price", "netPrice", "price"]));
+  const totalAmount = roundNumber(parsedLines.reduce((sum, line) => sum + line.lineAmount, 0));
+  const depositAmount = roundNumber(parsedLines.filter((line) => line.isDeposit || line.isCup || line.isFee).reduce((sum, line) => sum + line.lineAmount, 0));
+  const productAmount = roundNumber(totalAmount - depositAmount);
+  const cupAmount = roundNumber(parsedLines.filter((line) => line.isCup).reduce((sum, line) => sum + line.lineAmount, 0));
+  const externalIdempotencyKey = ["return", onlineposReturnId ?? onlineposTransactionId, receiptNumber ?? "no-receipt", returnedAt ?? "no-time"].join(":");
+  const contentHash = stableHash({ receiptNumber, onlineposTransactionId, onlineposReturnId, totalAmount, lines: parsedLines.map((line) => ({ id: line.onlineposLineId, product: line.onlineposProductId ?? line.productDescription, qty: line.returnedQuantity, amount: line.lineAmount, direction: line.economicDirection })) });
   const controlReasons = [...returnSignal.reasons];
-  const suspicionFlags = [];
+  const suspicionFlags: string[] = [];
+  const ordinaryReturnedQuantity = parsedLines
+    .filter((line) => !line.isDeposit && !line.isCup && !line.isFee && !line.parentOnlineposLineId)
+    .reduce((sum, line) => sum + line.returnedQuantity, 0);
 
-  if (parsedLines.some((line) => line.returnedQuantity > 10 && !line.isDeposit)) {
+  if (ordinaryReturnedQuantity > 10) {
     suspicionFlags.push("STOR_RETUR");
     controlReasons.push("Stor retur over 10 enheder");
   }
-
-  if (parsedLines.some((line) => line.isCup || line.isDeposit || line.isFee)) {
-    suspicionFlags.push("PANT_KRUS");
+  if (parsedLines.some((line) => line.isCup || line.isDeposit || line.isFee)) suspicionFlags.push("PANT_KRUS");
+  for (const line of parsedLines) {
+    if (line.economicDirection === "refund" && line.lineAmount > 0) controlReasons.push("Linjefortegn modsiger returlinje");
+    if (line.economicDirection === "charge" && line.lineAmount < 0) controlReasons.push("Gebyr har refund-retning");
+  }
+  if (typeof rawTotalAmount === "number" && Math.abs(roundNumber(rawTotalAmount) - totalAmount) > 0.01) {
+    controlReasons.push("Rå OnlinePOS-total afviger fra beregnede returlinjer");
   }
 
   return {
     externalIdempotencyKey,
     contentHash,
     receiptNumber,
-    onlineposTransactionId: transactionId,
-    onlineposReturnId: returnId,
+    onlineposTransactionId,
+    onlineposReturnId,
     originalTransactionId,
-    onlineposReturnedAt,
-    cashRegisterId: cashRegister?.id ?? null,
-    cashRegisterName: cashRegister?.name ?? null,
-    totalAmount: roundNumber(totalAmount),
-    productAmount: roundNumber(productAmount),
-    depositAmount: roundNumber(depositAmount),
-    cupAmount: roundNumber(cupAmount),
-    controlReasons: [...new Set(controlReasons)],
-    suspicionFlags: [...new Set(suspicionFlags)],
+    onlineposReturnedAt: returnedAt,
+    cashRegisterId,
+    cashRegisterName,
+    totalAmount,
+    productAmount,
+    depositAmount,
+    cupAmount,
+    controlReasons: uniqueJson(controlReasons),
+    suspicionFlags: uniqueJson(suspicionFlags),
     rawMetadata: {
       source: "onlinepos",
       cashRegister,
       weakSignal: returnSignal.weak,
+      rawTotalAmount: rawTotalAmount ?? null,
+      calculatedNetAmount: totalAmount,
+      economy: summarizeReturnEconomy(parsedLines),
     },
     lines: parsedLines,
   };
@@ -245,13 +244,22 @@ export async function registerAndProcessReturn(
   supabase: SupabaseClient,
   parsedReturn: ParsedOnlinePosReturn,
   context: Awaited<ReturnType<typeof loadReturnContext>>,
+  options: ReturnRegistrationOptions = {},
 ) {
-  const location = findLocationForCashRegister(parsedReturn, context.locations);
+  const processingContext = {
+    ...context,
+    mappings: [...(options.extraMappings ?? []), ...context.mappings],
+  };
+  const locationResolution = resolveOnlinePosLocation(
+    { venueId: process.env.ONLINEPOS_VENUE_ID ?? null, cashRegisterId: parsedReturn.cashRegisterId, cashRegisterName: parsedReturn.cashRegisterName },
+    context.locationMappings,
+    context.locations,
+  );
+  const location = locationResolution.ok ? locationResolution.location : null;
   const sourceLocationId = location?.source_location_id ?? null;
-  const controlReasons = [...parsedReturn.controlReasons];
+  const controlReasons = [...parsedReturn.controlReasons, ...(options.forceControlReasons ?? [])];
 
-  if (!location) controlReasons.push("Ukendt lokation");
-  if (location && !sourceLocationId) controlReasons.push("Mangler lagerkilde");
+  if (!locationResolution.ok) controlReasons.push(locationResolution.errorCode);
   if (!parsedReturn.receiptNumber) controlReasons.push("Mangler bonnummer");
 
   const existing = await findExistingReturn(supabase, parsedReturn.externalIdempotencyKey);
@@ -266,7 +274,7 @@ export async function registerAndProcessReturn(
           control_reasons: reasons,
         })
         .eq("id", existing.id);
-      await notifyOwnersAboutReturnControl(supabase, String(existing.id), parsedReturn, reasons);
+      await notifyOwnersAboutReturnControl(supabase, String(existing.id), parsedReturn, getSeriousReturnControlReasons(reasons));
     }
     return {
       id: String(existing.id),
@@ -295,18 +303,24 @@ export async function registerAndProcessReturn(
       product_amount: parsedReturn.productAmount,
       deposit_amount: parsedReturn.depositAmount,
       cup_amount: parsedReturn.cupAmount,
+      source: options.source ?? "onlinepos",
+      test_scenario: options.testScenario ?? null,
+      created_by: options.createdByUserId ?? null,
+      created_by_name: options.createdByName ?? null,
       processing_status: "processing",
       control_status: controlReasons.length > 0 ? "open" : "not_required",
       control_reasons: uniqueJson(controlReasons),
       suspicion_flags: uniqueJson(parsedReturn.suspicionFlags),
-      raw_metadata: parsedReturn.rawMetadata,
+      raw_metadata: {
+        ...parsedReturn.rawMetadata,
+        testHarness: options.source === "test_harness",
+        testScenario: options.testScenario ?? null,
+      },
     })
     .select("id")
     .single();
 
-  if (insertError) {
-    throw new Error("Retur kunne ikke registreres");
-  }
+  if (insertError) throw new Error("Retur kunne ikke registreres");
 
   const returnId = String(insertedReturn.id);
   await supabase.from("backevent_return_history").insert({
@@ -316,13 +330,19 @@ export async function registerAndProcessReturn(
     metadata: { lineCount: parsedReturn.lines.length },
   });
 
-  const preparedLines = parsedReturn.lines.map((line) => prepareReturnLine(line, returnId, context));
+  const preparedLines = parsedReturn.lines.map((line) => prepareReturnLine(line, returnId, processingContext));
+  if (!sourceLocationId) {
+    for (const line of preparedLines) {
+      if (!returnLineNeedsStockSource(line.row)) continue;
+      const reason = `STOCK_SOURCE_MISSING: ${line.row.product_description}`;
+      line.reasons.push(reason);
+      line.row.processing_status = "requires_review";
+      line.row.error_message = line.row.error_message ? `${line.row.error_message}, ${reason}` : reason;
+    }
+  }
   const allControlReasons = uniqueJson([...controlReasons, ...preparedLines.flatMap((line) => line.reasons)]);
   if (allControlReasons.length > controlReasons.length) {
-    await supabase
-      .from("backevent_returns")
-      .update({ control_status: "open", control_reasons: allControlReasons })
-      .eq("id", returnId);
+    await supabase.from("backevent_returns").update({ control_status: "open", control_reasons: allControlReasons }).eq("id", returnId);
   }
 
   const { data: insertedLines, error: lineError } = await supabase
@@ -338,22 +358,31 @@ export async function registerAndProcessReturn(
 
   let processedLineCount = 0;
   let reviewCount = 0;
+  const postProcessControlReasons: string[] = [];
 
   for (const row of insertedLines ?? []) {
     const { data, error } = await supabase.rpc("backevent_process_return_line", { p_return_line_id: row.id });
     const result = data as { ok?: boolean; status?: string } | null;
     if (result?.ok) processedLineCount += 1;
-    if (error || result?.status === "requires_review") reviewCount += 1;
+    if (error || result?.status === "requires_review" || result?.status === "failed") {
+      reviewCount += 1;
+      if (error || result?.status === "failed") postProcessControlReasons.push("Lagerbehandling fejler");
+    }
+  }
+
+  const finalControlReasons = uniqueJson([...allControlReasons, ...postProcessControlReasons]);
+  if (finalControlReasons.length > allControlReasons.length) {
+    await supabase.from("backevent_returns").update({ control_status: "open", control_reasons: finalControlReasons }).eq("id", returnId);
   }
 
   await notifyFinanceAboutReturn(supabase, returnId, parsedReturn, location?.name ?? null);
-  if (allControlReasons.length > 0 || reviewCount > 0) {
-    await notifyOwnersAboutReturnControl(supabase, returnId, parsedReturn, allControlReasons.length > 0 ? allControlReasons : ["Retur kræver kontrol"]);
+  const seriousReasons = getSeriousReturnControlReasons(finalControlReasons);
+  if (seriousReasons.length > 0) {
+    await notifyOwnersAboutReturnControl(supabase, returnId, parsedReturn, seriousReasons);
   }
 
   return { id: returnId, duplicate: false, processedLineCount, reviewCount, processingStatus: reviewCount > 0 ? "requires_review" : "processed" };
 }
-
 export async function fetchOnlinePosTransactions({ datetimeFrom, datetimeTo, page }: { datetimeFrom: string; datetimeTo: string; page?: string | null }) {
   if (!process.env.ONLINEPOS_CLIENT_ID || !process.env.ONLINEPOS_CLIENT_SECRET || !process.env.ONLINEPOS_VENUE_ID) {
     throw new Error("OnlinePOS env mangler");
@@ -411,14 +440,14 @@ export async function fetchOnlinePosTransactions({ datetimeFrom, datetimeTo, pag
 
       const nextPage = nextPageNumber(pagination, currentPage);
       if (!nextPage || nextPage <= currentPage) {
-        pageErrors.push("Pagination stoppede uden gyldig næste side");
+        pageErrors.push("Pagination stoppede uden gyldig nÃ¦ste side");
         break;
       }
       currentPage = nextPage;
     }
 
     if (pageCount >= maxPages && hasMorePages(pagination)) {
-      pageErrors.push("Pagination stoppet af sikkerhedsgrænse");
+      pageErrors.push("Pagination stoppet af sikkerhedsgrÃ¦nse");
     }
 
     return {
@@ -464,7 +493,7 @@ async function fetchOnlinePosTransactionPage({
   const text = await response.text();
 
   if (!response.ok) {
-    throw new Error(response.status === 401 || response.status === 403 ? "OnlinePOS afviser adgang" : `OnlinePOS transactions fejlede på side ${page}`);
+    throw new Error(response.status === 401 || response.status === 403 ? "OnlinePOS afviser adgang" : `OnlinePOS transactions fejlede pÃ¥ side ${page}`);
   }
 
   return parseTransactions(text);
@@ -518,12 +547,16 @@ async function updateReturnSyncRun(
     .eq("id", runId);
 }
 
-async function loadReturnContext(supabase: SupabaseClient) {
-  const [mappingsResult, componentsResult, productsResult, locationsResult] = await Promise.all([
+export async function loadReturnContext(supabase: SupabaseClient) {
+  const [mappingsResult, componentsResult, productsResult, locationsResult, locationMappings] = await Promise.all([
     supabase.from("onlinepos_inventory_mappings").select("id,onlinepos_product_id,onlinepos_product_name,line_type,mapping_action,status,backevent_inventory_item_id,conversion_factor"),
     supabase.from("onlinepos_inventory_mapping_components").select("mapping_id,backevent_inventory_item_id,conversion_factor,sort_order").order("sort_order"),
-    supabase.from("backevent_products").select("id,name,unit,return_handling,active").eq("active", true),
+    supabase
+      .from("backevent_products")
+      .select("id,name,unit,units_per_case,purchase_unit_label,units_per_purchase_unit,stock_unit_label,content_per_stock_unit,consumption_unit_label,return_handling,active")
+      .eq("active", true),
     supabase.from("backevent_locations").select("id,name,type,source_location_id,active").eq("active", true),
+    getOnlinePosLocationMappings(supabase),
   ]);
 
   if (mappingsResult.error || componentsResult.error || productsResult.error || locationsResult.error) {
@@ -542,7 +575,7 @@ async function loadReturnContext(supabase: SupabaseClient) {
     componentsByMapping.set(key, list);
   }
 
-  const mappings = (mappingsResult.data ?? []).map((mapping) => ({
+  const mappings: OnlinePosInventoryMapping[] = (mappingsResult.data ?? []).map((mapping) => ({
     id: String(mapping.id),
     onlineposProductId: stringOrNull(mapping.onlinepos_product_id),
     onlineposProductName: stringOrNull(mapping.onlinepos_product_name),
@@ -561,6 +594,7 @@ async function loadReturnContext(supabase: SupabaseClient) {
     mappings,
     products: (productsResult.data ?? []) as ProductRow[],
     locations: (locationsResult.data ?? []) as LocationRow[],
+    locationMappings,
   };
 }
 
@@ -575,17 +609,19 @@ function prepareReturnLine(
   const product = firstComponent?.backeventInventoryItemId
     ? context.products.find((item) => item.id === firstComponent.backeventInventoryItemId) ?? null
     : null;
+  const explicitReturnHandling = product?.return_handling ?? null;
   const handling = line.isDeposit || line.isCup || line.isFee
     ? "no_stock_effect"
-    : product?.return_handling ?? (components.length > 1 ? "manual_review" : "manual_review");
+    : explicitReturnHandling ?? "manual_review";
   const conversionFactor = firstComponent?.conversionFactor ?? 0;
-  const calculatedStockQuantity = roundNumber(Math.abs(line.returnedQuantity) * Number(conversionFactor));
+  const calculatedStockQuantity = Math.abs(line.returnedQuantity) * Number(conversionFactor);
   const reasons = [];
 
-  if (!mapping || mapping.status !== "approved") reasons.push("Mangler godkendt mapping");
-  if (components.length > 1) reasons.push("Flere lagerkomponenter kræver manuel returkontrol");
+  if (handling !== "no_stock_effect" && (!mapping || mapping.status !== "approved")) reasons.push("Mangler godkendt mapping");
+  if (handling !== "no_stock_effect" && components.length > 1) reasons.push("Flere lagerkomponenter krÃ¦ver manuel returkontrol");
   if (!product && handling !== "no_stock_effect") reasons.push("Produkt findes ikke i BackEvent");
-  if (handling === "manual_review") reasons.push("Produkt kræver manuel returkontrol");
+  if (product && explicitReturnHandling === null && handling !== "no_stock_effect") reasons.push(`Produkt mangler returbehandling: ${product.name}`);
+  if (handling === "manual_review" && explicitReturnHandling === "manual_review") reasons.push("Produkt krÃ¦ver manuel returkontrol");
 
   return {
     reasons,
@@ -597,10 +633,12 @@ function prepareReturnLine(
       backevent_product_id: product?.id ?? null,
       product_description: line.productDescription,
       returned_quantity: line.returnedQuantity,
+      input_unit: line.inputUnit,
       unit: product?.unit ?? null,
       unit_price: line.unitPrice,
       line_amount: line.lineAmount,
       line_type: line.lineType,
+      parent_external_line_id: line.parentOnlineposLineId,
       return_handling: handling,
       is_deposit: line.isDeposit,
       is_cup: line.isCup,
@@ -614,136 +652,226 @@ function prepareReturnLine(
   };
 }
 
+export function returnLineNeedsStockSource(row: { return_handling?: string | null; backevent_product_id?: string | null; calculated_stock_quantity?: number | string | null }) {
+  return row.return_handling === "return_to_stock" && Boolean(row.backevent_product_id) && Number(row.calculated_stock_quantity ?? 0) > 0;
+}
+
+type ReturnNotificationRecipient = { id: string; email: string | null };
+
 async function notifyFinanceAboutReturn(supabase: SupabaseClient, returnId: string, parsedReturn: ParsedOnlinePosReturn, locationName: string | null) {
   const members = await getFinanceMembers(supabase);
   if (members.length === 0) return;
 
-  const title = "Retur – " + (locationName ?? parsedReturn.cashRegisterName ?? "Ukendt sted");
+  const title = buildReturnNotificationTitle(locationName ?? parsedReturn.cashRegisterName ?? "Ukendt sted");
   const body = buildReturnNotificationText(parsedReturn);
   const targetUrl = "/retur/" + returnId;
-  const configured = isWebPushConfigured();
-  if (configured) {
-    webPush.setVapidDetails(process.env.WEB_PUSH_SUBJECT!, getPublicVapidKey()!, process.env.WEB_PUSH_PRIVATE_KEY!);
-  }
 
   for (const member of members) {
-    const dedupeKey = "return-created:" + returnId + ":finance:" + member.id;
-    const { data: existing } = await supabase.from("backevent_return_notifications").select("id").eq("dedupe_key", dedupeKey).maybeSingle();
-    if (existing) continue;
-
-    const message = await createPushMessage(supabase, {
-      recipientUserId: member.id,
-      recipientEmail: member.email,
-      senderName: "BackEvent",
-      title,
-      body,
-      targetUrl,
-      category: "group",
-    });
-
-    await supabase.from("backevent_return_notifications").insert({
-      return_id: returnId,
-      recipient_user_id: member.id,
-      dedupe_key: dedupeKey,
-      notification_type: "return_created_finance",
-      push_message_id: message.id,
-      status: configured ? "pending" : "skipped",
-      error_message: configured ? null : "Push er ikke konfigureret",
-    });
-
-    if (!configured) continue;
-
-    const { data: subscriptions } = await supabase
-      .from("backevent_push_subscriptions")
-      .select("id,endpoint,p256dh,auth")
-      .eq("user_id", member.id)
-      .eq("active", true);
-
-    for (const subscription of subscriptions ?? []) {
-      try {
-        await webPush.sendNotification(
-          {
-            endpoint: String(subscription.endpoint),
-            keys: { p256dh: String(subscription.p256dh), auth: String(subscription.auth) },
-          },
-          JSON.stringify(pushPayload({ title, body, messageId: message.id, url: buildMessageUrl(message.id) })),
-        );
-      } catch (error) {
-        if (isExpiredSubscription(error)) {
-          await supabase.from("backevent_push_subscriptions").update({ active: false }).eq("id", subscription.id);
-        }
-      }
+    try {
+      await dispatchReturnNotification(supabase, {
+        returnId,
+        member,
+        dedupeKey: buildReturnNotificationDedupeKey(returnId, "finance", member.id),
+        notificationType: "return_created_finance",
+        title,
+        body,
+        targetUrl,
+      });
+    } catch {
+      // Notifikationer må aldrig blokere returregistreringen.
     }
   }
 }
 
 async function notifyOwnersAboutReturnControl(supabase: SupabaseClient, returnId: string, parsedReturn: ParsedOnlinePosReturn, reasons: string[]) {
+  const seriousReasons = getSeriousReturnControlReasons(reasons);
+  if (seriousReasons.length === 0) return;
+
   const owners = await getOwnerMembers(supabase);
   if (owners.length === 0) return;
 
   const title = "Retur kræver ejerkontrol";
   const bonText = parsedReturn.receiptNumber ? "Bon " + parsedReturn.receiptNumber : "Bon mangler";
-  const body = bonText + " · " + reasons.slice(0, 3).join(" · ");
-  const configured = isWebPushConfigured();
-  if (configured) {
-    webPush.setVapidDetails(process.env.WEB_PUSH_SUBJECT!, getPublicVapidKey()!, process.env.WEB_PUSH_PRIVATE_KEY!);
-  }
+  const body = bonText + " · " + seriousReasons.slice(0, 3).join(" · ");
+  const targetUrl = "/retur/" + returnId;
 
   for (const owner of owners) {
-    const dedupeKey = "return-control:" + returnId + ":owner:" + owner.id;
-    const { data: existing } = await supabase.from("backevent_return_notifications").select("id").eq("dedupe_key", dedupeKey).maybeSingle();
-    if (existing) continue;
-
-    const message = await createPushMessage(supabase, {
-      recipientUserId: owner.id,
-      recipientEmail: owner.email,
-      senderName: "BackEvent",
-      title,
-      body,
-      targetUrl: "/retur/" + returnId,
-      category: "group",
-    });
-
-    await supabase.from("backevent_return_notifications").insert({
-      return_id: returnId,
-      recipient_user_id: owner.id,
-      dedupe_key: dedupeKey,
-      notification_type: "return_control_owner",
-      push_message_id: message.id,
-      status: configured ? "pending" : "skipped",
-      error_message: configured ? null : "Push er ikke konfigureret",
-    });
-
-    if (!configured) continue;
-
-    const { data: subscriptions } = await supabase
-      .from("backevent_push_subscriptions")
-      .select("id,endpoint,p256dh,auth")
-      .eq("user_id", owner.id)
-      .eq("active", true);
-
-    for (const subscription of subscriptions ?? []) {
-      try {
-        await webPush.sendNotification(
-          { endpoint: String(subscription.endpoint), keys: { p256dh: String(subscription.p256dh), auth: String(subscription.auth) } },
-          JSON.stringify(pushPayload({ title, body, messageId: message.id, url: buildMessageUrl(message.id) })),
-        );
-      } catch (error) {
-        if (isExpiredSubscription(error)) {
-          await supabase.from("backevent_push_subscriptions").update({ active: false }).eq("id", subscription.id);
-        }
-      }
+    try {
+      await dispatchReturnNotification(supabase, {
+        returnId,
+        member: owner,
+        dedupeKey: buildReturnNotificationDedupeKey(returnId, "owner-control", owner.id),
+        notificationType: "return_control_owner",
+        title,
+        body,
+        targetUrl,
+      });
+    } catch {
+      // Ejerbesked må ikke blokere returregistreringen.
     }
   }
 }
 
+async function dispatchReturnNotification(
+  supabase: SupabaseClient,
+  input: {
+    returnId: string;
+    member: ReturnNotificationRecipient;
+    dedupeKey: string;
+    notificationType: string;
+    title: string;
+    body: string;
+    targetUrl: string;
+  },
+) {
+  const claim = await claimReturnNotification(supabase, input);
+  if (!claim) return;
+
+  let messageId: string | null = null;
+  try {
+    const message = await createPushMessage(supabase, {
+      recipientUserId: input.member.id,
+      recipientEmail: input.member.email,
+      senderName: "BackEvent",
+      title: input.title,
+      body: input.body,
+      targetUrl: input.targetUrl,
+      category: "group",
+    });
+    messageId = message.id;
+    await updateReturnNotification(supabase, claim.id, { push_message_id: message.id });
+  } catch (error) {
+    await updateReturnNotification(supabase, claim.id, { status: "failed", error_message: `Indbakke kunne ikke oprettes: ${safeErrorMessage(error)}` });
+    await createReturnPushLog(supabase, input.member, input.title, input.body, "failed", `Indbakke kunne ikke oprettes: ${safeErrorMessage(error)}`);
+    return;
+  }
+
+  if (!isWebPushConfigured()) {
+    await updateReturnNotification(supabase, claim.id, { status: "skipped", error_message: "Push er ikke konfigureret" });
+    await createReturnPushLog(supabase, input.member, input.title, input.body, "skipped", "Push er ikke konfigureret");
+    return;
+  }
+
+  webPush.setVapidDetails(process.env.WEB_PUSH_SUBJECT!, getPublicVapidKey()!, process.env.WEB_PUSH_PRIVATE_KEY!);
+
+  const { data: subscriptions } = await supabase
+    .from("backevent_push_subscriptions")
+    .select("id,endpoint,p256dh,auth")
+    .eq("user_id", input.member.id)
+    .eq("active", true);
+
+  if (!subscriptions?.length) {
+    await updateReturnNotification(supabase, claim.id, { status: "skipped", error_message: "Ingen aktiv push-enhed" });
+    await createReturnPushLog(supabase, input.member, input.title, input.body, "skipped", "Ingen aktiv push-enhed");
+    return;
+  }
+
+  let sentCount = 0;
+  let failedCount = 0;
+  for (const subscription of subscriptions) {
+    try {
+      await webPush.sendNotification(
+        {
+          endpoint: String(subscription.endpoint),
+          keys: { p256dh: String(subscription.p256dh), auth: String(subscription.auth) },
+        },
+        JSON.stringify(pushPayload({ title: input.title, body: input.body, messageId, url: input.targetUrl })),
+      );
+      sentCount += 1;
+      await createReturnPushLog(supabase, input.member, input.title, input.body, "sent", null);
+    } catch (error) {
+      failedCount += 1;
+      const errorMessage = safeErrorMessage(error);
+      if (isExpiredSubscription(error)) {
+        await supabase.from("backevent_push_subscriptions").update({ active: false }).eq("id", subscription.id);
+      }
+      await createReturnPushLog(supabase, input.member, input.title, input.body, "failed", errorMessage);
+    }
+  }
+
+  if (sentCount > 0) {
+    await updateReturnNotification(supabase, claim.id, { status: "sent", error_message: failedCount > 0 ? `${failedCount} push fejlede` : null });
+  } else {
+    await updateReturnNotification(supabase, claim.id, { status: "failed", error_message: "Alle push-forsøg fejlede" });
+  }
+}
+
+async function claimReturnNotification(
+  supabase: SupabaseClient,
+  input: { returnId: string; member: ReturnNotificationRecipient; dedupeKey: string; notificationType: string },
+) {
+  const { data, error } = await supabase
+    .from("backevent_return_notifications")
+    .insert({
+      return_id: input.returnId,
+      recipient_user_id: input.member.id,
+      dedupe_key: input.dedupeKey,
+      notification_type: input.notificationType,
+      status: "pending",
+    })
+    .select("id")
+    .single();
+
+  if (!error) return { id: String(data.id) };
+  if (isUniqueViolation(error)) return null;
+  throw error;
+}
+
+async function updateReturnNotification(supabase: SupabaseClient, notificationId: string, patch: Record<string, unknown>) {
+  await supabase.from("backevent_return_notifications").update(patch).eq("id", notificationId);
+}
+
+async function createReturnPushLog(
+  supabase: SupabaseClient,
+  member: ReturnNotificationRecipient,
+  title: string,
+  body: string,
+  status: "sent" | "failed" | "skipped",
+  errorMessage: string | null,
+) {
+  await supabase.from("backevent_push_logs").insert({
+    recipient_user_id: member.id,
+    recipient_email: member.email,
+    title,
+    body,
+    status,
+    error_message: errorMessage,
+  });
+}
+
+export function buildReturnNotificationTitle(locationName: string) {
+  return `Retur – ${locationName}`;
+}
+
+export function buildReturnNotificationDedupeKey(returnId: string, scope: "finance" | "owner-control", userId: string) {
+  return `return:${scope}:${returnId}:${userId}`;
+}
+
+export function getSeriousReturnControlReasons(reasons: string[]) {
+  return uniqueJson(reasons.filter(isSeriousReturnControlReason));
+}
+
+export function isSeriousReturnControlReason(reason: string) {
+  const normalized = reason.toLocaleLowerCase("da-DK");
+  return normalized.includes("dublet med ændret indhold")
+    || normalized.includes("idempotens")
+    || normalized.includes("stock_source_missing")
+    || normalized.includes("produkt findes ikke")
+    || normalized.includes("mangler godkendt mapping")
+    || normalized.includes("produkt mangler returbehandling")
+    || normalized.includes("lagerbehandling fejler")
+    || normalized.includes("returlinjer kunne ikke registreres")
+    || normalized.includes("quantity overstiger")
+    || normalized.includes("parser")
+    || normalized.includes("datakonflikt");
+}
 async function getFinanceMembers(supabase: SupabaseClient): Promise<Array<{ id: string; email: string | null }>> {
   const { data } = await supabase
     .from("backevent_member_group_members")
     .select("profile_id, backevent_member_groups!inner(name,active), backevent_profiles!inner(id,email,active)")
     .eq("backevent_member_groups.active", true)
     .eq("backevent_profiles.active", true)
-    .ilike("backevent_member_groups.name", "Økonomiansvarlige");
+    .ilike("backevent_member_groups.name", "Ã˜konomiansvarlige");
 
   return (data ?? []).map((row) => {
     const profile = row.backevent_profiles as { id?: string; email?: string | null } | null;
@@ -761,7 +889,7 @@ async function getOwnerMembers(supabase: SupabaseClient): Promise<Array<{ id: st
   return (data ?? []).map((row) => ({ id: String(row.id), email: row.email ?? null }));
 }
 
-function buildReturnNotificationText(parsedReturn: ParsedOnlinePosReturn) {
+export function buildReturnNotificationText(parsedReturn: Pick<ParsedOnlinePosReturn, "onlineposReturnedAt" | "receiptNumber">) {
   return [
     `Tid: ${formatNotificationTime(parsedReturn.onlineposReturnedAt)}`,
     `Bon: ${parsedReturn.receiptNumber ?? "Mangler"}`,
@@ -770,13 +898,18 @@ function buildReturnNotificationText(parsedReturn: ParsedOnlinePosReturn) {
 
 function formatNotificationTime(value: string | null) {
   if (!value) return "Mangler";
-  return new Date(value).toLocaleString("da-DK", {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Mangler";
+  const datePart = new Intl.DateTimeFormat("da-DK", {
     day: "2-digit",
     month: "2-digit",
     year: "numeric",
+  }).format(date);
+  const timePart = new Intl.DateTimeFormat("da-DK", {
     hour: "2-digit",
     minute: "2-digit",
-  });
+  }).format(date).replace(".", ":");
+  return `${datePart} kl. ${timePart}`;
 }
 
 async function findExistingReturn(supabase: SupabaseClient, externalIdempotencyKey: string) {
@@ -856,11 +989,46 @@ function classifyOnlinePosLine(productName: string | null, productGroupName: str
     return { lineType: "deposit_return", inventoryRelevant: false, needsMapping: false };
   }
 
+  if (name.includes("PANT") || groupUpper === "PANT") {
+    return { lineType: "deposit_return", inventoryRelevant: false, needsMapping: false };
+  }
+
   if (["DRINKS", "SODAVAND"].includes(groupUpper)) {
     return { lineType: "container_product", inventoryRelevant: false, needsMapping: true };
   }
 
   return { lineType: "stock_item", inventoryRelevant: true, needsMapping: true };
+}
+
+function normalizeEconomicDirection(value: string | null): ReturnEconomicDirection | null {
+  if (value === "refund" || value === "charge" || value === "neutral") return value;
+  return null;
+}
+
+function inferReturnEconomicDirection(lineType: string, lineAmount: number): ReturnEconomicDirection {
+  if (lineType === "deposit_fee") return "charge";
+  if (lineType === "modifier_stock_item" && Math.abs(lineAmount) === 0) return "neutral";
+  return "refund";
+}
+
+function summarizeReturnEconomy(lines: ParsedOnlinePosReturnLine[]) {
+  return lines.reduce(
+    (summary, line) => {
+      const absolute = Math.abs(line.lineAmount);
+      if (line.economicDirection === "charge") summary.charges += absolute;
+      if (line.economicDirection === "refund") summary.refunds += absolute;
+      if (line.lineType === "stock_item" || line.lineType === "container_product" || line.lineType === "modifier_stock_item") {
+        if (line.lineAmount < 0) summary.productRefund += absolute;
+      } else if (line.lineType === "deposit_return") {
+        if (line.lineAmount < 0) summary.depositRefund += absolute;
+      } else if (line.lineType === "deposit_fee") {
+        if (line.lineAmount > 0) summary.fees += absolute;
+      }
+      summary.netAmount = roundNumber(summary.netAmount + line.lineAmount);
+      return summary;
+    },
+    { productRefund: 0, depositRefund: 0, cupRefund: 0, fees: 0, charges: 0, refunds: 0, netAmount: 0 },
+  );
 }
 
 function normalizeReturnComponents(mapping: OnlinePosInventoryMapping | null) {
@@ -870,16 +1038,6 @@ function normalizeReturnComponents(mapping: OnlinePosInventoryMapping | null) {
     return [{ backeventInventoryItemId: mapping.backeventInventoryItemId, conversionFactor: mapping.conversionFactor }];
   }
   return [];
-}
-
-function findLocationForCashRegister(parsedReturn: ParsedOnlinePosReturn, locations: LocationRow[]) {
-  const id = normalizeOnlinePosId(parsedReturn.cashRegisterId);
-  if (id) {
-    const byId = locations.find((location) => normalizeOnlinePosId(location.id) === id);
-    if (byId) return byId;
-  }
-  const name = normalizeName(parsedReturn.cashRegisterName);
-  return name ? locations.find((location) => normalizeName(location.name) === name) ?? null : null;
 }
 
 function toReturnLine(line: Record<string, unknown>, transactionId: string | null, receiptNumber: string | null, lineIndex: number): ParsedOnlinePosReturnLine {
@@ -893,6 +1051,9 @@ function toReturnLine(line: Record<string, unknown>, transactionId: string | nul
   const isFee = normalizedName.includes("GEBYR");
   const isDeposit = classification.lineType === "deposit_fee" || classification.lineType === "deposit_return" || isCup || isFee;
   const lineId = stringOrNull(pickField(line, ["line_id", "lineId", "orderlineid", "id"]));
+  const parentOnlineposLineId = stringOrNull(pickField(line, ["parent_line_id", "parentLineId", "parent_id", "parentId"]));
+  const inputUnit = stringOrNull(pickField(line, ["input_unit", "inputUnit", "unit"]));
+  const economicDirection = normalizeEconomicDirection(stringOrNull(pickField(line, ["economic_direction", "economicDirection"]))) ?? inferReturnEconomicDirection(classification.lineType, lineAmount);
   const onlineposProductId = stringOrNull(pickField(line, ["product_id", "productId", "productid"]));
   const externalReturnLineId = [
     "return-line",
@@ -910,8 +1071,11 @@ function toReturnLine(line: Record<string, unknown>, transactionId: string | nul
     productDescription,
     productGroupName,
     returnedQuantity: roundNumber(quantity),
+    inputUnit,
+    parentOnlineposLineId,
     unitPrice: quantity > 0 ? roundNumber(lineAmount / quantity) : null,
     lineAmount: roundNumber(lineAmount),
+    economicDirection,
     lineType: classification.lineType,
     isDeposit,
     isCup,
@@ -1084,6 +1248,10 @@ function getPublicVapidKey() {
 
 function isExpiredSubscription(error: unknown) {
   return isRecord(error) && (error.statusCode === 404 || error.statusCode === 410);
+}
+
+function isUniqueViolation(error: unknown) {
+  return isRecord(error) && error.code === "23505";
 }
 
 function safeErrorMessage(error: unknown) {

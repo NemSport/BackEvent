@@ -1,5 +1,6 @@
 import type { User } from "@supabase/supabase-js";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { canCreateMemberGroup as canCreateMemberGroupByRole, financeGroupName } from "./member-groups-core";
 import { allPermissions, normalizeRole, type BackEventRole } from "./permissions";
 import type { BackEventMember, BackEventMemberGroup, BackEventMemberGroupMembership, BackEventPermissionKey, MemberRole } from "./types";
 
@@ -57,11 +58,20 @@ export type UpsertMemberInput = {
   confirmSelfDeactivate?: boolean;
 };
 
+export type UpsertMemberGroupInput = {
+  name: string;
+  description?: string | null;
+  active: boolean;
+  memberIds: string[];
+};
+
 export function getMemberAdminClient() {
   return createSupabaseAdminClient();
 }
 
 export async function listMembersForAdmin(admin: AdminClient): Promise<MemberAdminList> {
+  await ensureFinanceResponsibleGroup(admin);
+
   const [profilesResponse, groupsResponse, membershipsResponse, pushResponse, permissionsResponse, auditResponse, usersResponse] = await Promise.all([
     admin
       .from("backevent_profiles")
@@ -130,6 +140,69 @@ export async function listMembersForAdmin(admin: AdminClient): Promise<MemberAdm
       createdAt: row.created_at,
     })),
   };
+}
+
+export async function createMemberGroupForAdmin(admin: AdminClient, actorUserId: string, input: UpsertMemberGroupInput) {
+  const name = normalizeGroupName(input.name);
+  if (!name) throw new Error("Gruppenavn mangler.");
+  await ensureGroupNameAvailable(admin, name);
+
+  const { data, error } = await admin
+    .from("backevent_member_groups")
+    .insert({
+      name,
+      description: input.description?.trim() || null,
+      active: input.active,
+    })
+    .select("id")
+    .single();
+
+  if (error) throw error;
+  const groupId = String(data.id);
+  await setGroupMembers(admin, groupId, input.memberIds);
+  await createAuditLog(admin, actorUserId, null, "member_group_created", {
+    groupId,
+    name,
+    memberCount: input.memberIds.length,
+  });
+  return groupId;
+}
+
+export async function updateMemberGroupForAdmin(admin: AdminClient, actorUserId: string, groupId: string, input: UpsertMemberGroupInput) {
+  const name = normalizeGroupName(input.name);
+  if (!name) throw new Error("Gruppenavn mangler.");
+  await ensureGroupNameAvailable(admin, name, groupId);
+
+  const { error } = await admin
+    .from("backevent_member_groups")
+    .update({
+      name,
+      description: input.description?.trim() || null,
+      active: input.active,
+    })
+    .eq("id", groupId);
+  if (error) throw error;
+
+  await setGroupMembers(admin, groupId, input.memberIds);
+  await createAuditLog(admin, actorUserId, null, "member_group_updated", {
+    groupId,
+    name,
+    active: input.active,
+    memberCount: input.memberIds.length,
+  });
+}
+
+export async function deleteMemberGroupForAdmin(admin: AdminClient, actorUserId: string, groupId: string) {
+  const { data: group, error: groupError } = await admin.from("backevent_member_groups").select("id,name").eq("id", groupId).single();
+  if (groupError) throw groupError;
+
+  const { error } = await admin.from("backevent_member_groups").delete().eq("id", groupId);
+  if (error) throw error;
+
+  await createAuditLog(admin, actorUserId, null, "member_group_deleted", {
+    groupId,
+    name: group.name,
+  });
 }
 
 export async function createMember(admin: AdminClient, actorUserId: string, input: UpsertMemberInput) {
@@ -246,7 +319,7 @@ export async function sendMemberInvitation(admin: AdminClient, actorUserId: stri
 export async function createAuditLog(
   admin: AdminClient,
   actorUserId: string,
-  memberUserId: string,
+  memberUserId: string | null,
   action: string,
   details: Record<string, unknown>,
 ) {
@@ -331,6 +404,24 @@ async function setGroups(admin: AdminClient, memberId: string, groupIds: string[
 
   const { error } = await admin.from("backevent_member_group_members").insert(
     uniqueGroupIds.map((groupId) => ({
+      group_id: groupId,
+      profile_id: memberId,
+    })),
+  );
+  if (error) throw error;
+}
+
+async function setGroupMembers(admin: AdminClient, groupId: string, memberIds: string[]) {
+  const uniqueMemberIds = Array.from(new Set(memberIds.filter(Boolean)));
+  const { error: deleteError } = await admin.from("backevent_member_group_members").delete().eq("group_id", groupId);
+  if (deleteError) throw deleteError;
+
+  if (uniqueMemberIds.length === 0) {
+    return;
+  }
+
+  const { error } = await admin.from("backevent_member_group_members").insert(
+    uniqueMemberIds.map((memberId) => ({
       group_id: groupId,
       profile_id: memberId,
     })),
@@ -450,6 +541,73 @@ export function parseMemberInput(body: unknown): UpsertMemberInput {
     sendInvite: value.sendInvite === true,
     confirmSelfDeactivate: value.confirmSelfDeactivate === true,
   };
+}
+
+export function parseMemberGroupInput(body: unknown): UpsertMemberGroupInput {
+  if (!body || typeof body !== "object") {
+    throw new Error("Ugyldige felter.");
+  }
+
+  const value = body as Partial<UpsertMemberGroupInput>;
+  const name = normalizeGroupName(String(value.name ?? ""));
+  const memberIds = Array.isArray(value.memberIds) ? value.memberIds.map((id) => String(id)).filter(Boolean) : [];
+
+  if (!name) throw new Error("Gruppenavn mangler.");
+
+  return {
+    name,
+    description: value.description ? String(value.description) : null,
+    active: value.active !== false,
+    memberIds,
+  };
+}
+
+export function canCreateMemberGroup(role: string | null | undefined) {
+  return canCreateMemberGroupByRole(role);
+}
+
+export function financeResponsibleGroupName() {
+  return financeGroupName;
+}
+
+export async function ensureFinanceResponsibleGroup(admin: AdminClient) {
+  const name = financeResponsibleGroupName();
+  const { data, error } = await admin
+    .from("backevent_member_groups")
+    .select("id,name")
+    .ilike("name", name)
+    .order("created_at", { ascending: true })
+    .limit(2);
+
+  if (error) throw error;
+  if ((data ?? []).length > 0) return String(data![0].id);
+
+  const { data: inserted, error: insertError } = await admin
+    .from("backevent_member_groups")
+    .insert({
+      name,
+      description: "Modtager besked og læseadgang til OnlinePOS-returer.",
+      active: true,
+    })
+    .select("id")
+    .single();
+
+  if (insertError) throw insertError;
+  return String(inserted.id);
+}
+
+async function ensureGroupNameAvailable(admin: AdminClient, name: string, exceptGroupId?: string) {
+  const { data, error } = await admin.from("backevent_member_groups").select("id,name").ilike("name", name).limit(2);
+  if (error) throw error;
+
+  const duplicate = (data ?? []).find((group) => group.id !== exceptGroupId);
+  if (duplicate) {
+    throw new Error("Gruppen findes allerede.");
+  }
+}
+
+function normalizeGroupName(name: string) {
+  return name.trim();
 }
 
 function normalizeEmail(email: string) {

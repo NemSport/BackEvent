@@ -472,7 +472,7 @@ async function getBackeventProducts(accessToken?: string): Promise<Product[]> {
 
   const { data, error } = await supabase
     .from("backevent_products")
-    .select("id,name,unit,tracking_mode,onlinepos_product_id,onlinepos_name,sales_unit_quantity,liters_per_sale,units_per_case,purchase_unit_label,units_per_purchase_unit,stock_unit_label,content_per_stock_unit,consumption_unit_label,sort_order,active")
+    .select("id,name,unit,tracking_mode,return_handling,onlinepos_product_id,onlinepos_name,sales_unit_quantity,liters_per_sale,units_per_case,purchase_unit_label,units_per_purchase_unit,stock_unit_label,content_per_stock_unit,consumption_unit_label,sort_order,active")
     .eq("active", true);
 
   if (error) {
@@ -484,6 +484,8 @@ async function getBackeventProducts(accessToken?: string): Promise<Product[]> {
     name: row.name,
     unit: row.unit ?? "kasser",
     trackingMode: row.tracking_mode ?? "inventory",
+    returnHandling: row.return_handling ?? "manual_review",
+    returnHandlingExplicit: row.return_handling ?? null,
     onlineposProductId: row.onlinepos_product_id,
     onlineposName: row.onlinepos_name,
     salesUnitQuantity: Number(row.sales_unit_quantity ?? 1),

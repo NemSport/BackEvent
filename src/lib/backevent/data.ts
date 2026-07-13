@@ -1,5 +1,6 @@
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { getCurrentActorName, getCurrentProfile } from "./auth";
+import { normalizeReturnHandling } from "./product-mapping";
 import { isOwnerRole, isResponsibleRole, normalizeRole } from "./permissions";
 import {
   locations as mockLocationsSource,
@@ -163,6 +164,7 @@ export async function getProducts(): Promise<Product[]> {
     unit: row.unit ?? "kasser",
     trackingMode: row.tracking_mode,
     returnHandling: row.return_handling,
+    returnHandlingExplicit: row.return_handling,
     onlineposProductId: row.onlinepos_product_id,
     onlineposName: row.onlinepos_name,
     salesUnitQuantity: Number(row.sales_unit_quantity ?? 1),
@@ -1101,6 +1103,7 @@ export async function getProductsAdmin() {
     unit: row.unit ?? "kasser",
     trackingMode: row.tracking_mode,
     returnHandling: row.return_handling,
+    returnHandlingExplicit: row.return_handling,
     onlineposProductId: row.onlinepos_product_id,
     onlineposName: row.onlinepos_name,
     salesUnitQuantity: Number(row.sales_unit_quantity ?? 1),
@@ -1314,7 +1317,8 @@ export async function createProduct(input: {
       name: input.name,
       unit: input.unit || "kasser",
       trackingMode: input.trackingMode ?? "inventory",
-      returnHandling: input.returnHandling ?? "manual_review",
+      returnHandling: normalizeReturnHandling(input.returnHandling),
+      returnHandlingExplicit: input.returnHandling ?? null,
       onlineposProductId: input.onlineposProductId ?? null,
       onlineposName: input.onlineposName ?? null,
       salesUnitQuantity: input.salesUnitQuantity ?? 1,
@@ -1339,7 +1343,7 @@ export async function createProduct(input: {
       name: input.name,
       unit: input.unit || "kasser",
       tracking_mode: input.trackingMode ?? "inventory",
-      return_handling: input.returnHandling ?? "manual_review",
+      return_handling: input.returnHandling ?? null,
       onlinepos_product_id: input.onlineposProductId ?? null,
       onlinepos_name: input.onlineposName ?? null,
       sales_unit_quantity: input.salesUnitQuantity ?? 1,
@@ -1366,7 +1370,7 @@ export async function updateProduct(
     name: string;
     unit: string;
     trackingMode: Product["trackingMode"];
-    returnHandling?: Product["returnHandling"];
+    returnHandling?: Product["returnHandling"] | null;
     onlineposProductId?: string | null;
     onlineposName?: string | null;
     salesUnitQuantity: number;
@@ -1390,6 +1394,7 @@ export async function updateProduct(
       product.unit = input.unit || "kasser";
       product.trackingMode = input.trackingMode;
       product.returnHandling = input.returnHandling ?? "manual_review";
+      product.returnHandlingExplicit = input.returnHandling ?? null;
       product.onlineposProductId = input.onlineposProductId ?? null;
       product.onlineposName = input.onlineposName ?? null;
       product.salesUnitQuantity = input.salesUnitQuantity;
@@ -1412,7 +1417,7 @@ export async function updateProduct(
       name: input.name,
       unit: input.unit || "kasser",
       tracking_mode: input.trackingMode,
-      return_handling: input.returnHandling ?? "manual_review",
+      return_handling: input.returnHandling ?? null,
       onlinepos_product_id: input.onlineposProductId ?? null,
       onlinepos_name: input.onlineposName ?? null,
       sales_unit_quantity: input.salesUnitQuantity,
@@ -1691,11 +1696,18 @@ export async function getOperationalChecklist(): Promise<OperationalChecklistIte
 }
 
 function withProductDefaults(product: Partial<Product> & { id: string; name: string; unit?: string | null }): Product {
+  const hasExplicitReturnHandling = Object.prototype.hasOwnProperty.call(product, "returnHandlingExplicit");
+  const explicitReturnHandling = hasExplicitReturnHandling
+    ? product.returnHandlingExplicit ?? null
+    : null;
+
   return {
     id: product.id,
     name: product.name,
     unit: product.unit ?? "kasser",
     trackingMode: product.trackingMode ?? "inventory",
+    returnHandling: normalizeReturnHandling(explicitReturnHandling ?? product.returnHandling),
+    returnHandlingExplicit: explicitReturnHandling,
     onlineposProductId: product.onlineposProductId ?? null,
     onlineposName: product.onlineposName ?? null,
     salesUnitQuantity: product.salesUnitQuantity ?? 1,

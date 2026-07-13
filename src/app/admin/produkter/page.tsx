@@ -4,13 +4,26 @@ import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/backevent/app-shell";
 import { BackButton, PrimaryButton } from "@/components/backevent/buttons";
 import { createProduct, getProductAlertSettings, getProductsAdmin, updateProduct, upsertProductAlertSetting } from "@/lib/backevent/data";
+import {
+  buildReturnHandlingAudit,
+  filterProductsForReturnSetup,
+  getExplicitReturnHandling,
+  getReturnHandlingLabel,
+  getTrackingModeLabel,
+  hasExplicitReturnHandling,
+  recommendReturnHandling,
+  returnHandlingOptions,
+  type ActiveProductFilter,
+  type ProductGroupFilter,
+  type ReturnHandlingFilter,
+} from "@/lib/backevent/return-handling";
 import type { Product, ProductAlertSetting, ProductReturnHandling, ProductTrackingMode } from "@/lib/backevent/types";
 
 type ProductFormInput = {
   name: string;
   unit: string;
   trackingMode?: ProductTrackingMode;
-  returnHandling?: ProductReturnHandling;
+  returnHandling: ProductReturnHandling;
   onlineposProductId?: string | null;
   onlineposName?: string | null;
   salesUnitQuantity?: number;
@@ -31,6 +44,7 @@ type ProductFormInput = {
 type SortDirection = "asc" | "desc";
 type ProductSortKey = "name" | "purchase" | "stock" | "consumption" | "trackingMode" | "returnHandling" | "onlinepos" | "sortOrder" | "active";
 type ProductSort = { key: ProductSortKey; direction: SortDirection } | null;
+type BulkReturnHandling = ProductReturnHandling | "";
 
 export default function AdminProdukterPage() {
   const [products, setProducts] = useState<Product[]>([]);
@@ -39,12 +53,25 @@ export default function AdminProdukterPage() {
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [sort, setSort] = useState<ProductSort>(null);
-  const [manualReturnOnly, setManualReturnOnly] = useState(false);
+  const [returnFilter, setReturnFilter] = useState<ReturnHandlingFilter>("all");
+  const [activeFilter, setActiveFilter] = useState<ActiveProductFilter>("all");
+  const [groupFilter, setGroupFilter] = useState<ProductGroupFilter>("all");
+  const [search, setSearch] = useState("");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [bulkReturnHandling, setBulkReturnHandling] = useState<BulkReturnHandling>("");
+  const [isBulkSaving, setIsBulkSaving] = useState(false);
+  const audit = useMemo(() => buildReturnHandlingAudit(products), [products]);
   const visibleProducts = useMemo(
-    () => manualReturnOnly ? products.filter((product) => product.returnHandling === "manual_review") : products,
-    [manualReturnOnly, products],
+    () => filterProductsForReturnSetup(products, {
+      returnHandling: returnFilter,
+      active: activeFilter,
+      group: groupFilter,
+      search,
+    }),
+    [activeFilter, groupFilter, products, returnFilter, search],
   );
   const sortedProducts = useMemo(() => sortProducts(visibleProducts, sort), [visibleProducts, sort]);
+  const selectedVisibleCount = sortedProducts.filter((product) => selectedIds.has(product.id)).length;
 
   async function reload() {
     const [loadedProducts, loadedAlertSettings] = await Promise.all([getProductsAdmin(), getProductAlertSettings()]);
@@ -77,39 +104,99 @@ export default function AdminProdukterPage() {
   }, []);
 
   async function saveProduct(input: ProductFormInput) {
-    let productId = editingProduct?.id ?? null;
+    try {
+      let productId = editingProduct?.id ?? null;
 
-    if (editingProduct) {
-      await updateProduct(editingProduct.id, {
-        ...input,
-        trackingMode: input.trackingMode ?? "inventory",
-        returnHandling: input.returnHandling ?? "manual_review",
-        salesUnitQuantity: input.salesUnitQuantity ?? 1,
-        purchaseUnitLabel: input.purchaseUnitLabel ?? input.unit,
-        unitsPerPurchaseUnit: input.unitsPerPurchaseUnit ?? input.unitsPerCase,
-        stockUnitLabel: input.stockUnitLabel ?? input.unit,
-        contentPerStockUnit: input.contentPerStockUnit,
-        consumptionUnitLabel: input.consumptionUnitLabel ?? input.unit,
-        active: input.active ?? true,
-        sortOrder: input.sortOrder ?? editingProduct.sortOrder ?? 999,
-      });
-      setMessage("Produkt gemt");
-    } else {
-      productId = await createProduct(input);
-      setMessage("Produkt oprettet");
+      if (editingProduct) {
+        await updateProduct(editingProduct.id, {
+          ...input,
+          trackingMode: input.trackingMode ?? "inventory",
+          returnHandling: input.returnHandling,
+          salesUnitQuantity: input.salesUnitQuantity ?? 1,
+          purchaseUnitLabel: input.purchaseUnitLabel ?? input.unit,
+          unitsPerPurchaseUnit: input.unitsPerPurchaseUnit ?? input.unitsPerCase,
+          stockUnitLabel: input.stockUnitLabel ?? input.unit,
+          contentPerStockUnit: input.contentPerStockUnit,
+          consumptionUnitLabel: input.consumptionUnitLabel ?? input.unit,
+          active: input.active ?? true,
+          sortOrder: input.sortOrder ?? editingProduct.sortOrder ?? 999,
+        });
+      } else {
+        productId = await createProduct(input);
+      }
+
+      if (productId) {
+        await upsertProductAlertSetting(productId, {
+          lowThreshold: input.lowThreshold ?? null,
+          criticalThreshold: input.criticalThreshold ?? null,
+          active: input.alertsActive ?? true,
+        });
+      }
+
+      setEditingProduct(null);
+      setIsCreating(false);
+      await reload();
+      setSelectedIds(new Set());
+      setMessage(editingProduct ? "Produkt gemt" : "Produkt oprettet");
+    } catch (error) {
+      setMessage(error instanceof Error ? `Produkt kunne ikke gemmes: ${error.message}` : "Produkt kunne ikke gemmes.");
+      throw error;
+    }
+  }
+
+  async function bulkUpdateReturnHandling() {
+    if (!bulkReturnHandling || selectedIds.size === 0) {
+      setMessage("Vælg produkter og returbehandling først.");
+      return;
     }
 
-    if (productId) {
-      await upsertProductAlertSetting(productId, {
-        lowThreshold: input.lowThreshold ?? null,
-        criticalThreshold: input.criticalThreshold ?? null,
-        active: input.alertsActive ?? true,
-      });
-    }
+    const selectedProducts = products.filter((product) => selectedIds.has(product.id));
+    const label = getReturnHandlingLabel(bulkReturnHandling);
+    const confirmed = window.confirm(`Sæt ${selectedProducts.length} produkter til "${label}"?`);
+    if (!confirmed) return;
 
-    setEditingProduct(null);
-    setIsCreating(false);
-    await reload();
+    setIsBulkSaving(true);
+    setMessage(null);
+    try {
+      for (const product of selectedProducts) {
+        await updateProduct(product.id, {
+          name: product.name,
+          unit: product.unit,
+          trackingMode: product.trackingMode ?? "inventory",
+          returnHandling: bulkReturnHandling,
+          onlineposProductId: product.onlineposProductId ?? null,
+          onlineposName: product.onlineposName ?? null,
+          salesUnitQuantity: product.salesUnitQuantity ?? 1,
+          litersPerSale: product.litersPerSale ?? null,
+          unitsPerCase: product.unitsPerCase ?? null,
+          purchaseUnitLabel: product.purchaseUnitLabel ?? product.unit,
+          unitsPerPurchaseUnit: product.unitsPerPurchaseUnit ?? product.unitsPerCase ?? null,
+          stockUnitLabel: product.stockUnitLabel ?? product.unit,
+          contentPerStockUnit: product.contentPerStockUnit ?? null,
+          consumptionUnitLabel: product.consumptionUnitLabel ?? product.unit,
+          active: product.active ?? true,
+          sortOrder: product.sortOrder ?? 999,
+        });
+      }
+
+      await reload();
+      setSelectedIds(new Set());
+      setBulkReturnHandling("");
+      setMessage(`${selectedProducts.length} produkter opdateret til ${label}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? `Masseændring fejlede: ${error.message}` : "Masseændring fejlede.");
+    } finally {
+      setIsBulkSaving(false);
+    }
+  }
+
+  function toggleSelected(productId: string) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(productId)) next.delete(productId);
+      else next.add(productId);
+      return next;
+    });
   }
 
   function toggleSort(key: ProductSortKey) {
@@ -151,23 +238,98 @@ export default function AdminProdukterPage() {
       {message ? <p className="mb-4 rounded-2xl bg-soft p-4 text-base font-bold text-pantone140">{message}</p> : null}
 
       <section className="mb-4 rounded-2xl border border-line bg-macro p-4 shadow-sm">
-        <label className="flex items-start gap-3 text-sm font-bold text-ink">
-          <input type="checkbox" checked={manualReturnOnly} onChange={(event) => setManualReturnOnly(event.target.checked)} className="mt-1" />
-          <span>
-            Vis kun varer der kræver manuel returkontrol
-            <span className="block text-xs font-bold text-muted">Varer med manuel returkontrol stopper automatisk lagerbehandling, indtil Ejer vælger en sikker returbehandling.</span>
-          </span>
-        </label>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
+          <AuditTile label="Produkter i alt" value={audit.total} />
+          <AuditTile label="Svind" value={audit.waste} />
+          <AuditTile label="Tilbage på lager" value={audit.returnToStock} />
+          <AuditTile label="Manuel kontrol" value={audit.manualReview} />
+          <AuditTile label="Ingen lagerpåvirkning" value={audit.noStockEffect} />
+          <AuditTile label="Mangler beslutning" value={audit.missing} tone={audit.missing > 0 ? "warning" : "neutral"} />
+        </div>
+        <p className="mt-3 text-xs font-bold text-muted">
+          “Mangler beslutning” er reel database-null. Den tæller ikke som færdig, selv om visning kan falde tilbage til manuel kontrol andre steder.
+        </p>
+      </section>
+
+      <section className="mb-4 rounded-2xl border border-line bg-macro p-4 shadow-sm">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <label className="block text-sm font-bold text-ink">
+            Returbehandling
+            <select value={returnFilter} onChange={(event) => setReturnFilter(event.target.value as ReturnHandlingFilter)} className="mt-1 min-h-10 w-full rounded-xl border border-line px-3 py-2 text-sm font-bold outline-none focus:border-pantone140">
+              <option value="all">Alle</option>
+              <option value="missing">Mangler beslutning</option>
+              {returnHandlingOptions.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-sm font-bold text-ink">
+            Aktiv
+            <select value={activeFilter} onChange={(event) => setActiveFilter(event.target.value as ActiveProductFilter)} className="mt-1 min-h-10 w-full rounded-xl border border-line px-3 py-2 text-sm font-bold outline-none focus:border-pantone140">
+              <option value="all">Alle</option>
+              <option value="active">Aktive</option>
+              <option value="inactive">Inaktive</option>
+            </select>
+          </label>
+          <label className="block text-sm font-bold text-ink">
+            Produktgruppe
+            <select value={groupFilter} onChange={(event) => setGroupFilter(event.target.value as ProductGroupFilter)} className="mt-1 min-h-10 w-full rounded-xl border border-line px-3 py-2 text-sm font-bold outline-none focus:border-pantone140">
+              <option value="all">Alle</option>
+              <option value="inventory">Lagerstyret</option>
+              <option value="flow">Flow</option>
+              <option value="ignore">Ignorer</option>
+            </select>
+          </label>
+          <label className="block text-sm font-bold text-ink xl:col-span-2">
+            Søg
+            <input value={search} onChange={(event) => setSearch(event.target.value)} className="mt-1 min-h-10 w-full rounded-xl border border-line px-3 py-2 text-sm font-bold outline-none focus:border-pantone140" placeholder="Produkt, OnlinePOS eller ID" />
+          </label>
+        </div>
+        <div className="mt-3 flex flex-wrap items-end gap-3 border-t border-line pt-3">
+          <label className="block min-w-56 text-sm font-bold text-ink">
+            Sæt valgte til
+            <select value={bulkReturnHandling} onChange={(event) => setBulkReturnHandling(event.target.value as BulkReturnHandling)} className="mt-1 min-h-10 w-full rounded-xl border border-line px-3 py-2 text-sm font-bold outline-none focus:border-pantone140">
+              <option value="">Vælg returbehandling</option>
+              {returnHandlingOptions.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            onClick={bulkUpdateReturnHandling}
+            disabled={isBulkSaving || selectedIds.size === 0 || !bulkReturnHandling}
+            className="min-h-10 rounded-xl bg-pantone139 px-4 py-2 text-sm font-bold text-ink disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {isBulkSaving ? "Gemmer..." : "Masseopdater"}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setReturnFilter("all");
+              setActiveFilter("all");
+              setGroupFilter("all");
+              setSearch("");
+              setSelectedIds(new Set());
+            }}
+            className="min-h-10 rounded-xl border border-line bg-macro px-4 py-2 text-sm font-bold text-pantone140"
+          >
+            Nulstil filtre
+          </button>
+          <p className="text-sm font-bold text-muted">
+            {sortedProducts.length} vist · {selectedIds.size} valgt {selectedVisibleCount !== selectedIds.size ? `(${selectedVisibleCount} synlige)` : ""}
+          </p>
+        </div>
       </section>
 
       <section className="overflow-hidden rounded-[1.5rem] border border-line bg-macro shadow-soft">
-        <div className="hidden grid-cols-[1.35fr_0.85fr_0.85fr_0.85fr_0.78fr_0.85fr_0.9fr_0.45fr_0.45fr_0.65fr] gap-3 border-b border-line bg-soft px-4 py-3 text-xs font-bold uppercase tracking-wide text-muted xl:grid">
+        <div className="hidden grid-cols-[0.28fr_1.35fr_0.78fr_0.85fr_0.78fr_0.9fr_0.9fr_0.45fr_0.45fr_0.65fr] gap-3 border-b border-line bg-soft px-4 py-3 text-xs font-bold uppercase tracking-wide text-muted xl:grid">
+          <span>Vælg</span>
           <SortableHeader label="Navn" sortKey="name" sort={sort} onSort={toggleSort} />
-          <SortableHeader label="IndkÃ¸b" sortKey="purchase" sort={sort} onSort={toggleSort} />
-          <SortableHeader label="Lager" sortKey="stock" sort={sort} onSort={toggleSort} />
-          <SortableHeader label="Forbrug" sortKey="consumption" sort={sort} onSort={toggleSort} />
           <SortableHeader label="Lagerstyring" sortKey="trackingMode" sort={sort} onSort={toggleSort} />
           <SortableHeader label="Retur" sortKey="returnHandling" sort={sort} onSort={toggleSort} />
+          <span>Forslag</span>
+          <SortableHeader label="Indkøb" sortKey="purchase" sort={sort} onSort={toggleSort} />
           <SortableHeader label="OnlinePOS" sortKey="onlinepos" sort={sort} onSort={toggleSort} />
           <SortableHeader label="Sortering" sortKey="sortOrder" sort={sort} onSort={toggleSort} />
           <SortableHeader label="Aktiv" sortKey="active" sort={sort} onSort={toggleSort} />
@@ -175,7 +337,13 @@ export default function AdminProdukterPage() {
         </div>
         <div className="divide-y divide-line">
           {sortedProducts.map((product) => (
-            <ProductRow key={product.id} product={product} onEdit={() => setEditingProduct(product)} />
+            <ProductRow
+              key={product.id}
+              product={product}
+              selected={selectedIds.has(product.id)}
+              onSelect={() => toggleSelected(product.id)}
+              onEdit={() => setEditingProduct(product)}
+            />
           ))}
         </div>
       </section>
@@ -216,18 +384,46 @@ function SortableHeader({
   );
 }
 
-function ProductRow({ product, onEdit }: { product: Product; onEdit: () => void }) {
+function AuditTile({ label, value, tone = "neutral" }: { label: string; value: number; tone?: "neutral" | "warning" }) {
   return (
-    <article className="grid gap-2 px-4 py-3 text-sm font-medium text-ink xl:grid-cols-[1.35fr_0.85fr_0.85fr_0.85fr_0.78fr_0.85fr_0.9fr_0.45fr_0.45fr_0.65fr] xl:items-center">
+    <div className={`rounded-xl border px-3 py-2 ${tone === "warning" ? "border-pantone139 bg-pantone139/20" : "border-line bg-soft"}`}>
+      <p className="text-xs font-bold uppercase tracking-wide text-muted">{label}</p>
+      <p className="mt-1 text-2xl font-bold text-ink">{value}</p>
+    </div>
+  );
+}
+
+function ProductRow({
+  product,
+  selected,
+  onSelect,
+  onEdit,
+}: {
+  product: Product;
+  selected: boolean;
+  onSelect: () => void;
+  onEdit: () => void;
+}) {
+  const explicitReturnHandling = getExplicitReturnHandling(product);
+  const recommendation = recommendReturnHandling(product);
+
+  return (
+    <article className="grid gap-2 px-4 py-3 text-sm font-medium text-ink xl:grid-cols-[0.28fr_1.35fr_0.78fr_0.85fr_0.78fr_0.9fr_0.9fr_0.45fr_0.45fr_0.65fr] xl:items-center">
+      <label className="flex items-center">
+        <input type="checkbox" checked={selected} onChange={onSelect} aria-label={`Vælg ${product.name}`} />
+      </label>
       <div>
         <p className="font-bold">{product.name}</p>
-        <p className="text-xs text-muted xl:hidden">{trackingLabel(product.trackingMode)} · {returnHandlingLabel(product.returnHandling)} · {formatPackage(product)}</p>
+        <p className="text-xs text-muted xl:hidden">
+          {trackingLabel(product.trackingMode)} · {returnHandlingLabel(explicitReturnHandling)} · Forslag: {recommendation ? getReturnHandlingLabel(recommendation) : "-"} · {formatPackage(product)}
+        </p>
       </div>
-      <span className="hidden xl:block">{formatPurchase(product)}</span>
-      <span className="hidden xl:block">{formatStock(product)}</span>
-      <span className="hidden xl:block">{formatConsumption(product)}</span>
       <span className="hidden xl:block">{trackingLabel(product.trackingMode)}</span>
-      <span className="hidden xl:block">{returnHandlingLabel(product.returnHandling)}</span>
+      <span className={`hidden rounded-full px-2 py-1 text-xs font-bold xl:inline-block ${explicitReturnHandling ? "bg-soft text-ink" : "bg-pantone139/25 text-pantone140"}`}>
+        {returnHandlingLabel(explicitReturnHandling)}
+      </span>
+      <span className="hidden text-xs font-bold text-muted xl:block">{recommendation ? getReturnHandlingLabel(recommendation) : "-"}</span>
+      <span className="hidden xl:block">{formatPurchase(product)}</span>
       <span className="text-muted xl:text-ink">{product.onlineposName || product.onlineposProductId || "-"}</span>
       <span className="hidden xl:block">{product.sortOrder ?? "-"}</span>
       <span className="hidden xl:block">{product.active === false ? "Nej" : "Ja"}</span>
@@ -251,7 +447,7 @@ function ProductModal({
 }) {
   const [name, setName] = useState(product?.name ?? "");
   const [trackingMode, setTrackingMode] = useState<ProductTrackingMode>(product?.trackingMode ?? "inventory");
-  const [returnHandling, setReturnHandling] = useState<ProductReturnHandling>(product?.returnHandling ?? "manual_review");
+  const [returnHandling, setReturnHandling] = useState<ProductReturnHandling | "">(product ? (product.returnHandlingExplicit ?? "") : "");
   const [salesUnitQuantity, setSalesUnitQuantity] = useState((product?.salesUnitQuantity ?? 1).toString());
   const [litersPerSale, setLitersPerSale] = useState(product?.litersPerSale?.toString() ?? "");
   const [onlineposProductId, setOnlineposProductId] = useState(product?.onlineposProductId ?? "");
@@ -267,31 +463,43 @@ function ProductModal({
   const [active, setActive] = useState(product?.active ?? true);
   const [sortOrder, setSortOrder] = useState((product?.sortOrder ?? 999).toString());
   const [isSaving, setIsSaving] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
 
   async function save() {
+    if (!returnHandling) {
+      setLocalError("Vælg behandling ved retur.");
+      return;
+    }
+
+    setLocalError(null);
     setIsSaving(true);
-    await onSave({
-      name,
-      unit: purchaseUnitLabel || "kasser",
-      trackingMode,
-      returnHandling,
-      salesUnitQuantity: salesUnitQuantity ? Number(salesUnitQuantity) : 1,
-      litersPerSale: litersPerSale ? Number(litersPerSale) : null,
-      onlineposProductId: onlineposProductId.trim() || null,
-      onlineposName: onlineposName.trim() || null,
-      unitsPerCase: unitsPerPurchaseUnit ? Number(unitsPerPurchaseUnit) : null,
-      purchaseUnitLabel: purchaseUnitLabel.trim() || null,
-      unitsPerPurchaseUnit: unitsPerPurchaseUnit ? Number(unitsPerPurchaseUnit) : null,
-      stockUnitLabel: stockUnitLabel.trim() || null,
-      contentPerStockUnit: contentPerStockUnit ? Number(contentPerStockUnit) : null,
-      consumptionUnitLabel: consumptionUnitLabel.trim() || null,
-      lowThreshold: parseDecimalInput(lowThreshold),
-      criticalThreshold: parseDecimalInput(criticalThreshold),
-      alertsActive,
-      active,
-      sortOrder: Number(sortOrder),
-    });
-    setIsSaving(false);
+    try {
+      await onSave({
+        name,
+        unit: purchaseUnitLabel || "kasser",
+        trackingMode,
+        returnHandling,
+        salesUnitQuantity: salesUnitQuantity ? Number(salesUnitQuantity) : 1,
+        litersPerSale: litersPerSale ? Number(litersPerSale) : null,
+        onlineposProductId: onlineposProductId.trim() || null,
+        onlineposName: onlineposName.trim() || null,
+        unitsPerCase: unitsPerPurchaseUnit ? Number(unitsPerPurchaseUnit) : null,
+        purchaseUnitLabel: purchaseUnitLabel.trim() || null,
+        unitsPerPurchaseUnit: unitsPerPurchaseUnit ? Number(unitsPerPurchaseUnit) : null,
+        stockUnitLabel: stockUnitLabel.trim() || null,
+        contentPerStockUnit: contentPerStockUnit ? Number(contentPerStockUnit) : null,
+        consumptionUnitLabel: consumptionUnitLabel.trim() || null,
+        lowThreshold: parseDecimalInput(lowThreshold),
+        criticalThreshold: parseDecimalInput(criticalThreshold),
+        alertsActive,
+        active,
+        sortOrder: Number(sortOrder),
+      });
+    } catch (error) {
+      setLocalError(error instanceof Error ? error.message : "Produkt kunne ikke gemmes.");
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   return (
@@ -327,13 +535,18 @@ function ProductModal({
         <p className="mt-1 text-sm font-bold text-muted">Vælg hvad BackEvent må gøre, når varen kommer retur.</p>
         <label className="mt-3 block">
           <span className="text-base font-bold text-ink">Behandling ved retur</span>
-          <select value={returnHandling} onChange={(event) => setReturnHandling(event.target.value as ProductReturnHandling)} className="mt-2 min-h-12 w-full rounded-2xl border border-line px-3 py-2 font-bold outline-none focus:border-pantone140">
-            <option value="waste">Svind/kassation</option>
-            <option value="return_to_stock">Tilbage på lager</option>
-            <option value="manual_review">Manuel kontrol</option>
-            <option value="no_stock_effect">Ingen lagerpåvirkning</option>
+          <select value={returnHandling} onChange={(event) => setReturnHandling(event.target.value as ProductReturnHandling | "")} className="mt-2 min-h-12 w-full rounded-2xl border border-line px-3 py-2 font-bold outline-none focus:border-pantone140">
+            <option value="">Mangler beslutning</option>
+            {returnHandlingOptions.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
           </select>
         </label>
+        {product && !hasExplicitReturnHandling(product) ? (
+          <p className="mt-2 rounded-xl bg-pantone139/20 px-3 py-2 text-sm font-bold text-pantone140">
+            Produktet mangler en bevidst returbehandling i databasen.
+          </p>
+        ) : null}
       </section>
 
       <details className="mt-5 rounded-2xl border border-line bg-macro p-4">
@@ -368,6 +581,7 @@ function ProductModal({
         </label>
       </div>
       <div className="mt-5 flex gap-3">
+        {localError ? <p className="self-center text-sm font-bold text-warmRed">{localError}</p> : null}
         <PrimaryButton onClick={save} disabled={isSaving}>{isSaving ? "Gemmer..." : "Gem"}</PrimaryButton>
         <button type="button" onClick={onClose} className="min-h-11 rounded-2xl border border-line px-4 py-2 font-bold text-pantone140">Annuller</button>
       </div>
@@ -399,33 +613,17 @@ function Input({ label, value, onChange }: { label: string; value: string; onCha
 }
 
 function trackingLabel(mode?: ProductTrackingMode) {
-  if (mode === "flow") return "Flow";
-  if (mode === "ignore") return "Ignorer";
-  return "Lagerstyret";
+  return getTrackingModeLabel(mode);
 }
 
-function returnHandlingLabel(mode?: ProductReturnHandling) {
-  if (mode === "waste") return "Svind";
-  if (mode === "return_to_stock") return "Til lager";
-  if (mode === "no_stock_effect") return "Ingen lager";
-  return "Manuel kontrol";
+function returnHandlingLabel(mode?: ProductReturnHandling | null) {
+  return getReturnHandlingLabel(mode);
 }
 
 function formatPurchase(product: Product) {
   const label = product.purchaseUnitLabel ?? product.unit;
   const amount = product.unitsPerPurchaseUnit ?? product.unitsPerCase ?? 1;
   return `${amount} pr. ${label}`;
-}
-
-function formatStock(product: Product) {
-  return product.stockUnitLabel ?? product.unit;
-}
-
-function formatConsumption(product: Product) {
-  const content = product.contentPerStockUnit ?? 1;
-  const stockUnit = product.stockUnitLabel ?? product.unit;
-  const consumptionUnit = product.consumptionUnitLabel ?? product.unit;
-  return `${content} ${consumptionUnit}/${stockUnit}`;
 }
 
 function formatPackage(product: Product) {

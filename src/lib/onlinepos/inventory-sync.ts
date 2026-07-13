@@ -1,12 +1,24 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { OnlinePosInventoryMapping, OnlinePosInventoryMappingComponent, OnlinePosLineType, OnlinePosMappingAction } from "./inventory-mappings";
+import {
+  getOnlinePosLocationMappings,
+  resolveOnlinePosLocation,
+  type OnlinePosLocationMapping,
+} from "./location-mappings";
 
 export type OnlinePosSyncLineStatus = "processed" | "ignored" | "failed";
 
 export type OnlinePosTransactionLine = {
   transactionId: string | null;
   receiptNumber: string | null;
+  transactionDatetime: string | null;
+  transactionType: string | null;
+  transactionStatus: string | null;
+  returnId: string | null;
+  refundId: string | null;
+  transactionTotal: number | null;
   lineId: string | null;
+  parentLineId: string | null;
   lineIndex: number;
   onlineposProductId: string | null;
   onlineposProductName: string | null;
@@ -67,6 +79,7 @@ type SafePagination = {
   per_page: string | number | null;
   current_page: string | number | null;
   last_page: string | number | null;
+  fetched_pages?: number;
 };
 
 type ProductRow = {
@@ -108,12 +121,13 @@ export async function runOnlinePosInventorySync({
 
   try {
     const fetched = await fetchOnlinePosTransactionLines({ datetimeFrom, datetimeTo });
-    const [mappings, products, locations] = await Promise.all([
+    const [mappings, products, locations, locationMappings] = await Promise.all([
       getInventoryMappings(supabase),
       getProducts(supabase),
       getLocations(supabase),
+      getOnlinePosLocationMappings(supabase),
     ]);
-    const decisions = buildSyncDecisions(fetched.lines, mappings, products, locations);
+    const decisions = buildSyncDecisions(fetched.lines, mappings, products, locations, locationMappings);
     const applyResult = await applySyncLines(supabase, run.id, decisions);
     const missingMappingCount = decisions.filter((line) => line.errorReason === "Mangler godkendt mapping").length;
     const failedCount = applyResult.failedCount;
@@ -181,12 +195,18 @@ export function buildSyncDecisions(
   mappings: OnlinePosInventoryMapping[],
   products: ProductRow[],
   locations: LocationRow[],
+  locationMappings: OnlinePosLocationMapping[] = [],
 ): OnlinePosSyncDecision[] {
   return lines.map((line) => {
     const mapping = findMapping(line, mappings);
     const mappingAction = mapping?.mappingAction ?? defaultMappingAction(line);
     const mappingStatus = mapping?.status ?? "unmapped";
-    const location = findLocationForCashRegister(line, locations);
+    const locationResolution = resolveOnlinePosLocation(
+      { venueId: process.env.ONLINEPOS_VENUE_ID ?? null, cashRegisterId: line.cashRegisterId, cashRegisterName: line.cashRegisterName },
+      locationMappings,
+      locations,
+    );
+    const location = locationResolution.ok ? locationResolution.location : null;
     const sourceLocationId = location?.source_location_id ?? null;
     const base = {
       externalLineId: buildExternalLineId(line),
@@ -220,8 +240,8 @@ export function buildSyncDecisions(
       return ignoredDecision(base, "Mangler godkendt mapping");
     }
 
-    if (!location) {
-      return failedDecision(base, "Bar/sted findes ikke i BackEvent");
+    if (!locationResolution.ok) {
+      return failedDecision(base, locationResolution.errorReason);
     }
 
     if (!sourceLocationId) {
@@ -293,16 +313,19 @@ export function buildExternalLineId(line: OnlinePosTransactionLine) {
   ].join(":");
 }
 
-async function fetchOnlinePosTransactionLines({
+export async function fetchOnlinePosTransactionLines({
   datetimeFrom,
   datetimeTo,
   page,
+  venue,
 }: {
   datetimeFrom: string;
   datetimeTo: string;
   page?: string | null;
+  venue?: string | null;
 }) {
-  if (!process.env.ONLINEPOS_CLIENT_ID || !process.env.ONLINEPOS_CLIENT_SECRET || !process.env.ONLINEPOS_VENUE_ID) {
+  const venueId = venue ?? process.env.ONLINEPOS_VENUE_ID;
+  if (!process.env.ONLINEPOS_CLIENT_ID || !process.env.ONLINEPOS_CLIENT_SECRET || !venueId) {
     throw new Error("OnlinePOS env mangler");
   }
 
@@ -332,31 +355,44 @@ async function fetchOnlinePosTransactionLines({
       throw new Error("OnlinePOS token response manglede access_token");
     }
 
-    const url = new URL(transactionsUrl);
-    url.searchParams.set("venue", process.env.ONLINEPOS_VENUE_ID);
-    url.searchParams.set("extended_view", "1");
-    url.searchParams.set("datetime_from", datetimeFrom);
-    url.searchParams.set("datetime_to", datetimeTo);
-    if (page) {
-      url.searchParams.set("page", page);
+    const collectedLines: OnlinePosTransactionLine[] = [];
+    let pagination = emptyPagination();
+    let currentPage = page ? Number(page) : 1;
+    let pageCount = 0;
+    while (pageCount < 50) {
+      const url = new URL(transactionsUrl);
+      url.searchParams.set("venue", venueId);
+      url.searchParams.set("extended_view", "1");
+      url.searchParams.set("datetime_from", datetimeFrom);
+      url.searchParams.set("datetime_to", datetimeTo);
+      url.searchParams.set("page", String(currentPage));
+
+      const response = await fetch(url, {
+        method: "GET",
+        headers: { Accept: "application/json", Authorization: `Bearer ${accessToken}` },
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      const text = await response.text();
+
+      if (!response.ok) {
+        throw new Error(response.status === 401 || response.status === 403 ? "OnlinePOS transactions afviser adgang" : "OnlinePOS transactions fejlede");
+      }
+
+      const parsed = parseTransactions(text);
+      collectedLines.push(...parsed.transactions.flatMap(toTransactionLines));
+      pagination = parsed.pagination;
+      pageCount += 1;
+
+      if (page || !hasMorePages(pagination)) break;
+      const nextPage = numberValue(pagination.current_page);
+      if (nextPage === null) break;
+      currentPage = nextPage + 1;
     }
 
-    const response = await fetch(url, {
-      method: "GET",
-      headers: { Accept: "application/json", Authorization: `Bearer ${accessToken}` },
-      cache: "no-store",
-      signal: controller.signal,
-    });
-    const text = await response.text();
-
-    if (!response.ok) {
-      throw new Error(response.status === 401 || response.status === 403 ? "OnlinePOS transactions afviser adgang" : "OnlinePOS transactions fejlede");
-    }
-
-    const parsed = parseTransactions(text);
     return {
-      lines: parsed.transactions.flatMap(toTransactionLines),
-      pagination: parsed.pagination,
+      lines: collectedLines,
+      pagination: { ...pagination, fetched_pages: pageCount },
     };
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
@@ -372,6 +408,12 @@ function toTransactionLines(transaction: Record<string, unknown>, transactionInd
   const cashRegister = toSafeCashRegister(pickField(transaction, ["cash_register", "cashRegister"]));
   const transactionId = stringOrNull(pickField(transaction, ["transaction_id", "transactionId", "id"]));
   const receiptNumber = stringOrNull(pickField(transaction, ["receipt_number", "receiptNumber"]));
+  const transactionDatetime = stringOrNull(pickField(transaction, ["datetime", "created_at", "createdAt", "returned_at", "returnedAt"]));
+  const transactionType = stringOrNull(pickField(transaction, ["type", "transaction_type", "transactionType"]));
+  const transactionStatus = stringOrNull(pickField(transaction, ["status", "state"]));
+  const returnId = stringOrNull(pickField(transaction, ["return_id", "returnId"]));
+  const refundId = stringOrNull(pickField(transaction, ["refund_id", "refundId"]));
+  const transactionTotal = numberValue(pickField(transaction, ["total", "amount", "net_price", "netPrice", "price"])) ?? null;
 
   return findTransactionLines(transaction).map((line, lineIndex) => {
     const onlineposProductName = stringOrNull(pickField(line, ["product_name", "productName", "productname", "name", "receipt_text", "receiptText"]));
@@ -381,7 +423,14 @@ function toTransactionLines(transaction: Record<string, unknown>, transactionInd
     return {
       transactionId,
       receiptNumber,
+      transactionDatetime,
+      transactionType,
+      transactionStatus,
+      returnId,
+      refundId,
+      transactionTotal,
       lineId: stringOrNull(pickField(line, ["line_id", "lineId", "orderlineid", "id"])),
+      parentLineId: stringOrNull(pickField(line, ["parent_line_id", "parentLineId", "parent_id", "parentId"])),
       lineIndex: transactionIndex * 10000 + lineIndex,
       onlineposProductId: stringOrNull(pickField(line, ["product_id", "productId", "productid"])),
       onlineposProductName,
@@ -411,7 +460,7 @@ function parseTransactions(text: string) {
   }
 }
 
-async function getInventoryMappings(supabase: SupabaseClient): Promise<OnlinePosInventoryMapping[]> {
+export async function getInventoryMappings(supabase: SupabaseClient): Promise<OnlinePosInventoryMapping[]> {
   const { data, error } = await supabase
     .from("onlinepos_inventory_mappings")
     .select("id,onlinepos_product_id,onlinepos_product_name,onlinepos_product_group_name,line_type,backevent_inventory_item_id,conversion_factor,mapping_action,status,created_at,updated_at")
@@ -492,13 +541,13 @@ function normalizeComponents(components: OnlinePosInventoryMappingComponent[], m
   });
 }
 
-async function getProducts(supabase: SupabaseClient) {
+export async function getProducts(supabase: SupabaseClient) {
   const { data, error } = await supabase.from("backevent_products").select("id,name,unit,active").eq("active", true);
   if (error) throw new Error("Produkter kunne ikke hentes");
   return (data ?? []) as ProductRow[];
 }
 
-async function getLocations(supabase: SupabaseClient) {
+export async function getLocations(supabase: SupabaseClient) {
   const { data, error } = await supabase.from("backevent_locations").select("id,name,type,source_location_id,active").eq("active", true);
   if (error) throw new Error("Steder kunne ikke hentes");
   return (data ?? []) as LocationRow[];
@@ -622,17 +671,6 @@ function defaultMappingAction(line: OnlinePosTransactionLine): OnlinePosMappingA
   if (line.lineType === "container_product") return "container_only";
   if (line.lineType === "unknown") return "ignore";
   return line.inventoryRelevant ? "consume_stock" : "ignore";
-}
-
-function findLocationForCashRegister(line: OnlinePosTransactionLine, locations: LocationRow[]) {
-  const cashRegisterId = normalizeOnlinePosId(line.cashRegisterId);
-  if (cashRegisterId) {
-    const byId = locations.find((location) => normalizeOnlinePosId(location.id) === cashRegisterId);
-    if (byId) return byId;
-  }
-
-  const cashRegisterName = normalizeName(line.cashRegisterName);
-  return cashRegisterName ? locations.find((location) => normalizeName(location.name) === cashRegisterName) ?? null : null;
 }
 
 function parseAccessToken(text: string) {

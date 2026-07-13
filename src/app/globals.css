@@ -45,3 +45,21 @@ a:focus-visible {
   outline: 3px solid rgba(129, 79, 18, 0.32);
   outline-offset: 3px;
 }
+
+.field {
+  width: 100%;
+  min-height: 2.75rem;
+  border-radius: 0.75rem;
+  border: 1px solid #eadfcf;
+  background: #ffffff;
+  padding: 0.625rem 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: #1f2933;
+}
+
+.field:focus {
+  border-color: #fcc146;
+  outline: 3px solid rgba(129, 79, 18, 0.18);
+  outline-offset: 1px;
+}

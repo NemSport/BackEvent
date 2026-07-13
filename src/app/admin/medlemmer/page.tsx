@@ -1,6 +1,6 @@
 "use client";
 
-import { Bell, CheckCircle2, Mail, Pencil, Plus, Search, Send, ShieldCheck, Users } from "lucide-react";
+import { Bell, CheckCircle2, Mail, Pencil, Plus, Search, Send, ShieldCheck, Trash2, Users } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/backevent/app-shell";
 import { Header } from "@/components/backevent/header";
@@ -37,6 +37,14 @@ type MemberFormState = {
   confirmSelfDeactivate: boolean;
 };
 
+type GroupFormState = {
+  id?: string;
+  name: string;
+  description: string;
+  active: boolean;
+  memberIds: string[];
+};
+
 const roles: MemberRole[] = ["frivillig", "ansvarlig", "ejer"];
 
 const emptyForm: MemberFormState = {
@@ -51,6 +59,13 @@ const emptyForm: MemberFormState = {
   confirmSelfDeactivate: false,
 };
 
+const emptyGroupForm: GroupFormState = {
+  name: "",
+  description: "",
+  active: true,
+  memberIds: [],
+};
+
 export default function MembersPage() {
   const { profile } = useBackEventAuth();
   const [members, setMembers] = useState<BackEventMember[]>([]);
@@ -59,6 +74,7 @@ export default function MembersPage() {
   const [saving, setSaving] = useState(false);
   const [sendingInviteId, setSendingInviteId] = useState<string | null>(null);
   const [form, setForm] = useState<MemberFormState | null>(null);
+  const [groupForm, setGroupForm] = useState<GroupFormState | null>(null);
   const [query, setQuery] = useState("");
   const [roleFilter, setRoleFilter] = useState<"all" | MemberRole>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -136,6 +152,12 @@ export default function MembersPage() {
     setError(null);
   }
 
+  function openCreateGroup() {
+    setGroupForm(emptyGroupForm);
+    setMessage(null);
+    setError(null);
+  }
+
   function openEdit(member: BackEventMember) {
     setForm({
       id: member.id,
@@ -148,6 +170,18 @@ export default function MembersPage() {
       permissions: member.permissions ?? [],
       sendInvite: false,
       confirmSelfDeactivate: false,
+    });
+    setMessage(null);
+    setError(null);
+  }
+
+  function openEditGroup(group: BackEventMemberGroup) {
+    setGroupForm({
+      id: group.id,
+      name: group.name,
+      description: group.description ?? "",
+      active: group.active,
+      memberIds: members.filter((member) => member.groups?.some((item) => item.id === group.id)).map((member) => member.id),
     });
     setMessage(null);
     setError(null);
@@ -178,6 +212,64 @@ export default function MembersPage() {
       setMessage(form.id ? "Medlem gemt." : "Medlem oprettet.");
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "Kunne ikke gemme medlem.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveGroup() {
+    if (!groupForm) return;
+    setSaving(true);
+    setError(null);
+    setMessage(null);
+
+    try {
+      const token = await getAccessToken();
+      const response = await fetch(groupForm.id ? `/api/admin/member-groups/${groupForm.id}` : "/api/admin/member-groups", {
+        method: groupForm.id ? "PATCH" : "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(groupForm),
+      });
+      const data = (await response.json()) as { ok: boolean; message?: string };
+      if (!response.ok || !data.ok) {
+        throw new Error(data.message ?? "Kunne ikke gemme gruppe");
+      }
+      setGroupForm(null);
+      await loadData();
+      setMessage(groupForm.id ? "Gruppe gemt." : "Gruppe oprettet.");
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Kunne ikke gemme gruppe.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteGroup(group: BackEventMemberGroup) {
+    if (!window.confirm(`Vil du slette gruppen "${group.name}"? Medlemmer slettes ikke.`)) {
+      return;
+    }
+
+    setSaving(true);
+    setError(null);
+    setMessage(null);
+
+    try {
+      const token = await getAccessToken();
+      const response = await fetch(`/api/admin/member-groups/${group.id}`, {
+        method: "DELETE",
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      });
+      const data = (await response.json()) as { ok: boolean; message?: string };
+      if (!response.ok || !data.ok) {
+        throw new Error(data.message ?? "Kunne ikke slette gruppe");
+      }
+      await loadData();
+      setMessage("Gruppe slettet.");
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "Kunne ikke slette gruppe.");
     } finally {
       setSaving(false);
     }
@@ -220,6 +312,20 @@ export default function MembersPage() {
   return (
     <AppShell requiredRole="ejer">
       <Header title="Medlemmer" subtitle="Opret, inviter og gør holdet klar til marked" />
+
+      <section className="mb-4 rounded-2xl border border-line bg-macro p-3 shadow-sm">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-bold text-ink">Grupper</h2>
+            <p className="text-sm font-medium text-muted">Grupper bruges til kommunikation og organisering.</p>
+          </div>
+          <button type="button" onClick={openCreateGroup} className="inline-flex h-9 items-center gap-2 rounded-lg bg-pantone139 px-3 text-sm font-bold text-ink">
+            <Plus className="h-4 w-4" aria-hidden />
+            Opret gruppe
+          </button>
+        </div>
+        <GroupAdminList groups={groups} members={members} saving={saving} onEdit={openEditGroup} onDelete={deleteGroup} />
+      </section>
 
       <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Klar" value={stats.readyCount} tone="green" icon={CheckCircle2} />
@@ -308,7 +414,160 @@ export default function MembersPage() {
           onSave={saveMember}
         />
       ) : null}
+
+      {groupForm ? (
+        <GroupModal
+          form={groupForm}
+          members={members}
+          saving={saving}
+          onChange={setGroupForm}
+          onClose={() => setGroupForm(null)}
+          onSave={saveGroup}
+        />
+      ) : null}
     </AppShell>
+  );
+}
+
+function GroupAdminList({
+  groups,
+  members,
+  saving,
+  onEdit,
+  onDelete,
+}: {
+  groups: BackEventMemberGroup[];
+  members: BackEventMember[];
+  saving: boolean;
+  onEdit: (group: BackEventMemberGroup) => void;
+  onDelete: (group: BackEventMemberGroup) => void;
+}) {
+  if (groups.length === 0) {
+    return <p className="rounded-xl bg-soft px-3 py-2 text-sm font-bold text-muted">Ingen grupper endnu.</p>;
+  }
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-line">
+      <div className="hidden grid-cols-[1fr_1.4fr_7rem_8rem] gap-2 bg-soft px-3 py-2 text-xs font-bold uppercase text-muted md:grid">
+        <span>Navn</span>
+        <span>Beskrivelse</span>
+        <span>Medlemmer</span>
+        <span>Handling</span>
+      </div>
+      {groups.map((group) => {
+        const memberCount = members.filter((member) => member.groups?.some((item) => item.id === group.id)).length;
+        return (
+          <article key={group.id} className="grid gap-2 border-t border-line px-3 py-2 text-sm md:grid-cols-[1fr_1.4fr_7rem_8rem] md:items-center">
+            <div>
+              <p className="font-bold text-ink">{group.name}</p>
+              <StatusChip label={group.active ? "Aktiv" : "Inaktiv"} tone={group.active ? "green" : "gray"} />
+            </div>
+            <p className="font-medium text-muted">{group.description || "Ingen beskrivelse"}</p>
+            <p className="font-bold text-muted">{memberCount}</p>
+            <div className="flex gap-1">
+              <button type="button" onClick={() => onEdit(group)} className="inline-flex h-8 items-center gap-1 rounded-lg border border-line bg-macro px-2 text-xs font-bold text-pantone140">
+                <Pencil className="h-3.5 w-3.5" aria-hidden />
+                Redigér
+              </button>
+              <button type="button" onClick={() => onDelete(group)} disabled={saving} className="inline-flex h-8 items-center gap-1 rounded-lg bg-warmRed/10 px-2 text-xs font-bold text-warmRed disabled:opacity-40">
+                <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                Slet
+              </button>
+            </div>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function GroupModal({
+  form,
+  members,
+  saving,
+  onChange,
+  onClose,
+  onSave,
+}: {
+  form: GroupFormState;
+  members: BackEventMember[];
+  saving: boolean;
+  onChange: (form: GroupFormState) => void;
+  onClose: () => void;
+  onSave: () => void;
+}) {
+  const editing = Boolean(form.id);
+
+  function patch(patchValue: Partial<GroupFormState>) {
+    onChange({ ...form, ...patchValue });
+  }
+
+  function toggleMember(memberId: string) {
+    patch({
+      memberIds: form.memberIds.includes(memberId)
+        ? form.memberIds.filter((id) => id !== memberId)
+        : [...form.memberIds, memberId],
+    });
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-ink/40 p-3">
+      <section className="max-h-[92vh] w-full max-w-2xl overflow-auto rounded-2xl border border-line bg-macro p-4 shadow-soft">
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-bold text-ink">{editing ? "Redigér gruppe" : "Opret gruppe"}</h2>
+            <p className="text-sm font-medium text-muted">Ejer kan oprette grupper og tilføje/fjerne medlemmer.</p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-lg bg-soft px-3 py-2 text-sm font-bold text-pantone140">
+            Luk
+          </button>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Navn" value={form.name} onChange={(value) => patch({ name: value })} />
+          <label className="flex items-center gap-2 self-end text-sm font-bold text-muted">
+            <input type="checkbox" checked={form.active} onChange={(event) => patch({ active: event.target.checked })} className="h-4 w-4 accent-pantone140" />
+            Aktiv
+          </label>
+        </div>
+        <label className="mt-3 block text-xs font-bold text-muted">
+          Beskrivelse
+          <textarea
+            value={form.description}
+            onChange={(event) => patch({ description: event.target.value })}
+            className="mt-1 min-h-20 w-full rounded-xl border border-line bg-macro px-3 py-2 text-sm font-bold text-ink outline-none focus:ring-2 focus:ring-pantone139/50"
+          />
+        </label>
+
+        <div className="mt-4">
+          <p className="mb-2 text-xs font-bold uppercase text-muted">Medlemmer</p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {members.map((member) => {
+              const checked = form.memberIds.includes(member.id);
+              return (
+                <button
+                  key={member.id}
+                  type="button"
+                  onClick={() => toggleMember(member.id)}
+                  className={`min-h-10 rounded-xl px-3 text-left text-sm font-bold ${checked ? "bg-pantone139 text-ink" : "bg-soft text-muted"}`}
+                >
+                  {member.fullName || member.email || "Navn mangler"}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="h-10 rounded-xl border border-line bg-macro px-4 text-sm font-bold text-pantone140">
+            Annuller
+          </button>
+          <button type="button" onClick={onSave} disabled={saving} className="h-10 rounded-xl bg-pantone139 px-4 text-sm font-bold text-ink disabled:opacity-50">
+            {saving ? "Gemmer..." : "Gem gruppe"}
+          </button>
+        </div>
+      </section>
+    </div>
   );
 }
 
