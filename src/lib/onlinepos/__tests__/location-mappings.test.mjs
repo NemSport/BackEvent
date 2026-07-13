@@ -3,17 +3,19 @@ import test from "node:test";
 import {
   findSuggestedBackEventLocationId,
   getLocationMappingSuggestion,
+  mergeLocationDiscoveries,
   normalizeOnlinePosCashRegisterName,
   resolveOnlinePosLocation,
 } from "../location-mappings.ts";
 import { hasRoleAtLeast } from "../../backevent/permissions.ts";
 
 const locations = [
-  { id: "blaa", name: "Blå Container", type: "container", source_location_id: null, active: true },
-  { id: "groen", name: "Grøn Container", type: "container", source_location_id: null, active: true },
-  { id: "roed", name: "Rød Container", type: "container", source_location_id: null, active: true },
-  { id: "pub", name: "Pub Container", type: "container", source_location_id: null, active: true },
-  { id: "street", name: "Street Container", type: "container", source_location_id: null, active: true },
+  { id: "blaa", name: "Blåbar", type: "bar", source_location_id: "blaa-container", active: true },
+  { id: "blaa-container", name: "Blå Container", type: "container", source_location_id: null, active: true },
+  { id: "groen", name: "Grønbar", type: "bar", source_location_id: "groen-container", active: true },
+  { id: "roed", name: "Rødbar", type: "bar", source_location_id: "roed-container", active: true },
+  { id: "pub", name: "Pubben", type: "bar", source_location_id: "pub-container", active: true },
+  { id: "street", name: "Street", type: "bar", source_location_id: "street-container", active: true },
   { id: "central", name: "Centrallager", type: "container", source_location_id: null, active: true },
 ];
 
@@ -52,6 +54,52 @@ test("mappet kasse kan resolve til BackEvent-lokation", () => {
   assert.equal(result.ok, true);
   assert.equal(result.ok && result.location.id, "blaa");
   assert.equal(result.ok && result.matchedBy, "name");
+});
+
+test("Blå bar matcher ikke automatisk Blåbar", () => {
+  const result = resolveOnlinePosLocation(
+    { venueId: "15249", cashRegisterName: "Blå bar" },
+    [mapping({ cashRegisterName: "Blåbar", normalizedCashRegisterName: normalizeOnlinePosCashRegisterName("Blåbar") })],
+    locations,
+  );
+  assert.equal(result.ok, false);
+  assert.equal(!result.ok && result.errorCode, "ONLINEPOS_LOCATION_UNMAPPED");
+});
+
+test("Ejer kan mappe Blå bar eksplicit til BackEvent-lokationen Blåbar", () => {
+  const result = resolveOnlinePosLocation(
+    { venueId: "15249", cashRegisterName: "Blå bar" },
+    [
+      mapping({ cashRegisterName: "Blåbar", normalizedCashRegisterName: normalizeOnlinePosCashRegisterName("Blåbar") }),
+      mapping({ id: "mapping-2", cashRegisterName: "Blå bar", normalizedCashRegisterName: normalizeOnlinePosCashRegisterName("Blå bar") }),
+    ],
+    locations,
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.ok && result.location.id, "blaa");
+  assert.equal(result.ok && result.matchedBy, "name");
+});
+
+test("historiske discovery-navne gemmes separat når navnet er forskelligt", () => {
+  const rows = mergeLocationDiscoveries([
+    { venueId: "15249", cashRegisterName: "Blåbar", seenAt: "2025-07-17T15:00:00.000Z" },
+    { venueId: "15249", cashRegisterName: "Blå bar", seenAt: "2025-07-17T15:10:00.000Z" },
+  ]);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map((row) => row.normalizedCashRegisterName).sort(), [
+    normalizeOnlinePosCashRegisterName("Blå bar"),
+    normalizeOnlinePosCashRegisterName("Blåbar"),
+  ].sort());
+});
+
+test("discovery-rækker uden BackEvent-lokation bruges ikke som godkendt mapping", () => {
+  const result = resolveOnlinePosLocation(
+    { venueId: "15249", cashRegisterName: "Blå bar" },
+    [mapping({ backeventLocationId: null, active: false })],
+    locations,
+  );
+  assert.equal(result.ok, false);
+  assert.equal(!result.ok && result.errorCode, "ONLINEPOS_LOCATION_UNMAPPED");
 });
 
 test("Beer Bar uden mapping påvirker ikke lager", () => {

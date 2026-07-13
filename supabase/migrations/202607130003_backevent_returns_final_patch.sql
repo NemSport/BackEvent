@@ -234,7 +234,7 @@ create table if not exists public.backevent_onlinepos_location_mappings (
   onlinepos_cash_register_id text null,
   onlinepos_cash_register_name text not null,
   normalized_cash_register_name text not null,
-  backevent_location_id uuid not null references public.backevent_locations(id) on delete restrict,
+  backevent_location_id uuid null references public.backevent_locations(id) on delete restrict,
   active boolean not null default true,
   first_seen_at timestamptz null,
   last_seen_at timestamptz null,
@@ -263,6 +263,9 @@ create index if not exists backevent_onlinepos_location_mappings_location_idx
 
 create index if not exists backevent_onlinepos_location_mappings_active_idx
   on public.backevent_onlinepos_location_mappings(active);
+
+alter table public.backevent_onlinepos_location_mappings
+  alter column backevent_location_id drop not null;
 
 create or replace function public.backevent_touch_updated_at()
 returns trigger

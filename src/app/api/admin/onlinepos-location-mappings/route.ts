@@ -96,12 +96,12 @@ export async function GET(request: Request) {
     locations,
     discovered: discovered.map((item) => {
       const mapping = findMappingForDiscovery(item, mappings);
-      const mappedLocationExists = mapping ? locations.some((location) => location.id === mapping.backeventLocationId) : false;
+      const mappedLocationExists = Boolean(mapping?.backeventLocationId && locations.some((location) => location.id === mapping.backeventLocationId));
       const suggestion = getLocationMappingSuggestion(item.cashRegisterName);
       return {
         ...item,
         mapping,
-        status: mapping ? (mapping.active ? (mappedLocationExists ? "mapped" : "unknown_location") : "inactive") : "missing",
+        status: mapping?.backeventLocationId ? (mapping.active ? (mappedLocationExists ? "mapped" : "unknown_location") : "inactive") : "missing",
         suggestion,
         suggestedBackeventLocationId: findSuggestedBackEventLocationId(item.cashRegisterName, locations.map((location) => ({
           id: location.id,

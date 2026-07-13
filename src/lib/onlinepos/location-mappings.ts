@@ -6,7 +6,7 @@ export type OnlinePosLocationMapping = {
   cashRegisterId: string | null;
   cashRegisterName: string;
   normalizedCashRegisterName: string;
-  backeventLocationId: string;
+  backeventLocationId: string | null;
   active: boolean;
   firstSeenAt: string | null;
   lastSeenAt: string | null;
@@ -46,11 +46,18 @@ export type OnlinePosLocationResolution =
 
 export type OnlinePosLocationMappingSuggestion = {
   label: string;
-  locationNameHint: "Blå" | "Grøn" | "Rød" | "Pub" | "Street";
+  locationNameHint: "Bla" | "Gron" | "Rod" | "Pub" | "Street";
+};
+
+export type OnlinePosLocationDiscoveryInput = {
+  venueId?: string | null;
+  cashRegisterId?: string | null;
+  cashRegisterName?: string | null;
+  seenAt?: string | null;
 };
 
 export function normalizeOnlinePosCashRegisterName(value: string | null | undefined) {
-  return value?.trim().toLocaleLowerCase("da-DK").replace(/[^a-z0-9æøå]+/g, "-").replace(/^-|-$/g, "") || null;
+  return value?.trim().toLocaleLowerCase("da-DK").replace(/\s+/g, " ") || null;
 }
 
 export function normalizeOnlinePosCashRegisterId(value: string | number | null | undefined) {
@@ -62,20 +69,21 @@ export function getLocationMappingSuggestion(cashRegisterName: string | null | u
   const normalized = normalizeOnlinePosCashRegisterName(cashRegisterName);
   const lowerName = cashRegisterName?.trim().toLocaleLowerCase("da-DK") ?? "";
   if (!normalized) return null;
-  if (normalized.includes("bla-bar") || normalized.includes("blaa-bar") || lowerName.includes("blå bar")) {
-    return { label: "Forslag: Blå bar → Blå", locationNameHint: "Blå" };
+  const compact = normalized.replace(/\s+/g, "");
+  if (compact.includes("blabar") || compact.includes("blaabar") || lowerName.includes("blå bar")) {
+    return { label: "Forslag: Blå bar ligner Blåbar", locationNameHint: "Bla" };
   }
-  if (normalized.includes("gron-bar") || normalized.includes("groen-bar") || lowerName.includes("grøn bar")) {
-    return { label: "Forslag: Grøn Bar → Grøn", locationNameHint: "Grøn" };
+  if (compact.includes("gronbar") || compact.includes("groenbar") || lowerName.includes("grøn bar")) {
+    return { label: "Forslag: Grøn Bar ligner Grønbar", locationNameHint: "Gron" };
   }
-  if (normalized.includes("rod-bar") || normalized.includes("roed-bar") || lowerName.includes("rød bar")) {
-    return { label: "Forslag: Rød Bar → Rød", locationNameHint: "Rød" };
+  if (compact.includes("rodbar") || compact.includes("roedbar") || lowerName.includes("rød bar")) {
+    return { label: "Forslag: Rød Bar ligner Rødbar", locationNameHint: "Rod" };
   }
-  if (normalized === "pubben" || normalized.includes("pubben")) {
-    return { label: "Forslag: Pubben → Pub", locationNameHint: "Pub" };
+  if (compact === "pubben" || compact.includes("pubben")) {
+    return { label: "Forslag: Pubben ligner Pub", locationNameHint: "Pub" };
   }
-  if (normalized === "street" || normalized.includes("street")) {
-    return { label: "Forslag: Street → Street", locationNameHint: "Street" };
+  if (compact === "street" || compact.includes("street")) {
+    return { label: "Forslag: Street ligner Street", locationNameHint: "Street" };
   }
   return null;
 }
@@ -87,7 +95,7 @@ export function findSuggestedBackEventLocationId(
   const suggestion = getLocationMappingSuggestion(cashRegisterName);
   if (!suggestion) return null;
   const hint = suggestion.locationNameHint.toLocaleLowerCase("da-DK");
-  return locations.find((location) => location.name.toLocaleLowerCase("da-DK").includes(hint))?.id ?? null;
+  return locations.find((location) => normalizeLocationNameForSuggestion(location.name).includes(hint))?.id ?? null;
 }
 
 export function resolveOnlinePosLocation(
@@ -98,8 +106,9 @@ export function resolveOnlinePosLocation(
   const venueId = normalizeVenue(input.venueId);
   const cashRegisterId = normalizeOnlinePosCashRegisterId(input.cashRegisterId);
   const normalizedName = normalizeOnlinePosCashRegisterName(input.cashRegisterName);
-  const activeMappings = mappings.filter((mapping) => mapping.active && sameVenue(mapping.venueId, venueId));
-  const inactiveMappings = mappings.filter((mapping) => !mapping.active && sameVenue(mapping.venueId, venueId));
+  const approvedMappings = mappings.filter((mapping) => mapping.backeventLocationId && sameVenue(mapping.venueId, venueId));
+  const activeMappings = approvedMappings.filter((mapping) => mapping.active);
+  const inactiveMappings = approvedMappings.filter((mapping) => !mapping.active);
 
   if (cashRegisterId) {
     const mapping = activeMappings.find((item) => normalizeOnlinePosCashRegisterId(item.cashRegisterId) === cashRegisterId);
@@ -110,9 +119,9 @@ export function resolveOnlinePosLocation(
   }
 
   if (normalizedName) {
-    const mapping = activeMappings.find((item) => item.normalizedCashRegisterName === normalizedName);
+    const mapping = activeMappings.find((item) => cashRegisterNameMatches(item, normalizedName));
     if (mapping) return resolveMappedLocation(mapping, locations, "name");
-    const inactive = inactiveMappings.find((item) => item.normalizedCashRegisterName === normalizedName);
+    const inactive = inactiveMappings.find((item) => cashRegisterNameMatches(item, normalizedName));
     if (inactive) return inactiveResolution();
   }
 
@@ -139,13 +148,88 @@ export function toOnlinePosLocationMapping(row: Record<string, unknown>): Online
     cashRegisterId: stringOrNull(row.onlinepos_cash_register_id),
     cashRegisterName: stringOrNull(row.onlinepos_cash_register_name) ?? "Ukendt kasse",
     normalizedCashRegisterName: stringOrNull(row.normalized_cash_register_name) ?? "",
-    backeventLocationId: String(row.backevent_location_id),
+    backeventLocationId: stringOrNull(row.backevent_location_id),
     active: row.active !== false,
     firstSeenAt: stringOrNull(row.first_seen_at),
     lastSeenAt: stringOrNull(row.last_seen_at),
     createdAt: stringOrNull(row.created_at),
     updatedAt: stringOrNull(row.updated_at),
   };
+}
+
+export async function recordOnlinePosLocationDiscoveries(
+  supabase: SupabaseClient,
+  discoveries: OnlinePosLocationDiscoveryInput[],
+) {
+  const rows = mergeLocationDiscoveries(discoveries);
+  for (const row of rows) {
+    const existing = await findExistingLocationDiscovery(supabase, row);
+    if (existing) {
+      await supabase
+        .from("backevent_onlinepos_location_mappings")
+        .update({
+          onlinepos_cash_register_name: row.cashRegisterName,
+          normalized_cash_register_name: row.normalizedCashRegisterName,
+          first_seen_at: minDate(existing.first_seen_at, row.firstSeenAt),
+          last_seen_at: maxDate(existing.last_seen_at, row.lastSeenAt),
+        })
+        .eq("id", existing.id);
+      continue;
+    }
+
+    await supabase.from("backevent_onlinepos_location_mappings").insert({
+      onlinepos_venue_id: row.venueId,
+      onlinepos_cash_register_id: row.cashRegisterId,
+      onlinepos_cash_register_name: row.cashRegisterName,
+      normalized_cash_register_name: row.normalizedCashRegisterName,
+      backevent_location_id: null,
+      active: false,
+      first_seen_at: row.firstSeenAt,
+      last_seen_at: row.lastSeenAt,
+    });
+  }
+}
+
+export function mergeLocationDiscoveries(discoveries: OnlinePosLocationDiscoveryInput[]) {
+  const merged = new Map<string, {
+    venueId: string | null;
+    cashRegisterId: string | null;
+    cashRegisterName: string;
+    normalizedCashRegisterName: string;
+    firstSeenAt: string | null;
+    lastSeenAt: string | null;
+  }>();
+
+  for (const discovery of discoveries) {
+    const cashRegisterName = discovery.cashRegisterName?.trim();
+    const normalizedCashRegisterName = normalizeOnlinePosCashRegisterName(cashRegisterName);
+    if (!cashRegisterName || !normalizedCashRegisterName) continue;
+
+    const venueId = normalizeVenue(discovery.venueId);
+    const cashRegisterId = normalizeOnlinePosCashRegisterId(discovery.cashRegisterId);
+    const key = `${venueId ?? ""}:${cashRegisterId ? `id:${cashRegisterId}` : `name:${normalizedCashRegisterName}`}`;
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, {
+        venueId,
+        cashRegisterId,
+        cashRegisterName,
+        normalizedCashRegisterName,
+        firstSeenAt: discovery.seenAt ?? null,
+        lastSeenAt: discovery.seenAt ?? null,
+      });
+      continue;
+    }
+
+    existing.firstSeenAt = minDate(existing.firstSeenAt, discovery.seenAt ?? null);
+    existing.lastSeenAt = maxDate(existing.lastSeenAt, discovery.seenAt ?? null);
+    if (cashRegisterId) {
+      existing.cashRegisterName = cashRegisterName;
+      existing.normalizedCashRegisterName = normalizedCashRegisterName;
+    }
+  }
+
+  return Array.from(merged.values());
 }
 
 function resolveMappedLocation(
@@ -189,12 +273,67 @@ function unmappedResolution(): OnlinePosLocationResolution {
   };
 }
 
+function cashRegisterNameMatches(mapping: OnlinePosLocationMapping, normalizedName: string) {
+  return mapping.normalizedCashRegisterName === normalizedName
+    || legacyNormalizeOnlinePosCashRegisterName(mapping.cashRegisterName) === legacyNormalizeOnlinePosCashRegisterName(normalizedName);
+}
+
+function legacyNormalizeOnlinePosCashRegisterName(value: string | null | undefined) {
+  return value?.trim().toLocaleLowerCase("da-DK").replace(/[^a-z0-9æøå]+/g, "-").replace(/^-|-$/g, "") || null;
+}
+
+async function findExistingLocationDiscovery(
+  supabase: SupabaseClient,
+  row: ReturnType<typeof mergeLocationDiscoveries>[number],
+) {
+  if (row.cashRegisterId) {
+    let query = supabase
+      .from("backevent_onlinepos_location_mappings")
+      .select("id,first_seen_at,last_seen_at")
+      .eq("onlinepos_cash_register_id", row.cashRegisterId)
+      .limit(1);
+    query = row.venueId ? query.eq("onlinepos_venue_id", row.venueId) : query.is("onlinepos_venue_id", null);
+    const { data } = await query.maybeSingle();
+    return data;
+  }
+
+  let query = supabase
+    .from("backevent_onlinepos_location_mappings")
+    .select("id,first_seen_at,last_seen_at")
+    .is("onlinepos_cash_register_id", null)
+    .eq("normalized_cash_register_name", row.normalizedCashRegisterName)
+    .limit(1);
+  query = row.venueId ? query.eq("onlinepos_venue_id", row.venueId) : query.is("onlinepos_venue_id", null);
+  const { data } = await query.maybeSingle();
+  return data;
+}
+
 function sameVenue(mappingVenue: string | null, inputVenue: string | null) {
   return normalizeVenue(mappingVenue) === inputVenue;
 }
 
 function normalizeVenue(value: string | null | undefined) {
   return value?.trim() || null;
+}
+
+function normalizeLocationNameForSuggestion(value: string) {
+  return value
+    .toLocaleLowerCase("da-DK")
+    .replace(/å/g, "a")
+    .replace(/ø/g, "o")
+    .replace(/æ/g, "ae");
+}
+
+function minDate(a: string | null, b: string | null) {
+  if (!a) return b;
+  if (!b) return a;
+  return new Date(a) <= new Date(b) ? a : b;
+}
+
+function maxDate(a: string | null, b: string | null) {
+  if (!a) return b;
+  if (!b) return a;
+  return new Date(a) >= new Date(b) ? a : b;
 }
 
 function stringOrNull(value: unknown) {

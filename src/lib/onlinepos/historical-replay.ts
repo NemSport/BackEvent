@@ -17,7 +17,7 @@ import {
   type OnlinePosSyncDecision,
   type OnlinePosTransactionLine,
 } from "./inventory-sync";
-import { getOnlinePosLocationMappings } from "./location-mappings";
+import { getOnlinePosLocationMappings, recordOnlinePosLocationDiscoveries } from "./location-mappings";
 
 export {
   buildReplayWindows,
@@ -65,6 +65,7 @@ export async function runHistoricalReplayDryRun({
   const allModifierAudits: ReplayModifierAudit[] = [];
   const allStockPreview: ReplayStockPreviewLine[] = [];
   const duplicateDetails: ReplayDuplicateDetail[] = [];
+  const locationDiscoveries = [];
 
   for (const window of windows) {
     const fetched = await fetchOnlinePosTransactionLines({ datetimeFrom: window.fetchFrom, datetimeTo: window.fetchTo, venue: input.venue });
@@ -72,6 +73,12 @@ export async function runHistoricalReplayDryRun({
       ? fetched.lines.filter((line) => line.cashRegisterId === input.cashRegister || line.cashRegisterName === input.cashRegister)
       : fetched.lines;
     const decisions = buildSyncDecisions(filteredLines, mappings, products, locations, locationMappings);
+    locationDiscoveries.push(...filteredLines.map((line) => ({
+      venueId: input.venue ?? null,
+      cashRegisterId: line.cashRegisterId,
+      cashRegisterName: line.cashRegisterName,
+      seenAt: line.transactionDatetime,
+    })));
     const uniqueDecisions: OnlinePosSyncDecision[] = [];
     let duplicateCount = 0;
     const windowDuplicateDetails: ReplayDuplicateDetail[] = [];
@@ -140,6 +147,7 @@ export async function runHistoricalReplayDryRun({
 
   const unmappedProducts = summarizeUnmappedProducts(allErrorDetails, allModifierAudits, products);
   const returnSummary = summarizeReturns(allReturnAudits);
+  await recordOnlinePosLocationDiscoveries(supabase, locationDiscoveries);
   return {
     ok: true,
     mode: input.mode,
@@ -170,6 +178,7 @@ export async function runHistoricalReplayDryRun({
       sendsPush: false,
       createsNotifications: false,
       changesMappings: false,
+      updatesLocationDiscovery: true,
       changesReturnStatus: false,
       testRunEnabled: false,
     },

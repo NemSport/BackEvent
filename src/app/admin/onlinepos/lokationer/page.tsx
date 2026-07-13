@@ -19,7 +19,7 @@ type LocationMapping = {
   venueId: string | null;
   cashRegisterId: string | null;
   cashRegisterName: string;
-  backeventLocationId: string;
+  backeventLocationId: string | null;
   active: boolean;
   firstSeenAt: string | null;
   lastSeenAt: string | null;
