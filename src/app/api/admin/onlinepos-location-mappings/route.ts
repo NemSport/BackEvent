@@ -94,6 +94,10 @@ export async function GET(request: Request) {
     ok: true,
     mappings,
     locations,
+    debug: {
+      supabaseProjectHostOnly: supabaseProjectHostOnly(),
+      activeApprovedMappingCount: mappings.filter((mapping) => mapping.active && Boolean(mapping.backeventLocationId)).length,
+    },
     discovered: discovered.map((item) => {
       const mapping = findMappingForDiscovery(item, mappings);
       const mappedLocationExists = Boolean(mapping?.backeventLocationId && locations.some((location) => location.id === mapping.backeventLocationId));
@@ -155,6 +159,16 @@ export async function DELETE(request: Request) {
   const { error } = await gate.supabase.from("backevent_onlinepos_location_mappings").delete().eq("id", body.id);
   if (error) return NextResponse.json({ ok: false, message: "Lokationsmapping kunne ikke fjernes" }, { status: 500 });
   return NextResponse.json({ ok: true });
+}
+
+function supabaseProjectHostOnly() {
+  const value = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  if (!value) return null;
+  try {
+    return new URL(value).host;
+  } catch {
+    return null;
+  }
 }
 
 async function requireOwner(request: Request) {

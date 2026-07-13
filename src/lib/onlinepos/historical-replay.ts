@@ -17,7 +17,12 @@ import {
   type OnlinePosSyncDecision,
   type OnlinePosTransactionLine,
 } from "./inventory-sync";
-import { getOnlinePosLocationMappings, recordOnlinePosLocationDiscoveries } from "./location-mappings";
+import {
+  getOnlinePosLocationMappings,
+  recordOnlinePosLocationDiscoveries,
+  type OnlinePosLocationDiagnostics,
+  type OnlinePosLocationMapping,
+} from "./location-mappings";
 
 export {
   buildReplayWindows,
@@ -50,12 +55,18 @@ export async function runHistoricalReplayDryRun({
   input: HistoricalReplayInput;
 }) {
   const windows = buildReplayWindows(input);
-  const [mappings, products, locations, locationMappings] = await Promise.all([
+  const [mappings, products, locations] = await Promise.all([
     getInventoryMappings(supabase),
     getProducts(supabase),
     getLocations(supabase),
-    getOnlinePosLocationMappings(supabase),
   ]);
+  let latestLocationMappings = await getOnlinePosLocationMappings(supabase);
+  const initialLocationMappings = latestLocationMappings;
+  const locationMappingWindows: Array<{
+    replayWindow: string;
+    activeApprovedMappingCount: number;
+    mappingsLoaded: ReturnType<typeof safeLocationMappingRows>;
+  }> = [];
   const seenProductionLineIds = new Set<string>();
   const seenTransactionIds = new Set<string>();
   const totals = emptyTotals();
@@ -65,20 +76,26 @@ export async function runHistoricalReplayDryRun({
   const allModifierAudits: ReplayModifierAudit[] = [];
   const allStockPreview: ReplayStockPreviewLine[] = [];
   const duplicateDetails: ReplayDuplicateDetail[] = [];
-  const locationDiscoveries = [];
 
   for (const window of windows) {
     const fetched = await fetchOnlinePosTransactionLines({ datetimeFrom: window.fetchFrom, datetimeTo: window.fetchTo, venue: input.venue });
     const filteredLines = input.cashRegister
       ? fetched.lines.filter((line) => line.cashRegisterId === input.cashRegister || line.cashRegisterName === input.cashRegister)
       : fetched.lines;
-    const decisions = buildSyncDecisions(filteredLines, mappings, products, locations, locationMappings);
-    locationDiscoveries.push(...filteredLines.map((line) => ({
+    const windowLocationDiscoveries = filteredLines.map((line) => ({
       venueId: input.venue ?? null,
       cashRegisterId: line.cashRegisterId,
       cashRegisterName: line.cashRegisterName,
       seenAt: line.transactionDatetime,
-    })));
+    }));
+    await recordOnlinePosLocationDiscoveries(supabase, windowLocationDiscoveries);
+    latestLocationMappings = await getOnlinePosLocationMappings(supabase);
+    locationMappingWindows.push({
+      replayWindow: window.label,
+      activeApprovedMappingCount: countActiveApprovedLocationMappings(latestLocationMappings),
+      mappingsLoaded: safeLocationMappingRows(latestLocationMappings),
+    });
+    const decisions = buildSyncDecisions(filteredLines, mappings, products, locations, latestLocationMappings);
     const uniqueDecisions: OnlinePosSyncDecision[] = [];
     let duplicateCount = 0;
     const windowDuplicateDetails: ReplayDuplicateDetail[] = [];
@@ -147,7 +164,6 @@ export async function runHistoricalReplayDryRun({
 
   const unmappedProducts = summarizeUnmappedProducts(allErrorDetails, allModifierAudits, products);
   const returnSummary = summarizeReturns(allReturnAudits);
-  await recordOnlinePosLocationDiscoveries(supabase, locationDiscoveries);
   return {
     ok: true,
     mode: input.mode,
@@ -171,6 +187,18 @@ export async function runHistoricalReplayDryRun({
     unmappedProducts,
     stockPreview: allStockPreview.slice(0, 500),
     duplicateDetails: duplicateDetails.slice(0, 300),
+    locationMappingDebug: {
+      supabaseProjectHostOnly: supabaseProjectHostOnly(),
+      initial: {
+        activeApprovedMappingCount: countActiveApprovedLocationMappings(initialLocationMappings),
+        mappingsLoaded: safeLocationMappingRows(initialLocationMappings),
+      },
+      windows: locationMappingWindows,
+      latest: {
+        activeApprovedMappingCount: countActiveApprovedLocationMappings(latestLocationMappings),
+        mappingsLoaded: safeLocationMappingRows(latestLocationMappings),
+      },
+    },
     safety: {
       mode: "dry-run",
       writesStock: false,
@@ -183,6 +211,33 @@ export async function runHistoricalReplayDryRun({
       testRunEnabled: false,
     },
   };
+}
+
+function countActiveApprovedLocationMappings(mappings: OnlinePosLocationMapping[]) {
+  return mappings.filter((mapping) => mapping.active && Boolean(mapping.backeventLocationId)).length;
+}
+
+function safeLocationMappingRows(mappings: OnlinePosLocationMapping[]) {
+  return mappings.map((mapping) => ({
+    id: mapping.id,
+    venueId: mapping.venueId,
+    cashRegisterId: mapping.cashRegisterId,
+    cashRegisterName: mapping.cashRegisterName,
+    normalizedCashRegisterName: mapping.normalizedCashRegisterName,
+    backeventLocationId: mapping.backeventLocationId,
+    active: mapping.active,
+    hasBackeventLocation: Boolean(mapping.backeventLocationId),
+  }));
+}
+
+function supabaseProjectHostOnly() {
+  const value = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  if (!value) return null;
+  try {
+    return new URL(value).host;
+  } catch {
+    return null;
+  }
 }
 
 type ReplayErrorCode =
@@ -209,6 +264,7 @@ type ReplayErrorDetail = {
   amount: number;
   errorCode: ReplayErrorCode;
   message: string;
+  locationDiagnostics?: OnlinePosLocationDiagnostics | null;
 };
 
 type ReplayReturnAudit = {
@@ -323,6 +379,7 @@ function buildErrorDetails(replayWindow: string, decisions: OnlinePosSyncDecisio
       amount: decision.revenue,
       errorCode: code,
       message: readableReplayError(code, decision.errorReason),
+      locationDiagnostics: code === "LOCATION_MAPPING_MISSING" ? decision.locationDiagnostics ?? null : null,
     });
   }
 

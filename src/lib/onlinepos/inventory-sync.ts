@@ -3,6 +3,7 @@ import type { OnlinePosInventoryMapping, OnlinePosInventoryMappingComponent, Onl
 import {
   getOnlinePosLocationMappings,
   resolveOnlinePosLocation,
+  type OnlinePosLocationDiagnostics,
   type OnlinePosLocationMapping,
 } from "./location-mappings";
 
@@ -49,6 +50,7 @@ export type OnlinePosSyncDecision = {
   mappingAction: OnlinePosMappingAction;
   status: OnlinePosSyncLineStatus;
   errorReason: string | null;
+  locationDiagnostics?: OnlinePosLocationDiagnostics | null;
   locationId: string | null;
   sourceLocationId: string | null;
   quantitySold: number;
@@ -222,6 +224,7 @@ export function buildSyncDecisions(
       mappingId: mapping?.id ?? null,
       mappingStatus,
       mappingAction,
+      locationDiagnostics: locationResolution.ok ? null : locationResolution.diagnostics,
       locationId: location?.id ?? null,
       sourceLocationId,
       quantitySold: line.quantitySold,

@@ -28,6 +28,22 @@ export type OnlinePosCashRegisterRef = {
   cashRegisterName?: string | null;
 };
 
+export type OnlinePosLocationDiagnostics = {
+  incomingName: string | null;
+  incomingId: string | null;
+  venueId: string | null;
+  normalizedName: string | null;
+  candidateMappingsLoaded: Array<{
+    id: string;
+    venueId: string | null;
+    cashRegisterId: string | null;
+    cashRegisterName: string;
+    normalizedCashRegisterName: string;
+    active: boolean;
+    hasBackeventLocation: boolean;
+  }>;
+};
+
 export type OnlinePosLocationResolution =
   | {
       ok: true;
@@ -42,6 +58,7 @@ export type OnlinePosLocationResolution =
       matchedBy: null;
       errorCode: "ONLINEPOS_LOCATION_UNMAPPED" | "ONLINEPOS_LOCATION_MAPPING_INACTIVE" | "BACKEVENT_LOCATION_UNKNOWN";
       errorReason: string;
+      diagnostics: OnlinePosLocationDiagnostics;
     };
 
 export type OnlinePosLocationMappingSuggestion = {
@@ -106,26 +123,26 @@ export function resolveOnlinePosLocation(
   const venueId = normalizeVenue(input.venueId);
   const cashRegisterId = normalizeOnlinePosCashRegisterId(input.cashRegisterId);
   const normalizedName = normalizeOnlinePosCashRegisterName(input.cashRegisterName);
-  const approvedMappings = mappings.filter((mapping) => mapping.backeventLocationId && sameVenue(mapping.venueId, venueId));
+  const approvedMappings = mappings.filter((mapping) => mapping.backeventLocationId && compatibleVenue(mapping.venueId, venueId));
   const activeMappings = approvedMappings.filter((mapping) => mapping.active);
   const inactiveMappings = approvedMappings.filter((mapping) => !mapping.active);
+  const diagnostics = buildLocationDiagnostics(input, venueId, cashRegisterId, normalizedName, mappings);
 
   if (cashRegisterId) {
     const mapping = activeMappings.find((item) => normalizeOnlinePosCashRegisterId(item.cashRegisterId) === cashRegisterId);
     if (mapping) return resolveMappedLocation(mapping, locations, "cash_register_id");
     const inactive = inactiveMappings.find((item) => normalizeOnlinePosCashRegisterId(item.cashRegisterId) === cashRegisterId);
-    if (inactive) return inactiveResolution();
-    return unmappedResolution();
+    if (inactive) return inactiveResolution(diagnostics);
   }
 
   if (normalizedName) {
-    const mapping = activeMappings.find((item) => cashRegisterNameMatches(item, normalizedName));
+    const mapping = activeMappings.find((item) => canFallbackByName(cashRegisterId, item) && mappingNameMatches(item, normalizedName));
     if (mapping) return resolveMappedLocation(mapping, locations, "name");
-    const inactive = inactiveMappings.find((item) => cashRegisterNameMatches(item, normalizedName));
-    if (inactive) return inactiveResolution();
+    const inactive = inactiveMappings.find((item) => canFallbackByName(cashRegisterId, item) && mappingNameMatches(item, normalizedName));
+    if (inactive) return inactiveResolution(diagnostics);
   }
 
-  return unmappedResolution();
+  return unmappedResolution(diagnostics);
 }
 
 export async function getOnlinePosLocationMappings(supabase: SupabaseClient): Promise<OnlinePosLocationMapping[]> {
@@ -246,12 +263,19 @@ function resolveMappedLocation(
       matchedBy: null,
       errorCode: "BACKEVENT_LOCATION_UNKNOWN",
       errorReason: "Ukendt BackEvent-lokation",
+      diagnostics: {
+        incomingName: mapping.cashRegisterName,
+        incomingId: mapping.cashRegisterId,
+        venueId: mapping.venueId,
+        normalizedName: mapping.normalizedCashRegisterName,
+        candidateMappingsLoaded: [toDiagnosticCandidate(mapping)],
+      },
     };
   }
   return { ok: true, mapping, location, matchedBy };
 }
 
-function inactiveResolution(): OnlinePosLocationResolution {
+function inactiveResolution(diagnostics: OnlinePosLocationDiagnostics): OnlinePosLocationResolution {
   return {
     ok: false,
     mapping: null,
@@ -259,10 +283,11 @@ function inactiveResolution(): OnlinePosLocationResolution {
     matchedBy: null,
     errorCode: "ONLINEPOS_LOCATION_MAPPING_INACTIVE",
     errorReason: "OnlinePOS-lokationsmapping er inaktiv",
+    diagnostics,
   };
 }
 
-function unmappedResolution(): OnlinePosLocationResolution {
+function unmappedResolution(diagnostics: OnlinePosLocationDiagnostics): OnlinePosLocationResolution {
   return {
     ok: false,
     mapping: null,
@@ -270,16 +295,8 @@ function unmappedResolution(): OnlinePosLocationResolution {
     matchedBy: null,
     errorCode: "ONLINEPOS_LOCATION_UNMAPPED",
     errorReason: "OnlinePOS-kasse mangler lokationsmapping",
+    diagnostics,
   };
-}
-
-function cashRegisterNameMatches(mapping: OnlinePosLocationMapping, normalizedName: string) {
-  return mapping.normalizedCashRegisterName === normalizedName
-    || legacyNormalizeOnlinePosCashRegisterName(mapping.cashRegisterName) === legacyNormalizeOnlinePosCashRegisterName(normalizedName);
-}
-
-function legacyNormalizeOnlinePosCashRegisterName(value: string | null | undefined) {
-  return value?.trim().toLocaleLowerCase("da-DK").replace(/[^a-z0-9æøå]+/g, "-").replace(/^-|-$/g, "") || null;
 }
 
 async function findExistingLocationDiscovery(
@@ -297,23 +314,53 @@ async function findExistingLocationDiscovery(
     return data;
   }
 
-  let query = supabase
+  let exactNameQuery = supabase
     .from("backevent_onlinepos_location_mappings")
     .select("id,first_seen_at,last_seen_at")
     .is("onlinepos_cash_register_id", null)
     .eq("normalized_cash_register_name", row.normalizedCashRegisterName)
     .limit(1);
-  query = row.venueId ? query.eq("onlinepos_venue_id", row.venueId) : query.is("onlinepos_venue_id", null);
-  const { data } = await query.maybeSingle();
-  return data;
+  exactNameQuery = row.venueId ? exactNameQuery.eq("onlinepos_venue_id", row.venueId) : exactNameQuery.is("onlinepos_venue_id", null);
+  const exactName = await exactNameQuery.maybeSingle();
+  if (exactName.data) return exactName.data;
+
+  let storedNameQuery = supabase
+    .from("backevent_onlinepos_location_mappings")
+    .select("id,first_seen_at,last_seen_at")
+    .is("onlinepos_cash_register_id", null)
+    .eq("onlinepos_cash_register_name", row.cashRegisterName)
+    .limit(1);
+  storedNameQuery = row.venueId ? storedNameQuery.eq("onlinepos_venue_id", row.venueId) : storedNameQuery.is("onlinepos_venue_id", null);
+  const storedName = await storedNameQuery.maybeSingle();
+  return storedName.data;
 }
 
-function sameVenue(mappingVenue: string | null, inputVenue: string | null) {
-  return normalizeVenue(mappingVenue) === inputVenue;
+function compatibleVenue(mappingVenue: string | null, inputVenue: string | null) {
+  const normalizedMappingVenue = normalizeVenueForMatch(mappingVenue);
+  const normalizedInputVenue = normalizeVenueForMatch(inputVenue);
+  if (!normalizedMappingVenue || !normalizedInputVenue) return true;
+  return normalizedMappingVenue === normalizedInputVenue;
+}
+
+function canFallbackByName(incomingCashRegisterId: string | null, mapping: OnlinePosLocationMapping) {
+  return !incomingCashRegisterId || !normalizeOnlinePosCashRegisterId(mapping.cashRegisterId);
+}
+
+function mappingNameMatches(mapping: OnlinePosLocationMapping, normalizedName: string) {
+  return mapping.normalizedCashRegisterName === normalizedName
+    || normalizeOnlinePosCashRegisterName(mapping.cashRegisterName) === normalizedName;
 }
 
 function normalizeVenue(value: string | null | undefined) {
   return value?.trim() || null;
+}
+
+function normalizeVenueForMatch(value: string | null | undefined) {
+  const normalized = normalizeVenue(value)?.toLocaleLowerCase("da-DK");
+  if (!normalized || normalized === "-" || normalized === "all" || normalized === "default" || normalized === "generic" || normalized === "unknown" || normalized === "null" || normalized === "undefined") {
+    return null;
+  }
+  return normalized;
 }
 
 function normalizeLocationNameForSuggestion(value: string) {
@@ -322,6 +369,44 @@ function normalizeLocationNameForSuggestion(value: string) {
     .replace(/å/g, "a")
     .replace(/ø/g, "o")
     .replace(/æ/g, "ae");
+}
+
+function buildLocationDiagnostics(
+  input: OnlinePosCashRegisterRef,
+  venueId: string | null,
+  cashRegisterId: string | null,
+  normalizedName: string | null,
+  mappings: OnlinePosLocationMapping[],
+): OnlinePosLocationDiagnostics {
+  const candidates = mappings
+    .filter((mapping) => compatibleVenue(mapping.venueId, venueId))
+    .filter((mapping) => {
+      if (cashRegisterId && normalizeOnlinePosCashRegisterId(mapping.cashRegisterId) === cashRegisterId) return true;
+      if (normalizedName && canFallbackByName(cashRegisterId, mapping) && mappingNameMatches(mapping, normalizedName)) return true;
+      return false;
+    })
+    .slice(0, 10)
+    .map(toDiagnosticCandidate);
+
+  return {
+    incomingName: input.cashRegisterName ?? null,
+    incomingId: cashRegisterId,
+    venueId,
+    normalizedName,
+    candidateMappingsLoaded: candidates,
+  };
+}
+
+function toDiagnosticCandidate(mapping: OnlinePosLocationMapping) {
+  return {
+    id: mapping.id,
+    venueId: mapping.venueId,
+    cashRegisterId: mapping.cashRegisterId,
+    cashRegisterName: mapping.cashRegisterName,
+    normalizedCashRegisterName: mapping.normalizedCashRegisterName,
+    active: mapping.active,
+    hasBackeventLocation: Boolean(mapping.backeventLocationId),
+  };
 }
 
 function minDate(a: string | null, b: string | null) {
