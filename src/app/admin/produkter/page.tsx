@@ -3,7 +3,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/backevent/app-shell";
 import { BackButton, PrimaryButton } from "@/components/backevent/buttons";
-import { createProduct, getProductAlertSettings, getProductsAdmin, updateProduct, upsertProductAlertSetting } from "@/lib/backevent/data";
+import {
+  createProduct,
+  deactivateProductAdmin,
+  deleteProductAdmin,
+  getProductAlertSettings,
+  getProductDeletePreview,
+  getProductsAdmin,
+  updateProduct,
+  upsertProductAlertSetting,
+  type AdminDeletePreview,
+} from "@/lib/backevent/data";
 import {
   buildReturnHandlingAudit,
   filterProductsForReturnSetup,
@@ -60,6 +70,9 @@ export default function AdminProdukterPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [bulkReturnHandling, setBulkReturnHandling] = useState<BulkReturnHandling>("");
   const [isBulkSaving, setIsBulkSaving] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Product | null>(null);
+  const [deletePreview, setDeletePreview] = useState<AdminDeletePreview | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const audit = useMemo(() => buildReturnHandlingAudit(products), [products]);
   const visibleProducts = useMemo(
     () => filterProductsForReturnSetup(products, {
@@ -213,6 +226,38 @@ export default function AdminProdukterPage() {
     });
   }
 
+  async function openDeleteProduct(product: Product) {
+    setDeleteTarget(product);
+    setDeletePreview(null);
+    setMessage(null);
+    try {
+      setDeletePreview(await getProductDeletePreview(product.id));
+    } catch {
+      setDeletePreview({ ok: false, message: "Sletteinfo kunne ikke hentes." });
+    }
+  }
+
+  async function runDeleteProduct(action: "delete" | "deactivate") {
+    if (!deleteTarget) return;
+    setIsDeleting(true);
+    setMessage(null);
+    try {
+      const result = action === "delete" ? await deleteProductAdmin(deleteTarget.id) : await deactivateProductAdmin(deleteTarget.id);
+      if (!result.ok) {
+        setDeletePreview(result.plan && result.summary ? { ok: true, plan: result.plan, summary: result.summary } : { ok: false, message: result.message });
+        setMessage(result.message);
+        return;
+      }
+      setMessage(result.message);
+      setDeleteTarget(null);
+      setDeletePreview(null);
+      if (editingProduct?.id === deleteTarget.id) setEditingProduct(null);
+      await reload();
+    } finally {
+      setIsDeleting(false);
+    }
+  }
+
   return (
     <AppShell requiredRole="ejer">
       <BackButton href="/admin" />
@@ -343,6 +388,7 @@ export default function AdminProdukterPage() {
               selected={selectedIds.has(product.id)}
               onSelect={() => toggleSelected(product.id)}
               onEdit={() => setEditingProduct(product)}
+              onDelete={() => openDeleteProduct(product)}
             />
           ))}
         </div>
@@ -357,6 +403,21 @@ export default function AdminProdukterPage() {
             setIsCreating(false);
           }}
           onSave={saveProduct}
+          onDelete={editingProduct ? () => openDeleteProduct(editingProduct) : undefined}
+        />
+      ) : null}
+      {deleteTarget ? (
+        <DeleteObjectModal
+          name={deleteTarget.name}
+          objectLabel="produkt"
+          preview={deletePreview}
+          isWorking={isDeleting}
+          onClose={() => {
+            setDeleteTarget(null);
+            setDeletePreview(null);
+          }}
+          onDelete={() => runDeleteProduct("delete")}
+          onDeactivate={() => runDeleteProduct("deactivate")}
         />
       ) : null}
     </AppShell>
@@ -398,11 +459,13 @@ function ProductRow({
   selected,
   onSelect,
   onEdit,
+  onDelete,
 }: {
   product: Product;
   selected: boolean;
   onSelect: () => void;
   onEdit: () => void;
+  onDelete: () => void;
 }) {
   const explicitReturnHandling = getExplicitReturnHandling(product);
   const recommendation = recommendReturnHandling(product);
@@ -427,9 +490,14 @@ function ProductRow({
       <span className="text-muted xl:text-ink">{product.onlineposName || product.onlineposProductId || "-"}</span>
       <span className="hidden xl:block">{product.sortOrder ?? "-"}</span>
       <span className="hidden xl:block">{product.active === false ? "Nej" : "Ja"}</span>
-      <button type="button" onClick={onEdit} className="w-fit rounded-xl bg-soft px-3 py-2 text-sm font-bold text-pantone140">
-        Rediger
-      </button>
+      <div className="flex flex-wrap gap-2">
+        <button type="button" onClick={onEdit} className="w-fit rounded-xl bg-soft px-3 py-2 text-sm font-bold text-pantone140">
+          Rediger
+        </button>
+        <button type="button" onClick={onDelete} className="w-fit rounded-xl bg-warmRed px-3 py-2 text-sm font-bold text-macro">
+          Slet
+        </button>
+      </div>
     </article>
   );
 }
@@ -439,11 +507,13 @@ function ProductModal({
   alertSetting,
   onClose,
   onSave,
+  onDelete,
 }: {
   product?: Product;
   alertSetting?: ProductAlertSetting;
   onClose: () => void;
   onSave: (input: ProductFormInput) => Promise<void>;
+  onDelete?: () => void;
 }) {
   const [name, setName] = useState(product?.name ?? "");
   const [trackingMode, setTrackingMode] = useState<ProductTrackingMode>(product?.trackingMode ?? "inventory");
@@ -583,7 +653,63 @@ function ProductModal({
       <div className="mt-5 flex gap-3">
         {localError ? <p className="self-center text-sm font-bold text-warmRed">{localError}</p> : null}
         <PrimaryButton onClick={save} disabled={isSaving}>{isSaving ? "Gemmer..." : "Gem"}</PrimaryButton>
+        {onDelete ? <button type="button" onClick={onDelete} className="min-h-11 rounded-2xl bg-warmRed px-4 py-2 font-bold text-macro">Slet</button> : null}
         <button type="button" onClick={onClose} className="min-h-11 rounded-2xl border border-line px-4 py-2 font-bold text-pantone140">Annuller</button>
+      </div>
+    </Modal>
+  );
+}
+
+function DeleteObjectModal({
+  name,
+  objectLabel,
+  preview,
+  isWorking,
+  onClose,
+  onDelete,
+  onDeactivate,
+}: {
+  name: string;
+  objectLabel: string;
+  preview: AdminDeletePreview | null;
+  isWorking: boolean;
+  onClose: () => void;
+  onDelete: () => void;
+  onDeactivate: () => void;
+}) {
+  const okPreview = preview?.ok ? preview : null;
+  const plan = okPreview?.plan ?? null;
+  return (
+    <Modal title={`Slet ${objectLabel}`} onClose={onClose}>
+      <div className="space-y-4">
+        <p className="text-base font-bold text-ink">
+          Vil du slette {objectLabel}et <span className="text-warmRed">{name}</span>?
+        </p>
+        {!preview ? <p className="rounded-2xl bg-soft p-4 text-sm font-bold text-muted">Tjekker historik og beholdning...</p> : null}
+        {preview && !preview.ok ? <p className="rounded-2xl bg-warmRed/10 p-4 text-sm font-bold text-warmRed">{preview.message}</p> : null}
+        {plan ? (
+          <div className="rounded-2xl border border-line bg-soft p-4">
+            <p className="text-sm font-bold text-ink">{plan.reason}</p>
+            {okPreview ? (
+              <p className="mt-2 text-xs font-bold text-muted">
+                Beholdning: {formatNumber(okPreview.summary.activeStockQuantity)} · Historik: {okPreview.summary.historyCount} · Relationer: {okPreview.summary.relationCount}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+        <div className="flex flex-wrap gap-3">
+          {plan?.action === "delete" ? (
+            <button type="button" onClick={onDelete} disabled={isWorking} className="min-h-11 rounded-2xl bg-warmRed px-4 py-2 font-bold text-macro disabled:opacity-50">
+              {isWorking ? "Sletter..." : "Slet permanent"}
+            </button>
+          ) : null}
+          {plan?.canDeactivate ? (
+            <button type="button" onClick={onDeactivate} disabled={isWorking} className="min-h-11 rounded-2xl border border-warmRed bg-macro px-4 py-2 font-bold text-warmRed disabled:opacity-50">
+              {isWorking ? "Deaktiverer..." : "Deaktivér"}
+            </button>
+          ) : null}
+          <button type="button" onClick={onClose} className="min-h-11 rounded-2xl border border-line px-4 py-2 font-bold text-pantone140">Annuller</button>
+        </div>
       </div>
     </Modal>
   );

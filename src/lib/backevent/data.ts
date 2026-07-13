@@ -34,6 +34,8 @@ import type {
   StockMovement,
   StockStatus,
 } from "./types";
+import type { DeletePlan, DeleteReferenceSummary } from "./delete-safety";
+import { planAdminObjectDelete } from "./delete-safety";
 
 type CreateStockMovementInput = {
   productId: string;
@@ -43,6 +45,26 @@ type CreateStockMovementInput = {
   unit?: string;
   note?: string | null;
   createdByName?: string | null;
+};
+
+export type AdminDeletePreview = {
+  ok: true;
+  plan: DeletePlan;
+  summary: DeleteReferenceSummary & Record<string, number>;
+} | {
+  ok: false;
+  message: string;
+};
+
+export type AdminDeleteResult = {
+  ok: true;
+  action: "deleted" | "deactivated";
+  message: string;
+} | {
+  ok: false;
+  message: string;
+  plan?: DeletePlan;
+  summary?: DeleteReferenceSummary & Record<string, number>;
 };
 
 const productSelectColumns =
@@ -1436,6 +1458,47 @@ export async function updateProduct(
   if (error) throw error;
 }
 
+export async function getProductDeletePreview(productId: string): Promise<AdminDeletePreview> {
+  const supabase = createSupabaseBrowserClient();
+
+  if (!supabase) {
+    const summary = mockProductDeleteSummary(productId);
+    return { ok: true, plan: planAdminObjectDelete(summary), summary };
+  }
+
+  return fetchAdminDeletePreview(`/api/admin/products/${productId}/delete`);
+}
+
+export async function deleteProductAdmin(productId: string): Promise<AdminDeleteResult> {
+  const supabase = createSupabaseBrowserClient();
+
+  if (!supabase) {
+    const summary = mockProductDeleteSummary(productId);
+    const plan = planAdminObjectDelete(summary);
+    if (plan.action !== "delete") return { ok: false, message: plan.reason, plan, summary };
+    mockStore.balances = mockStore.balances.filter((balance) => balance.productId !== productId);
+    mockStore.products = mockStore.products.filter((product) => product.id !== productId);
+    return { ok: true, action: "deleted", message: "Produkt slettet permanent." };
+  }
+
+  return fetchAdminDeleteAction(`/api/admin/products/${productId}/delete`, "delete");
+}
+
+export async function deactivateProductAdmin(productId: string): Promise<AdminDeleteResult> {
+  const supabase = createSupabaseBrowserClient();
+
+  if (!supabase) {
+    const summary = mockProductDeleteSummary(productId);
+    const plan = planAdminObjectDelete(summary);
+    if (plan.action === "blocked") return { ok: false, message: plan.reason, plan, summary };
+    const product = mockStore.products.find((item) => item.id === productId);
+    if (product) product.active = false;
+    return { ok: true, action: "deactivated", message: "Produkt deaktiveret." };
+  }
+
+  return fetchAdminDeleteAction(`/api/admin/products/${productId}/delete`, "deactivate");
+}
+
 export async function getLocationsAdmin() {
   const supabase = createSupabaseBrowserClient();
 
@@ -1541,6 +1604,47 @@ export async function updateLocation(
     .eq("id", id);
 
   if (error) throw error;
+}
+
+export async function getLocationDeletePreview(locationId: string): Promise<AdminDeletePreview> {
+  const supabase = createSupabaseBrowserClient();
+
+  if (!supabase) {
+    const summary = mockLocationDeleteSummary(locationId);
+    return { ok: true, plan: planAdminObjectDelete(summary), summary };
+  }
+
+  return fetchAdminDeletePreview(`/api/admin/locations/${locationId}/delete`);
+}
+
+export async function deleteLocationAdmin(locationId: string): Promise<AdminDeleteResult> {
+  const supabase = createSupabaseBrowserClient();
+
+  if (!supabase) {
+    const summary = mockLocationDeleteSummary(locationId);
+    const plan = planAdminObjectDelete(summary);
+    if (plan.action !== "delete") return { ok: false, message: plan.reason, plan, summary };
+    mockStore.balances = mockStore.balances.filter((balance) => balance.locationId !== locationId);
+    mockStore.locations = mockStore.locations.filter((location) => location.id !== locationId);
+    return { ok: true, action: "deleted", message: "Sted slettet permanent." };
+  }
+
+  return fetchAdminDeleteAction(`/api/admin/locations/${locationId}/delete`, "delete");
+}
+
+export async function deactivateLocationAdmin(locationId: string): Promise<AdminDeleteResult> {
+  const supabase = createSupabaseBrowserClient();
+
+  if (!supabase) {
+    const summary = mockLocationDeleteSummary(locationId);
+    const plan = planAdminObjectDelete(summary);
+    if (plan.action === "blocked") return { ok: false, message: plan.reason, plan, summary };
+    const location = mockStore.locations.find((item) => item.id === locationId);
+    if (location) location.active = false;
+    return { ok: true, action: "deactivated", message: "Sted deaktiveret." };
+  }
+
+  return fetchAdminDeleteAction(`/api/admin/locations/${locationId}/delete`, "deactivate");
 }
 
 export async function exportStockCsv() {
@@ -1858,6 +1962,71 @@ function updateMockBalance(productId: string, locationId: string, change: number
   if (balance) {
     balance.quantity = Number((balance.quantity + change).toFixed(1));
   }
+}
+
+function mockProductDeleteSummary(productId: string): DeleteReferenceSummary & Record<string, number> {
+  const activeStockQuantity = mockStore.balances
+    .filter((balance) => balance.productId === productId)
+    .reduce((sum, balance) => sum + Math.abs(balance.quantity), 0);
+  const movementCount = mockStore.movements.filter((movement) => movement.productId === productId).length;
+  const adjustmentCount = mockStore.adjustments.filter((adjustment) => adjustment.productId === productId).length;
+  const openingLineCount = mockStore.statuses.reduce((sum, status) => sum + status.counts.filter((line) => line.productId === productId).length, 0);
+  const historyCount = movementCount + adjustmentCount + openingLineCount;
+  const relationCount = mockStore.locationProductThresholds.filter((threshold) => threshold.productId === productId).length;
+  return { activeStockQuantity, historyCount, relationCount, movementCount, adjustmentCount, openingLineCount };
+}
+
+function mockLocationDeleteSummary(locationId: string): DeleteReferenceSummary & Record<string, number> {
+  const activeStockQuantity = mockStore.balances
+    .filter((balance) => balance.locationId === locationId)
+    .reduce((sum, balance) => sum + Math.abs(balance.quantity), 0);
+  const movementCount = mockStore.movements.filter((movement) => movement.fromLocationId === locationId || movement.toLocationId === locationId).length;
+  const adjustmentCount = mockStore.adjustments.filter((adjustment) => adjustment.locationId === locationId).length;
+  const statusCount = mockStore.statuses.filter((status) => status.locationId === locationId).length;
+  const sourceRelationCount = mockStore.locations.filter((location) => location.sourceLocationId === locationId).length;
+  const historyCount = movementCount + adjustmentCount + statusCount;
+  const relationCount = sourceRelationCount + mockStore.locationProductThresholds.filter((threshold) => threshold.locationId === locationId).length;
+  return { activeStockQuantity, historyCount, relationCount, movementCount, adjustmentCount, statusCount, sourceRelationCount };
+}
+
+async function fetchAdminDeletePreview(url: string): Promise<AdminDeletePreview> {
+  const token = await getBrowserAccessToken();
+  const response = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : undefined });
+  const data = (await response.json().catch(() => null)) as AdminDeletePreview | null;
+  if (!response.ok || !data?.ok) {
+    return { ok: false, message: data && "message" in data ? data.message : "Sletteinfo kunne ikke hentes." };
+  }
+  return data;
+}
+
+async function fetchAdminDeleteAction(url: string, action: "delete" | "deactivate"): Promise<AdminDeleteResult> {
+  const token = await getBrowserAccessToken();
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ action }),
+  });
+  const data = (await response.json().catch(() => null)) as AdminDeleteResult | null;
+  if (!response.ok || !data?.ok) {
+    const failed = data && !data.ok ? data : null;
+    return {
+      ok: false,
+      message: failed?.message ?? (action === "delete" ? "Objektet kunne ikke slettes." : "Objektet kunne ikke deaktiveres."),
+      ...(failed?.plan ? { plan: failed.plan } : {}),
+      ...(failed?.summary ? { summary: failed.summary } : {}),
+    };
+  }
+  return data;
+}
+
+async function getBrowserAccessToken() {
+  const supabase = createSupabaseBrowserClient();
+  if (!supabase) return null;
+  const { data: { session } } = await supabase.auth.getSession();
+  return session?.access_token ?? null;
 }
 
 function toCsv(headers: string[], rows: Array<Array<string | number | null | undefined>>) {

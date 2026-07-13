@@ -3,7 +3,15 @@
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/backevent/app-shell";
 import { BackButton, PrimaryButton } from "@/components/backevent/buttons";
-import { createLocation, getLocationsAdmin, updateLocation } from "@/lib/backevent/data";
+import {
+  createLocation,
+  deactivateLocationAdmin,
+  deleteLocationAdmin,
+  getLocationDeletePreview,
+  getLocationsAdmin,
+  updateLocation,
+  type AdminDeletePreview,
+} from "@/lib/backevent/data";
 import type { Location } from "@/lib/backevent/types";
 
 type LocationFormInput = {
@@ -20,6 +28,9 @@ export default function AdminContainerePage() {
   const [message, setMessage] = useState<string | null>(null);
   const [editingLocation, setEditingLocation] = useState<Location | null>(null);
   const [isCreating, setIsCreating] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Location | null>(null);
+  const [deletePreview, setDeletePreview] = useState<AdminDeletePreview | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   async function reload() {
     setLocations(await getLocationsAdmin());
@@ -68,6 +79,38 @@ export default function AdminContainerePage() {
     await reload();
   }
 
+  async function openDeleteLocation(location: Location) {
+    setDeleteTarget(location);
+    setDeletePreview(null);
+    setMessage(null);
+    try {
+      setDeletePreview(await getLocationDeletePreview(location.id));
+    } catch {
+      setDeletePreview({ ok: false, message: "Sletteinfo kunne ikke hentes." });
+    }
+  }
+
+  async function runDeleteLocation(action: "delete" | "deactivate") {
+    if (!deleteTarget) return;
+    setIsDeleting(true);
+    setMessage(null);
+    try {
+      const result = action === "delete" ? await deleteLocationAdmin(deleteTarget.id) : await deactivateLocationAdmin(deleteTarget.id);
+      if (!result.ok) {
+        setDeletePreview(result.plan && result.summary ? { ok: true, plan: result.plan, summary: result.summary } : { ok: false, message: result.message });
+        setMessage(result.message);
+        return;
+      }
+      setMessage(result.message);
+      setDeleteTarget(null);
+      setDeletePreview(null);
+      if (editingLocation?.id === deleteTarget.id) setEditingLocation(null);
+      await reload();
+    } finally {
+      setIsDeleting(false);
+    }
+  }
+
   return (
     <AppShell requiredRole="ejer">
       <BackButton href="/admin" />
@@ -104,7 +147,13 @@ export default function AdminContainerePage() {
         </div>
         <div className="divide-y divide-line">
           {locations.map((location) => (
-            <LocationRow key={location.id} location={location} locations={locations} onEdit={() => setEditingLocation(location)} />
+            <LocationRow
+              key={location.id}
+              location={location}
+              locations={locations}
+              onEdit={() => setEditingLocation(location)}
+              onDelete={() => openDeleteLocation(location)}
+            />
           ))}
         </div>
       </section>
@@ -118,13 +167,28 @@ export default function AdminContainerePage() {
             setIsCreating(false);
           }}
           onSave={saveLocation}
+          onDelete={editingLocation ? () => openDeleteLocation(editingLocation) : undefined}
+        />
+      ) : null}
+      {deleteTarget ? (
+        <DeleteObjectModal
+          name={deleteTarget.name}
+          objectLabel="sted"
+          preview={deletePreview}
+          isWorking={isDeleting}
+          onClose={() => {
+            setDeleteTarget(null);
+            setDeletePreview(null);
+          }}
+          onDelete={() => runDeleteLocation("delete")}
+          onDeactivate={() => runDeleteLocation("deactivate")}
         />
       ) : null}
     </AppShell>
   );
 }
 
-function LocationRow({ location, locations, onEdit }: { location: Location; locations: Location[]; onEdit: () => void }) {
+function LocationRow({ location, locations, onEdit, onDelete }: { location: Location; locations: Location[]; onEdit: () => void; onDelete: () => void }) {
   const source = locations.find((item) => item.id === location.sourceLocationId);
 
   return (
@@ -138,14 +202,19 @@ function LocationRow({ location, locations, onEdit }: { location: Location; loca
       <span className="hidden xl:block">{location.sortOrder ?? "-"}</span>
       <span className="hidden xl:block">{location.isMainStorage ? "Ja" : "Nej"}</span>
       <span className="hidden xl:block">{location.active === false ? "Nej" : "Ja"}</span>
-      <button type="button" onClick={onEdit} className="w-fit rounded-xl bg-soft px-3 py-2 text-sm font-bold text-pantone140">
-        Rediger
-      </button>
+      <div className="flex flex-wrap gap-2">
+        <button type="button" onClick={onEdit} className="w-fit rounded-xl bg-soft px-3 py-2 text-sm font-bold text-pantone140">
+          Rediger
+        </button>
+        <button type="button" onClick={onDelete} className="w-fit rounded-xl bg-warmRed px-3 py-2 text-sm font-bold text-macro">
+          Slet
+        </button>
+      </div>
     </article>
   );
 }
 
-function LocationModal({ location, locations, onClose, onSave }: { location?: Location; locations: Location[]; onClose: () => void; onSave: (input: LocationFormInput) => Promise<void> }) {
+function LocationModal({ location, locations, onClose, onSave, onDelete }: { location?: Location; locations: Location[]; onClose: () => void; onSave: (input: LocationFormInput) => Promise<void>; onDelete?: () => void }) {
   const [name, setName] = useState(location?.name ?? "");
   const [kind, setKind] = useState<"container" | "bar">(location?.kind === "container" ? "container" : "bar");
   const [sourceLocationId, setSourceLocationId] = useState(location?.sourceLocationId ?? "");
@@ -212,7 +281,63 @@ function LocationModal({ location, locations, onClose, onSave }: { location?: Lo
       </div>
       <div className="mt-5 flex gap-3">
         <PrimaryButton onClick={save} disabled={isSaving}>{isSaving ? "Gemmer..." : "Gem"}</PrimaryButton>
+        {onDelete ? <button type="button" onClick={onDelete} className="min-h-11 rounded-2xl bg-warmRed px-4 py-2 font-bold text-macro">Slet</button> : null}
         <button type="button" onClick={onClose} className="min-h-11 rounded-2xl border border-line px-4 py-2 font-bold text-pantone140">Annuller</button>
+      </div>
+    </Modal>
+  );
+}
+
+function DeleteObjectModal({
+  name,
+  objectLabel,
+  preview,
+  isWorking,
+  onClose,
+  onDelete,
+  onDeactivate,
+}: {
+  name: string;
+  objectLabel: string;
+  preview: AdminDeletePreview | null;
+  isWorking: boolean;
+  onClose: () => void;
+  onDelete: () => void;
+  onDeactivate: () => void;
+}) {
+  const okPreview = preview?.ok ? preview : null;
+  const plan = okPreview?.plan ?? null;
+  return (
+    <Modal title={`Slet ${objectLabel}`} onClose={onClose}>
+      <div className="space-y-4">
+        <p className="text-base font-bold text-ink">
+          Vil du slette {objectLabel}et <span className="text-warmRed">{name}</span>?
+        </p>
+        {!preview ? <p className="rounded-2xl bg-soft p-4 text-sm font-bold text-muted">Tjekker historik og beholdning...</p> : null}
+        {preview && !preview.ok ? <p className="rounded-2xl bg-warmRed/10 p-4 text-sm font-bold text-warmRed">{preview.message}</p> : null}
+        {plan ? (
+          <div className="rounded-2xl border border-line bg-soft p-4">
+            <p className="text-sm font-bold text-ink">{plan.reason}</p>
+            {okPreview ? (
+              <p className="mt-2 text-xs font-bold text-muted">
+                Beholdning: {formatNumber(okPreview.summary.activeStockQuantity)} · Historik: {okPreview.summary.historyCount} · Relationer: {okPreview.summary.relationCount}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+        <div className="flex flex-wrap gap-3">
+          {plan?.action === "delete" ? (
+            <button type="button" onClick={onDelete} disabled={isWorking} className="min-h-11 rounded-2xl bg-warmRed px-4 py-2 font-bold text-macro disabled:opacity-50">
+              {isWorking ? "Sletter..." : "Slet permanent"}
+            </button>
+          ) : null}
+          {plan?.canDeactivate ? (
+            <button type="button" onClick={onDeactivate} disabled={isWorking} className="min-h-11 rounded-2xl border border-warmRed bg-macro px-4 py-2 font-bold text-warmRed disabled:opacity-50">
+              {isWorking ? "Deaktiverer..." : "Deaktivér"}
+            </button>
+          ) : null}
+          <button type="button" onClick={onClose} className="min-h-11 rounded-2xl border border-line px-4 py-2 font-bold text-pantone140">Annuller</button>
+        </div>
       </div>
     </Modal>
   );
@@ -243,4 +368,8 @@ function Input({ label, value, onChange }: { label: string; value: string; onCha
 
 function locationTypeLabel(kind: Location["kind"]) {
   return kind === "container" ? "Lager/container" : "Bar";
+}
+
+function formatNumber(value: number) {
+  return value.toLocaleString("da-DK", { maximumFractionDigits: 2 });
 }

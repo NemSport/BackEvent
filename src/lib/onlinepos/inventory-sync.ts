@@ -192,6 +192,83 @@ export async function runOnlinePosInventorySync({
   }
 }
 
+export async function applyOnlinePosSyncDecisions({
+  supabase,
+  datetimeFrom,
+  datetimeTo,
+  actorUserId,
+  actorEmail,
+  source = "historical_replay",
+  decisions,
+}: {
+  supabase: SupabaseClient;
+  datetimeFrom: string;
+  datetimeTo: string;
+  actorUserId: string | null;
+  actorEmail: string | null;
+  source?: string;
+  decisions: OnlinePosSyncDecision[];
+}) {
+  const run = await createRun(supabase, { datetimeFrom, datetimeTo, actorUserId, actorEmail, source });
+
+  try {
+    const applyResult = await applySyncLines(supabase, run.id, decisions);
+    const failedCount = applyResult.failedCount;
+    const status = failedCount > 0 ? "partial" : "completed";
+
+    await updateRun(supabase, run.id, {
+      status,
+      fetchedCount: decisions.length,
+      processedCount: applyResult.processedCount,
+      ignoredCount: applyResult.ignoredCount + applyResult.duplicateCount,
+      failedCount,
+      missingMappingCount: applyResult.missingMappingCount,
+      duplicateCount: applyResult.duplicateCount,
+      errorMessage: failedCount > 0 ? "Nogle historical replay-linjer fejlede" : null,
+    });
+
+    return {
+      ok: true,
+      runId: run.id,
+      status,
+      datetimeFrom,
+      datetimeTo,
+      fetchedCount: decisions.length,
+      processedCount: applyResult.processedCount,
+      ignoredCount: applyResult.ignoredCount + applyResult.duplicateCount,
+      failedCount,
+      missingMappingCount: applyResult.missingMappingCount,
+      duplicateCount: applyResult.duplicateCount,
+    };
+  } catch (error) {
+    await updateRun(supabase, run.id, {
+      status: "failed",
+      fetchedCount: decisions.length,
+      processedCount: 0,
+      ignoredCount: 0,
+      failedCount: decisions.length,
+      missingMappingCount: decisions.filter((decision) => decision.errorReason === "Mangler godkendt mapping").length,
+      duplicateCount: 0,
+      errorMessage: safeErrorMessage(error),
+    }).catch(() => undefined);
+
+    return {
+      ok: false,
+      runId: run.id,
+      status: "failed",
+      datetimeFrom,
+      datetimeTo,
+      message: safeErrorMessage(error),
+      fetchedCount: decisions.length,
+      processedCount: 0,
+      ignoredCount: 0,
+      failedCount: decisions.length,
+      missingMappingCount: decisions.filter((decision) => decision.errorReason === "Mangler godkendt mapping").length,
+      duplicateCount: 0,
+    };
+  }
+}
+
 export function buildSyncDecisions(
   lines: OnlinePosTransactionLine[],
   mappings: OnlinePosInventoryMapping[],

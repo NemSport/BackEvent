@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { AlertTriangle, Play, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
@@ -41,6 +41,8 @@ type ReplayWindow = {
 
 type ReplayResponse = {
   ok: boolean;
+  mode?: "dry-run" | "test-run";
+  __inputKey?: string;
   message?: string;
   defaults?: ReplayForm;
   windows?: ReplayWindow[];
@@ -54,6 +56,21 @@ type ReplayResponse = {
   unmappedProducts?: ReplayUnmappedProduct[];
   stockPreview?: ReplayStockPreviewLine[];
   duplicateDetails?: ReplayDuplicateDetail[];
+  testRun?: {
+    enabled: boolean;
+    blockingErrors: ReplayErrorDetail[];
+    blockingErrorSummary: ErrorSummary[];
+  };
+  applyResult?: {
+    runId: string;
+    status: string;
+    processedCount: number;
+    ignoredCount: number;
+    failedCount: number;
+    missingMappingCount: number;
+    duplicateCount: number;
+  };
+  actualStockChanges?: ReplayStockPreviewLine[];
   locationMappingDebug?: {
     supabaseProjectHostOnly: string | null;
     initial: ReplayLocationMappingSnapshot;
@@ -202,6 +219,7 @@ export default function OnlinePosReplayPage() {
   const [result, setResult] = useState<ReplayResponse | null>(null);
   const [previousResult, setPreviousResult] = useState<ReplayResponse | null>(null);
   const [running, setRunning] = useState(false);
+  const [showTestRunConfirm, setShowTestRunConfirm] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -211,7 +229,7 @@ export default function OnlinePosReplayPage() {
       const token = await getAccessToken();
       const response = await fetch("/api/admin/onlinepos-replay", { headers: token ? { Authorization: `Bearer ${token}` } : undefined });
       const data = (await response.json()) as ReplayResponse;
-      if (!response.ok || !data.ok) throw new Error(data.message ?? "Replay er ikke tilgængelig");
+      if (!response.ok || !data.ok) throw new Error(data.message ?? "Replay er ikke tilgÃ¦ngelig");
       setForm({ ...defaultForm, ...(data.defaults ?? {}) });
       setWindows(data.windows ?? []);
     } catch (caught) {
@@ -224,7 +242,7 @@ export default function OnlinePosReplayPage() {
     return () => window.clearTimeout(timer);
   }, [loadDefaults]);
 
-  async function runReplay() {
+  async function runReplay(requestedMode = mode) {
     try {
       setRunning(true);
       setError(null);
@@ -240,7 +258,7 @@ export default function OnlinePosReplayPage() {
         body: JSON.stringify({
           ...form,
           cashRegister: cashRegister || null,
-          mode,
+          mode: requestedMode,
           confirmation,
           replayRunId,
         }),
@@ -248,10 +266,10 @@ export default function OnlinePosReplayPage() {
       const data = (await response.json()) as ReplayResponse;
       if (!response.ok || !data.ok) throw new Error(data.message ?? "Replay fejlede");
       setPreviousResult(result);
-      setResult(data);
+      setResult({ ...data, __inputKey: replayInputKey(form, cashRegister) });
       setWindows(data.windows ?? []);
       setTotals(data.totals ?? null);
-      setMessage(mode === "dry-run" ? "Dry-run er gennemført uden lagerændringer." : "Replay er kørt.");
+      setMessage(mode === "dry-run" ? "Dry-run er gennemfÃ¸rt uden lagerÃ¦ndringer." : "Replay er kÃ¸rt.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Replay fejlede");
     } finally {
@@ -259,9 +277,35 @@ export default function OnlinePosReplayPage() {
     }
   }
 
+  function handleRunClick() {
+    if (mode !== "test-run") {
+      void runReplay("dry-run");
+      return;
+    }
+    if (!isMatchingDryRunReady(result, form, cashRegister)) {
+      setError("KÃ¸r dry-run for prÃ¦cis samme tidsinterval fÃ¸rst.");
+      return;
+    }
+    if (!result?.testRun?.enabled) {
+      setError(formatTestRunBlockers(result));
+      return;
+    }
+    setConfirmation("");
+    setShowTestRunConfirm(true);
+  }
+
+  async function confirmTestRun() {
+    if (confirmation !== "KÃ˜R HISTORISK TEST") {
+      setError("Test-run krÃ¦ver bekrÃ¦ftelsen KÃ˜R HISTORISK TEST");
+      return;
+    }
+    setShowTestRunConfirm(false);
+    await runReplay("test-run");
+  }
+
   return (
     <AppShell requiredRole="ejer">
-      <Header title="OnlinePOS replay" subtitle="Historisk dry-run af 10-minutters sync før markedet" />
+      <Header title="OnlinePOS replay" subtitle="Historisk dry-run af 10-minutters sync fÃ¸r markedet" />
 
       {message ? <Notice tone="success" className="mb-4">{message}</Notice> : null}
       {error ? <Notice tone="danger" className="mb-4">{error}</Notice> : null}
@@ -307,19 +351,25 @@ export default function OnlinePosReplayPage() {
             <input value={replayRunId} onChange={(e) => setReplayRunId(e.target.value)} className="field" />
           </Field>
         </div>
-        {mode === "test-run" ? (
-          <Notice tone="pending" className="mt-3">
-            Test-run kræver bekræftelsen KØR HISTORISK TEST. Dry-run ændrer ikke lager.
-            <input value={confirmation} onChange={(e) => setConfirmation(e.target.value)} className="field mt-2" placeholder="KØR HISTORISK TEST" />
-          </Notice>
-        ) : null}
+        {mode === "test-run" ? <TestRunNotice result={result} form={form} cashRegister={cashRegister} /> : null}
         <div className="mt-4 flex flex-wrap gap-2">
-          <Button type="button" onClick={runReplay} disabled={running}>
-            <Play className="h-4 w-4" aria-hidden />{running ? "Kører..." : "Kør replay"}
+          <Button type="button" onClick={handleRunClick} disabled={running}>
+            <Play className="h-4 w-4" aria-hidden />{running ? "KÃ¸rer..." : "KÃ¸r replay"}
           </Button>
           <Button type="button" tone="secondary" onClick={() => setReplayRunId(crypto.randomUUID())}>Nyt replay id</Button>
         </div>
       </section>
+
+      {showTestRunConfirm ? (
+        <TestRunConfirmModal
+          result={result}
+          confirmation={confirmation}
+          setConfirmation={setConfirmation}
+          running={running}
+          onCancel={() => setShowTestRunConfirm(false)}
+          onConfirm={confirmTestRun}
+        />
+      ) : null}
 
       {totals ? (
         <section className="mb-5 grid gap-3 md:grid-cols-6">
@@ -328,7 +378,7 @@ export default function OnlinePosReplayPage() {
           <Metric label="Behandlet" value={totals.processedCount ?? 0} />
           <Metric label="Dubletter" value={totals.duplicateCount ?? 0} />
           <Metric label="Manglende mappings" value={totals.missingMappingCount ?? 0} />
-          <Metric label="Forventet lagertræk" value={totals.expectedStockDelta ?? 0} />
+          <Metric label="Forventet lagertrÃ¦k" value={totals.expectedStockDelta ?? 0} />
         </section>
       ) : null}
 
@@ -341,6 +391,7 @@ export default function OnlinePosReplayPage() {
       {result?.unmappedProducts?.length ? <UnmappedProducts rows={result.unmappedProducts} /> : null}
       {result?.stockPreview?.length ? <StockPreview rows={result.stockPreview} /> : null}
       {result?.duplicateDetails?.length ? <DuplicateOverview rows={result.duplicateDetails} /> : null}
+      {result?.applyResult ? <TestRunResult result={result} /> : null}
 
       <section className="rounded-2xl border border-line bg-macro p-4 shadow-sm md:p-5">
         <div className="mb-4 flex items-center justify-between gap-3">
@@ -365,7 +416,7 @@ export default function OnlinePosReplayPage() {
               {window.cashRegisters?.length ? <p className="mt-2 text-xs font-bold text-muted">Kasser: {window.cashRegisters.join(", ")}</p> : null}
               {window.unmappedProducts?.length ? <Notice tone="pending" className="mt-2">Umappede produkter: {window.unmappedProducts.slice(0, 8).join(", ")}</Notice> : null}
               {window.unmappedLocations?.length ? <Notice tone="danger" className="mt-2">Umappede lokationer: {window.unmappedLocations.join(", ")}</Notice> : null}
-              {window.modifiers || window.deposits ? <p className="mt-2 text-xs font-bold text-muted">Modifiers: {window.modifiers ?? 0} · Pant/gebyr: {window.deposits ?? 0}</p> : null}
+              {window.modifiers || window.deposits ? <p className="mt-2 text-xs font-bold text-muted">Modifiers: {window.modifiers ?? 0} Â· Pant/gebyr: {window.deposits ?? 0}</p> : null}
             </article>
           ))}
         </div>
@@ -391,6 +442,78 @@ function Mini({ label, value }: { label: string; value: string | number }) {
   return <div><span className="block text-xs font-bold uppercase text-muted">{label}</span><span className="font-bold text-ink">{typeof value === "number" ? formatNumber(value) : value}</span></div>;
 }
 
+function TestRunNotice({ result, form, cashRegister }: { result: ReplayResponse | null; form: ReplayForm; cashRegister: string }) {
+  if (!isMatchingDryRunReady(result, form, cashRegister)) {
+    return <Notice tone="pending" className="mt-3">KÃ¸r dry-run for prÃ¦cis samme tidsinterval, fÃ¸r test-run kan startes.</Notice>;
+  }
+  if (!result?.testRun?.enabled) {
+    return <Notice tone="danger" className="mt-3">{formatTestRunBlockers(result)}</Notice>;
+  }
+  return <Notice tone="success" className="mt-3">Test-run er klar. GennemgÃ¥ forventet lagerpÃ¥virkning og bekrÃ¦ft i modal.</Notice>;
+}
+
+function TestRunConfirmModal({
+  result,
+  confirmation,
+  setConfirmation,
+  running,
+  onCancel,
+  onConfirm,
+}: {
+  result: ReplayResponse | null;
+  confirmation: string;
+  setConfirmation: (value: string) => void;
+  running: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const stockRows = result?.stockPreview ?? [];
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-ink/40 p-3 md:items-center">
+      <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-macro p-4 shadow-xl md:p-5">
+        <h2 className="text-xl font-bold text-ink">Godkend historical test-run</h2>
+        <p className="mt-1 text-sm font-medium text-muted">
+          Test-run bruger samme idempotente OnlinePOS-sync RPC. Linjer, der allerede er behandlet, bliver markeret som dubletter.
+        </p>
+        <div className="mt-4 grid gap-3 md:grid-cols-4">
+          <Metric label="Linjer" value={result?.totals?.uniqueLineCount ?? 0} />
+          <Metric label="Klar til lager" value={result?.totals?.processedCount ?? 0} />
+          <Metric label="Dubletter i dry-run" value={result?.totals?.duplicateCount ?? 0} />
+          <Metric label="Lagerlinjer" value={stockRows.length} />
+        </div>
+        {stockRows.length ? <StockPreview rows={stockRows.slice(0, 40)} /> : <Notice tone="pending" className="mt-4">Ingen lagerpÃ¥virkning i dette interval.</Notice>}
+        <Field label="Skriv KÃ˜R HISTORISK TEST">
+          <input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} className="field" placeholder="KÃ˜R HISTORISK TEST" />
+        </Field>
+        <div className="mt-4 flex justify-end gap-2">
+          <Button type="button" tone="secondary" onClick={onCancel} disabled={running}>Annuller</Button>
+          <Button type="button" onClick={onConfirm} disabled={running || confirmation !== "KÃ˜R HISTORISK TEST"}>
+            {running ? "KÃ¸rer..." : "Godkend test-run"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TestRunResult({ result }: { result: ReplayResponse }) {
+  const apply = result.applyResult;
+  if (!apply) return null;
+  return (
+    <section className="mb-5 rounded-2xl border border-line bg-macro p-4 shadow-sm md:p-5">
+      <h2 className="mb-3 text-lg font-bold text-ink">Test-run resultat</h2>
+      <div className="grid gap-3 md:grid-cols-5">
+        <Metric label="Behandlet" value={apply.processedCount} />
+        <Metric label="Dubletter" value={apply.duplicateCount} />
+        <Metric label="Ignoreret" value={apply.ignoredCount} />
+        <Metric label="Fejl" value={apply.failedCount} />
+        <Metric label="LagerÃ¦ndringer" value={result.actualStockChanges?.length ?? result.stockPreview?.length ?? 0} />
+      </div>
+      <p className="mt-3 text-xs font-bold text-muted">Sync-run: {apply.runId}</p>
+    </section>
+  );
+}
+
 function Comparison({ current, previous }: { current: ReplayResponse; previous: ReplayResponse }) {
   const rows = [
     ["Fejl", previous.totals?.errorCount ?? 0, current.totals?.errorCount ?? 0],
@@ -404,7 +527,7 @@ function Comparison({ current, previous }: { current: ReplayResponse; previous: 
       <h2 className="mb-3 text-lg font-bold text-ink">Sammenligning med forrige dry-run</h2>
       <div className="grid gap-2 md:grid-cols-5">
         {rows.map(([label, before, after]) => (
-          <Metric key={label} label={`${label}: ${before} →`} value={after} />
+          <Metric key={label} label={`${label}: ${before} â†’`} value={after} />
         ))}
       </div>
     </section>
@@ -420,7 +543,7 @@ function LocationMappingDebug({ result }: { result: ReplayResponse }) {
       <div className="mb-3 flex flex-wrap gap-2 text-xs font-bold text-muted">
         <StatusPill tone="info">Supabase: {result.locationMappingDebug?.supabaseProjectHostOnly ?? "-"}</StatusPill>
         <StatusPill tone="success">Aktive mappings: {latest.activeApprovedMappingCount}</StatusPill>
-        <StatusPill tone="info">Rækker hentet: {latest.mappingsLoaded.length}</StatusPill>
+        <StatusPill tone="info">RÃ¦kker hentet: {latest.mappingsLoaded.length}</StatusPill>
       </div>
       <CompactTable
         headers={["Eksternt navn", "Norm", "ID", "Venue", "Aktiv", "BackEvent ID"]}
@@ -465,7 +588,7 @@ function ErrorOverview({ result }: { result: ReplayResponse }) {
         {result.errorSummary?.map((item) => <StatusPill key={item.code} tone="danger">{item.code}: {item.count}</StatusPill>)}
       </div>
       <CompactTable
-        headers={["Vindue", "Kode", "Kasse", "Produkt", "Bon", "Antal", "Beløb", "Besked"]}
+        headers={["Vindue", "Kode", "Kasse", "Produkt", "Bon", "Antal", "BelÃ¸b", "Besked"]}
         rows={(result.errorDetails ?? []).slice(0, 80).map((item) => [
           item.replayWindow,
           item.errorCode,
@@ -486,7 +609,7 @@ function ReturnOverview({ result }: { result: ReplayResponse }) {
     <section className="mb-5 rounded-2xl border border-line bg-macro p-4 shadow-sm md:p-5">
       <h2 className="mb-3 text-lg font-bold text-ink">Returklassifikation</h2>
       <p className="mb-3 text-sm font-bold text-muted">
-        Verificeret: {result.returnSummary?.verified ?? 0} · Sandsynlig: {result.returnSummary?.probable ?? 0} · Usikker: {result.returnSummary?.uncertain ?? 0}
+        Verificeret: {result.returnSummary?.verified ?? 0} Â· Sandsynlig: {result.returnSummary?.probable ?? 0} Â· Usikker: {result.returnSummary?.uncertain ?? 0}
       </p>
       <CompactTable
         headers={["Vindue", "Klassifikation", "Kasse", "Bon", "Tid", "Total", "Signal"]}
@@ -509,7 +632,7 @@ function ModifierOverview({ rows }: { rows: ReplayModifierAudit[] }) {
     <section className="mb-5 rounded-2xl border border-line bg-macro p-4 shadow-sm md:p-5">
       <h2 className="mb-3 text-lg font-bold text-ink">Modifier- og 0-pris-audit</h2>
       <CompactTable
-        headers={["Vindue", "Linje", "Parent", "Produkt", "Beløb", "Økonomi", "Lager", "Beslutning"]}
+        headers={["Vindue", "Linje", "Parent", "Produkt", "BelÃ¸b", "Ã˜konomi", "Lager", "Beslutning"]}
         rows={rows.slice(0, 80).map((item) => [
           item.replayWindow,
           item.lineId ?? "-",
@@ -517,7 +640,7 @@ function ModifierOverview({ rows }: { rows: ReplayModifierAudit[] }) {
           item.productName ?? "-",
           formatMoney(item.amount),
           item.economyProduct ?? "-",
-          item.stockRelevant ? item.stockProduct ?? "Kræver mapping" : "Ikke lager",
+          item.stockRelevant ? item.stockProduct ?? "KrÃ¦ver mapping" : "Ikke lager",
           item.decision,
         ])}
       />
@@ -549,9 +672,9 @@ function UnmappedProducts({ rows }: { rows: ReplayUnmappedProduct[] }) {
 function StockPreview({ rows }: { rows: ReplayStockPreviewLine[] }) {
   return (
     <section className="mb-5 rounded-2xl border border-line bg-macro p-4 shadow-sm md:p-5">
-      <h2 className="mb-3 text-lg font-bold text-ink">Forventet lagerpåvirkning</h2>
+      <h2 className="mb-3 text-lg font-bold text-ink">Forventet lagerpÃ¥virkning</h2>
       <CompactTable
-        headers={["Vindue", "Lokation", "BackEvent-vare", "OnlinePOS", "Mængde", "Intern", "Mapping", "Status"]}
+        headers={["Vindue", "Lokation", "BackEvent-vare", "OnlinePOS", "MÃ¦ngde", "Intern", "Mapping", "Status"]}
         rows={rows.slice(0, 120).map((item) => [
           item.replayWindow,
           item.locationName,
@@ -633,13 +756,39 @@ function formatLocationDiagnostics(diagnostics: ReplayErrorDetail["locationDiagn
   if (!diagnostics) return "-";
   const candidates = diagnostics.candidateMappingsLoaded;
   if (candidates.length === 0) {
-    return `Ingen kandidater · incoming=${diagnostics.incomingName ?? "-"} · id=${diagnostics.incomingId ?? "-"} · venue=${diagnostics.venueId ?? "-"} · norm=${diagnostics.normalizedName ?? "-"}`;
+    return `Ingen kandidater Â· incoming=${diagnostics.incomingName ?? "-"} Â· id=${diagnostics.incomingId ?? "-"} Â· venue=${diagnostics.venueId ?? "-"} Â· norm=${diagnostics.normalizedName ?? "-"}`;
   }
   return candidates
-    .map((candidate) => `${candidate.cashRegisterName} · norm=${candidate.normalizedCashRegisterName || "-"} · id=${candidate.cashRegisterId ?? "-"} · venue=${candidate.venueId ?? "-"} · aktiv=${candidate.active ? "ja" : "nej"} · BE=${candidate.hasBackeventLocation ? "ja" : "nej"}`)
+    .map((candidate) => `${candidate.cashRegisterName} Â· norm=${candidate.normalizedCashRegisterName || "-"} Â· id=${candidate.cashRegisterId ?? "-"} Â· venue=${candidate.venueId ?? "-"} Â· aktiv=${candidate.active ? "ja" : "nej"} Â· BE=${candidate.hasBackeventLocation ? "ja" : "nej"}`)
     .join(" | ");
 }
 
 function countLocationErrors(result: ReplayResponse) {
   return result.errorDetails?.filter((item) => item.errorCode === "LOCATION_MAPPING_MISSING").length ?? 0;
+}
+
+function replayInputKey(form: ReplayForm, cashRegister: string) {
+  return [
+    form.date,
+    form.startTime,
+    form.endTime,
+    form.intervalMinutes,
+    form.overlapMinutes,
+    form.venue ?? "",
+    cashRegister.trim(),
+  ].join("|");
+}
+
+function isMatchingDryRunReady(result: ReplayResponse | null, form: ReplayForm, cashRegister: string) {
+  if (!result?.ok || result.mode !== "dry-run" || !result.windows?.length) return false;
+  const current = replayInputKey(form, cashRegister);
+  const stored = result.__inputKey;
+  return stored ? stored === current : true;
+}
+
+function formatTestRunBlockers(result: ReplayResponse | null) {
+  const blockers = result?.testRun?.blockingErrorSummary ?? [];
+  if (!result) return "KÃ¸r dry-run fÃ¸rst.";
+  if (!blockers.length) return "Test-run er blokeret af dry-run-resultatet.";
+  return `Test-run er blokeret: ${blockers.map((item) => `${item.code} (${item.count})`).join(", ")}`;
 }

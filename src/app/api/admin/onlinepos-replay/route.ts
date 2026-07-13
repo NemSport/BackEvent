@@ -4,6 +4,7 @@ import {
   buildReplayWindows,
   isOnlinePosReplayEnabled,
   runHistoricalReplayDryRun,
+  runHistoricalReplayTestRun,
   validateCleanupConfirmation,
   validateReplayConfirmation,
   type ReplayMode,
@@ -46,10 +47,13 @@ export async function POST(request: Request) {
   if (confirmationError) return NextResponse.json({ ok: false, message: confirmationError }, { status: 400 });
 
   if (validation.input.mode === "test-run") {
-    return NextResponse.json({
-      ok: false,
-      message: "Test-run er bevidst ikke aktiveret endnu. Kør dry-run først og godkend migrations/RPC for historical_replay.",
-    }, { status: 400 });
+    const result = await runHistoricalReplayTestRun({
+      supabase: gate.supabase,
+      input: validation.input,
+      actorUserId: gate.userId,
+      actorEmail: gate.userEmail,
+    });
+    return NextResponse.json(result, { status: result.ok ? 200 : 409 });
   }
 
   const result = await runHistoricalReplayDryRun({ supabase: gate.supabase, input: validation.input });
@@ -76,7 +80,12 @@ export async function DELETE(request: Request) {
 }
 
 async function requireReplayAccess(request: Request):
-  Promise<{ ok: true; supabase: NonNullable<ReturnType<typeof createSupabaseAdminClient>> } | { ok: false; response: NextResponse }> {
+  Promise<{
+    ok: true;
+    supabase: NonNullable<ReturnType<typeof createSupabaseAdminClient>>;
+    userId: string;
+    userEmail: string | null;
+  } | { ok: false; response: NextResponse }> {
   const auth = await requireBackEventRole(request, "ejer");
   if (!auth.ok) {
     return { ok: false, response: NextResponse.json({ ok: false, message: auth.message, debug: auth.debug }, { status: auth.status }) };
@@ -88,7 +97,7 @@ async function requireReplayAccess(request: Request):
   if (!supabase) {
     return { ok: false, response: NextResponse.json({ ok: false, message: "Supabase service role mangler" }, { status: 500 }) };
   }
-  return { ok: true, supabase };
+  return { ok: true, supabase, userId: auth.userId, userEmail: auth.userEmail };
 }
 
 function defaultInput() {

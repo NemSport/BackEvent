@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifyReplayReturn, mapReplayErrorCode } from "../historical-replay.ts";
+import {
+  classifyReplayReturn,
+  getHistoricalReplayBlockingErrors,
+  historicalReplayTestRunExternalLineId,
+  mapReplayErrorCode,
+} from "../historical-replay.ts";
 import { validateReplayConfirmation } from "../historical-replay-core.ts";
 
 function decision(errorReason, lineType = "stock_item") {
@@ -61,4 +66,31 @@ test("fejlkoder indeholder ikke secrets", () => {
   const code = mapReplayErrorCode(decision("OnlinePOS-kasse mangler lokationsmapping"));
   assert.equal(JSON.stringify(code).includes("secret"), false);
   assert.equal(JSON.stringify(code).includes("token"), false);
+});
+
+test("test-run blokeres kun af alvorlige replay-fejl", () => {
+  const details = [
+    { errorCode: "LOCATION_MAPPING_MISSING" },
+    { errorCode: "PRODUCT_MAPPING_MISSING" },
+    { errorCode: "MODIFIER_MAPPING_FAILED" },
+    { errorCode: "RETURN_DETECTION_UNCERTAIN" },
+    { errorCode: "OTHER" },
+    { errorCode: "AMOUNT_MISMATCH" },
+  ];
+
+  assert.deepEqual(
+    getHistoricalReplayBlockingErrors(details).map((item) => item.errorCode),
+    ["LOCATION_MAPPING_MISSING", "PRODUCT_MAPPING_MISSING", "MODIFIER_MAPPING_FAILED", "RETURN_DETECTION_UNCERTAIN"],
+  );
+});
+
+test("pant og ignorerede linjer blokerer ikke test-run", () => {
+  assert.equal(mapReplayErrorCode(decision("Pant/gebyr behandles ikke som vareforbrug", "deposit_fee")), "OTHER");
+  assert.equal(getHistoricalReplayBlockingErrors([{ errorCode: "OTHER" }]).length, 0);
+});
+
+test("historical test-run bruger stabil linje-idempotens på tværs af replay id", () => {
+  const productionId = "tx-1:line-1:233";
+  assert.equal(historicalReplayTestRunExternalLineId(productionId), "historical-replay:test-run:tx-1:line-1:233");
+  assert.equal(historicalReplayTestRunExternalLineId(productionId), historicalReplayTestRunExternalLineId(productionId));
 });
