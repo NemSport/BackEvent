@@ -19,6 +19,7 @@ type LocationMapping = {
   venueId: string | null;
   cashRegisterId: string | null;
   cashRegisterName: string;
+  normalizedCashRegisterName: string;
   backeventLocationId: string | null;
   active: boolean;
   firstSeenAt: string | null;
@@ -29,10 +30,13 @@ type DiscoveredRegister = {
   venueId: string | null;
   cashRegisterId: string | null;
   cashRegisterName: string;
+  normalizedCashRegisterName: string | null;
   firstSeenAt: string | null;
   lastSeenAt: string | null;
   occurrenceCount: number;
   mapping: LocationMapping | null;
+  duplicateMappings?: Array<Pick<LocationMapping, "id" | "venueId" | "cashRegisterId" | "cashRegisterName" | "normalizedCashRegisterName" | "backeventLocationId" | "active">>;
+  duplicateCount?: number;
   status: "mapped" | "missing" | "inactive" | "unknown_location";
   suggestion: { label: string; locationNameHint: string } | null;
   suggestedBackeventLocationId: string | null;
@@ -163,12 +167,12 @@ export default function OnlinePosLocationMappingPage() {
         </div>
 
         <div className="overflow-hidden rounded-xl border border-line">
-          <div className="hidden bg-soft/60 px-3 py-2 text-xs font-bold uppercase text-muted md:grid md:grid-cols-[1.4fr_0.8fr_0.8fr_1.4fr_0.9fr_1.2fr]">
+          <div className="hidden bg-soft/60 px-3 py-2 text-xs font-bold uppercase text-muted md:grid md:grid-cols-[1.5fr_0.8fr_0.9fr_1.3fr_1.1fr_1.2fr]">
             <span>OnlinePOS-kasse</span>
             <span>ID</span>
             <span>Status</span>
             <span>BackEvent-lokation</span>
-            <span>Set</span>
+            <span>Gemt række</span>
             <span>Handling</span>
           </div>
           <div className="divide-y divide-line">
@@ -176,14 +180,17 @@ export default function OnlinePosLocationMappingPage() {
               const key = rowKey(row);
               const selected = drafts[key] ?? "";
               return (
-                <article key={key} className="grid gap-3 px-3 py-3 md:grid-cols-[1.4fr_0.8fr_0.8fr_1.4fr_0.9fr_1.2fr] md:items-center md:py-2">
+                <article key={key} className="grid gap-3 px-3 py-3 md:grid-cols-[1.5fr_0.8fr_0.9fr_1.3fr_1.1fr_1.2fr] md:items-center md:py-2">
                   <div>
                     <p className="font-bold text-ink">{row.cashRegisterName}</p>
-                    <p className="text-xs font-medium text-muted">{row.venueId ? "Venue sat" : "Venue mangler"}</p>
+                    <p className="text-xs font-medium text-muted">Norm: {row.normalizedCashRegisterName ?? "-"} · Venue: {row.venueId ?? "-"}</p>
                     {row.suggestion ? <p className="mt-1 text-xs font-bold text-pantone140">{row.suggestion.label}</p> : null}
                   </div>
                   <p className="text-sm font-medium text-muted">{row.cashRegisterId ?? "-"}</p>
-                  <div><StatusPill tone={statusTone(row.status)}>{statusLabel(row.status)}</StatusPill></div>
+                  <div className="space-y-1">
+                    <StatusPill tone={statusTone(row.status)}>{statusLabel(row.status)}</StatusPill>
+                    {row.duplicateCount && row.duplicateCount > 1 ? <p className="text-xs font-bold text-warmRed">{row.duplicateCount} mulige rækker</p> : null}
+                  </div>
                   <select
                     value={selected}
                     onChange={(event) => setDrafts((current) => ({ ...current, [key]: event.target.value }))}
@@ -194,11 +201,25 @@ export default function OnlinePosLocationMappingPage() {
                       <option key={location.id} value={location.id}>{location.name}</option>
                     ))}
                   </select>
-                  <p className="text-xs font-medium text-muted">
-                    {row.occurrenceCount} forekomst{row.occurrenceCount === 1 ? "" : "er"}
-                    <br />
-                    {formatDate(row.lastSeenAt)}
-                  </p>
+                  <div className="space-y-1 text-xs font-medium text-muted">
+                    <p>{row.occurrenceCount} forekomst{row.occurrenceCount === 1 ? "" : "er"} · {formatDate(row.lastSeenAt)}</p>
+                    <p>Navn: {row.mapping?.cashRegisterName ?? "-"}</p>
+                    <p>Norm: {row.mapping?.normalizedCashRegisterName ?? "-"}</p>
+                    <p>ID: {row.mapping?.cashRegisterId ?? "-"} · Venue: {row.mapping?.venueId ?? "-"}</p>
+                    <p>Aktiv: {row.mapping ? (row.mapping.active ? "ja" : "nej") : "-"} · BackEvent ID: {row.mapping?.backeventLocationId ?? "-"}</p>
+                    {row.duplicateMappings && row.duplicateMappings.length > 1 ? (
+                      <details>
+                        <summary className="cursor-pointer font-bold text-pantone140">Vis dubletter</summary>
+                        <div className="mt-1 space-y-1">
+                          {row.duplicateMappings.map((mapping) => (
+                            <p key={mapping.id} className="rounded bg-soft/60 px-2 py-1">
+                              {mapping.cashRegisterName} · norm {mapping.normalizedCashRegisterName || "-"} · ID {mapping.cashRegisterId ?? "-"} · venue {mapping.venueId ?? "-"} · aktiv {mapping.active ? "ja" : "nej"} · BE {mapping.backeventLocationId ?? "-"}
+                            </p>
+                          ))}
+                        </div>
+                      </details>
+                    ) : null}
+                  </div>
                   <div className="flex flex-wrap gap-2">
                     <Button type="button" onClick={() => save(row, true)} disabled={savingKey === key} className="min-h-9 px-3 py-1 text-sm">Gem</Button>
                     {row.mapping?.active ? <Button type="button" tone="secondary" onClick={() => save(row, false)} disabled={savingKey === key} className="min-h-9 px-3 py-1 text-sm">Deaktivér</Button> : null}

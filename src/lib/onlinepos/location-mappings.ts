@@ -304,35 +304,30 @@ async function findExistingLocationDiscovery(
   row: ReturnType<typeof mergeLocationDiscoveries>[number],
 ) {
   if (row.cashRegisterId) {
-    let query = supabase
+    const { data } = await supabase
       .from("backevent_onlinepos_location_mappings")
-      .select("id,first_seen_at,last_seen_at")
+      .select("id,onlinepos_venue_id,first_seen_at,last_seen_at")
       .eq("onlinepos_cash_register_id", row.cashRegisterId)
-      .limit(1);
-    query = row.venueId ? query.eq("onlinepos_venue_id", row.venueId) : query.is("onlinepos_venue_id", null);
-    const { data } = await query.maybeSingle();
-    return data;
+      .limit(20);
+    return (data ?? []).find((item) => compatibleVenue(stringOrNull(item.onlinepos_venue_id), row.venueId)) ?? null;
   }
 
-  let exactNameQuery = supabase
+  const exactName = await supabase
     .from("backevent_onlinepos_location_mappings")
-    .select("id,first_seen_at,last_seen_at")
+    .select("id,onlinepos_venue_id,first_seen_at,last_seen_at")
     .is("onlinepos_cash_register_id", null)
     .eq("normalized_cash_register_name", row.normalizedCashRegisterName)
-    .limit(1);
-  exactNameQuery = row.venueId ? exactNameQuery.eq("onlinepos_venue_id", row.venueId) : exactNameQuery.is("onlinepos_venue_id", null);
-  const exactName = await exactNameQuery.maybeSingle();
-  if (exactName.data) return exactName.data;
+    .limit(20);
+  const exactNameMatch = (exactName.data ?? []).find((item) => compatibleVenue(stringOrNull(item.onlinepos_venue_id), row.venueId));
+  if (exactNameMatch) return exactNameMatch;
 
-  let storedNameQuery = supabase
+  const storedName = await supabase
     .from("backevent_onlinepos_location_mappings")
-    .select("id,first_seen_at,last_seen_at")
+    .select("id,onlinepos_venue_id,first_seen_at,last_seen_at")
     .is("onlinepos_cash_register_id", null)
     .eq("onlinepos_cash_register_name", row.cashRegisterName)
-    .limit(1);
-  storedNameQuery = row.venueId ? storedNameQuery.eq("onlinepos_venue_id", row.venueId) : storedNameQuery.is("onlinepos_venue_id", null);
-  const storedName = await storedNameQuery.maybeSingle();
-  return storedName.data;
+    .limit(20);
+  return (storedName.data ?? []).find((item) => compatibleVenue(stringOrNull(item.onlinepos_venue_id), row.venueId)) ?? null;
 }
 
 function compatibleVenue(mappingVenue: string | null, inputVenue: string | null) {

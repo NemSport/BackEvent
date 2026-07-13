@@ -54,7 +54,29 @@ type ReplayResponse = {
   unmappedProducts?: ReplayUnmappedProduct[];
   stockPreview?: ReplayStockPreviewLine[];
   duplicateDetails?: ReplayDuplicateDetail[];
+  locationMappingDebug?: {
+    supabaseProjectHostOnly: string | null;
+    initial: ReplayLocationMappingSnapshot;
+    windows: Array<{ replayWindow: string } & ReplayLocationMappingSnapshot>;
+    latest: ReplayLocationMappingSnapshot;
+  };
   safety?: Record<string, boolean | string>;
+};
+
+type ReplayLocationMappingSnapshot = {
+  activeApprovedMappingCount: number;
+  mappingsLoaded: ReplayLocationMappingDebugRow[];
+};
+
+type ReplayLocationMappingDebugRow = {
+  id: string;
+  venueId: string | null;
+  cashRegisterId: string | null;
+  cashRegisterName: string;
+  normalizedCashRegisterName: string;
+  backeventLocationId: string | null;
+  active: boolean;
+  hasBackeventLocation: boolean;
 };
 
 type ErrorSummary = { code: string; count: number };
@@ -71,6 +93,21 @@ type ReplayErrorDetail = {
   amount: number;
   errorCode: string;
   message: string;
+  locationDiagnostics?: {
+    incomingName: string | null;
+    incomingId: string | null;
+    venueId: string | null;
+    normalizedName: string | null;
+    candidateMappingsLoaded: Array<{
+      id: string;
+      venueId: string | null;
+      cashRegisterId: string | null;
+      cashRegisterName: string;
+      normalizedCashRegisterName: string;
+      active: boolean;
+      hasBackeventLocation: boolean;
+    }>;
+  } | null;
 };
 type ReplayReturnAudit = {
   replayWindow: string;
@@ -296,7 +333,9 @@ export default function OnlinePosReplayPage() {
       ) : null}
 
       {result && previousResult ? <Comparison current={result} previous={previousResult} /> : null}
+      {result?.locationMappingDebug ? <LocationMappingDebug result={result} /> : null}
       {result?.errorSummary?.length ? <ErrorOverview result={result} /> : null}
+      {result?.errorDetails?.some((item) => item.locationDiagnostics) ? <LocationDiagnosticsOverview result={result} /> : null}
       {result?.returns?.length ? <ReturnOverview result={result} /> : null}
       {result?.modifierAudit?.length ? <ModifierOverview rows={result.modifierAudit} /> : null}
       {result?.unmappedProducts?.length ? <UnmappedProducts rows={result.unmappedProducts} /> : null}
@@ -368,6 +407,52 @@ function Comparison({ current, previous }: { current: ReplayResponse; previous: 
           <Metric key={label} label={`${label}: ${before} →`} value={after} />
         ))}
       </div>
+    </section>
+  );
+}
+
+function LocationMappingDebug({ result }: { result: ReplayResponse }) {
+  const latest = result.locationMappingDebug?.latest;
+  if (!latest) return null;
+  return (
+    <section className="mb-5 rounded-2xl border border-line bg-macro p-4 shadow-sm md:p-5">
+      <h2 className="mb-3 text-lg font-bold text-ink">Lokationsmapping runtime</h2>
+      <div className="mb-3 flex flex-wrap gap-2 text-xs font-bold text-muted">
+        <StatusPill tone="info">Supabase: {result.locationMappingDebug?.supabaseProjectHostOnly ?? "-"}</StatusPill>
+        <StatusPill tone="success">Aktive mappings: {latest.activeApprovedMappingCount}</StatusPill>
+        <StatusPill tone="info">Rækker hentet: {latest.mappingsLoaded.length}</StatusPill>
+      </div>
+      <CompactTable
+        headers={["Eksternt navn", "Norm", "ID", "Venue", "Aktiv", "BackEvent ID"]}
+        rows={latest.mappingsLoaded.slice(0, 80).map((mapping) => [
+          mapping.cashRegisterName,
+          mapping.normalizedCashRegisterName || "-",
+          mapping.cashRegisterId ?? "-",
+          mapping.venueId ?? "-",
+          mapping.active ? "ja" : "nej",
+          mapping.backeventLocationId ?? "-",
+        ])}
+      />
+    </section>
+  );
+}
+
+function LocationDiagnosticsOverview({ result }: { result: ReplayResponse }) {
+  const rows = (result.errorDetails ?? []).filter((item) => item.locationDiagnostics).slice(0, 80);
+  return (
+    <section className="mb-5 rounded-2xl border border-line bg-macro p-4 shadow-sm md:p-5">
+      <h2 className="mb-3 text-lg font-bold text-ink">Lokationsfejl diagnostik</h2>
+      <CompactTable
+        headers={["Vindue", "Kasse", "Incoming ID", "Venue", "Norm", "Kandidater"]}
+        rows={rows.map((item) => [
+          item.replayWindow,
+          item.locationDiagnostics?.incomingName ?? item.cashRegister ?? "-",
+          item.locationDiagnostics?.incomingId ?? "-",
+          item.locationDiagnostics?.venueId ?? "-",
+          item.locationDiagnostics?.normalizedName ?? "-",
+          formatLocationDiagnostics(item.locationDiagnostics),
+        ])}
+      />
     </section>
   );
 }
@@ -542,6 +627,17 @@ function formatNumber(value: number) {
 
 function formatMoney(value: number) {
   return `${value.toLocaleString("da-DK", { maximumFractionDigits: 2 })} kr.`;
+}
+
+function formatLocationDiagnostics(diagnostics: ReplayErrorDetail["locationDiagnostics"]) {
+  if (!diagnostics) return "-";
+  const candidates = diagnostics.candidateMappingsLoaded;
+  if (candidates.length === 0) {
+    return `Ingen kandidater · incoming=${diagnostics.incomingName ?? "-"} · id=${diagnostics.incomingId ?? "-"} · venue=${diagnostics.venueId ?? "-"} · norm=${diagnostics.normalizedName ?? "-"}`;
+  }
+  return candidates
+    .map((candidate) => `${candidate.cashRegisterName} · norm=${candidate.normalizedCashRegisterName || "-"} · id=${candidate.cashRegisterId ?? "-"} · venue=${candidate.venueId ?? "-"} · aktiv=${candidate.active ? "ja" : "nej"} · BE=${candidate.hasBackeventLocation ? "ja" : "nej"}`)
+    .join(" | ");
 }
 
 function countLocationErrors(result: ReplayResponse) {

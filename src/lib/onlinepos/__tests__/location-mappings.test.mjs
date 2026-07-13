@@ -73,6 +73,36 @@ test("production mappings med null ID resolver på eksakt normaliseret navn", ()
   assert.equal(resolveOnlinePosLocation({ venueId: "15249", cashRegisterName: "Rød Bar" }, shownMappings, locations).ok, true);
 });
 
+test("Grøn Bar matcher gemt Grøn bar case-insensitivt", () => {
+  const result = resolveOnlinePosLocation(
+    { venueId: "15249", cashRegisterName: "Grøn Bar" },
+    [mapping({ cashRegisterName: "Grøn bar", normalizedCashRegisterName: normalizeOnlinePosCashRegisterName("Grøn bar"), backeventLocationId: "groen" })],
+    locations,
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.ok && result.location.id, "groen");
+});
+
+test("Beer Bar matcher ikke automatisk BeerBar", () => {
+  const result = resolveOnlinePosLocation(
+    { venueId: "15249", cashRegisterName: "Beer Bar" },
+    [mapping({ cashRegisterName: "BeerBar", normalizedCashRegisterName: normalizeOnlinePosCashRegisterName("BeerBar"), backeventLocationId: "pub" })],
+    locations,
+  );
+  assert.equal(result.ok, false);
+  assert.equal(!result.ok && result.errorCode, "ONLINEPOS_LOCATION_UNMAPPED");
+});
+
+test("Street matcher ikke automatisk Street Container", () => {
+  const result = resolveOnlinePosLocation(
+    { venueId: "15249", cashRegisterName: "Street" },
+    [mapping({ cashRegisterName: "Street Container", normalizedCashRegisterName: normalizeOnlinePosCashRegisterName("Street Container"), backeventLocationId: "street" })],
+    locations,
+  );
+  assert.equal(result.ok, false);
+  assert.equal(!result.ok && result.errorCode, "ONLINEPOS_LOCATION_UNMAPPED");
+});
+
 test("navnefallback virker når incoming ID mangler selvom gemt mapping har ID", () => {
   const result = resolveOnlinePosLocation(
     { venueId: "15249", cashRegisterId: null, cashRegisterName: "Den Lokale" },

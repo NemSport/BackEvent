@@ -22,6 +22,7 @@ type DiscoveryItem = {
   venueId: string | null;
   cashRegisterId: string | null;
   cashRegisterName: string;
+  normalizedCashRegisterName: string | null;
   firstSeenAt: string | null;
   lastSeenAt: string | null;
   occurrenceCount: number;
@@ -68,6 +69,7 @@ export async function GET(request: Request) {
       venueId: mapping.venueId,
       cashRegisterId: mapping.cashRegisterId,
       cashRegisterName: mapping.cashRegisterName,
+      normalizedCashRegisterName: mapping.normalizedCashRegisterName,
       firstSeenAt: mapping.firstSeenAt,
       lastSeenAt: mapping.lastSeenAt,
       occurrenceCount: 0,
@@ -76,6 +78,7 @@ export async function GET(request: Request) {
       venueId: process.env.ONLINEPOS_VENUE_ID ?? null,
       cashRegisterId: normalizeOnlinePosCashRegisterId(row.cash_register_id),
       cashRegisterName: row.cash_register_name ?? "Ukendt kasse",
+      normalizedCashRegisterName: normalizeOnlinePosCashRegisterName(row.cash_register_name),
       firstSeenAt: row.created_at,
       lastSeenAt: row.created_at,
       occurrenceCount: 1,
@@ -84,6 +87,7 @@ export async function GET(request: Request) {
       venueId: row.onlinepos_venue_id ?? process.env.ONLINEPOS_VENUE_ID ?? null,
       cashRegisterId: null,
       cashRegisterName: row.onlinepos_location_ref ?? "Ukendt kasse",
+      normalizedCashRegisterName: normalizeOnlinePosCashRegisterName(row.onlinepos_location_ref),
       firstSeenAt: row.created_at,
       lastSeenAt: row.created_at,
       occurrenceCount: 1,
@@ -100,11 +104,14 @@ export async function GET(request: Request) {
     },
     discovered: discovered.map((item) => {
       const mapping = findMappingForDiscovery(item, mappings);
+      const duplicateMappings = findDuplicateMappingsForDiscovery(item, mappings);
       const mappedLocationExists = Boolean(mapping?.backeventLocationId && locations.some((location) => location.id === mapping.backeventLocationId));
       const suggestion = getLocationMappingSuggestion(item.cashRegisterName);
       return {
         ...item,
         mapping,
+        duplicateMappings,
+        duplicateCount: duplicateMappings.length,
         status: mapping?.backeventLocationId ? (mapping.active ? (mappedLocationExists ? "mapped" : "unknown_location") : "inactive") : "missing",
         suggestion,
         suggestedBackeventLocationId: findSuggestedBackEventLocationId(item.cashRegisterName, locations.map((location) => ({
@@ -231,7 +238,7 @@ function mergeDiscovery(items: DiscoveryItem[]) {
   const merged = new Map<string, DiscoveryItem>();
   for (const item of items) {
     const id = normalizeOnlinePosCashRegisterId(item.cashRegisterId);
-    const name = normalizeOnlinePosCashRegisterName(item.cashRegisterName) ?? "unknown";
+    const name = item.normalizedCashRegisterName ?? normalizeOnlinePosCashRegisterName(item.cashRegisterName) ?? "unknown";
     const key = `${item.venueId ?? ""}:${id ? `id:${id}` : `name:${name}`}`;
     const existing = merged.get(key);
     if (!existing) {
@@ -248,12 +255,57 @@ function mergeDiscovery(items: DiscoveryItem[]) {
 function findMappingForDiscovery(item: DiscoveryItem, mappings: ReturnType<typeof toOnlinePosLocationMapping>[]) {
   const id = normalizeOnlinePosCashRegisterId(item.cashRegisterId);
   if (id) {
-    return mappings.find((mapping) => mapping.active && mapping.venueId === item.venueId && normalizeOnlinePosCashRegisterId(mapping.cashRegisterId) === id)
-      ?? mappings.find((mapping) => mapping.venueId === item.venueId && normalizeOnlinePosCashRegisterId(mapping.cashRegisterId) === id)
+    return mappings.find((mapping) => mapping.active && compatibleVenue(mapping.venueId, item.venueId) && normalizeOnlinePosCashRegisterId(mapping.cashRegisterId) === id)
+      ?? mappings.find((mapping) => compatibleVenue(mapping.venueId, item.venueId) && normalizeOnlinePosCashRegisterId(mapping.cashRegisterId) === id)
       ?? null;
   }
   const name = normalizeOnlinePosCashRegisterName(item.cashRegisterName);
-  return mappings.find((mapping) => mapping.venueId === item.venueId && !mapping.cashRegisterId && mapping.normalizedCashRegisterName === name) ?? null;
+  return mappings.find((mapping) => compatibleVenue(mapping.venueId, item.venueId) && canFallbackByName(id, mapping) && mappingNameMatches(mapping, name)) ?? null;
+}
+
+function findDuplicateMappingsForDiscovery(item: DiscoveryItem, mappings: ReturnType<typeof toOnlinePosLocationMapping>[]) {
+  const id = normalizeOnlinePosCashRegisterId(item.cashRegisterId);
+  const name = normalizeOnlinePosCashRegisterName(item.cashRegisterName);
+  return mappings
+    .filter((mapping) => {
+      if (!compatibleVenue(mapping.venueId, item.venueId)) return false;
+      if (id && normalizeOnlinePosCashRegisterId(mapping.cashRegisterId) === id) return true;
+      return canFallbackByName(id, mapping) && mappingNameMatches(mapping, name);
+    })
+    .map((mapping) => ({
+      id: mapping.id,
+      venueId: mapping.venueId,
+      cashRegisterId: mapping.cashRegisterId,
+      cashRegisterName: mapping.cashRegisterName,
+      normalizedCashRegisterName: mapping.normalizedCashRegisterName,
+      backeventLocationId: mapping.backeventLocationId,
+      active: mapping.active,
+    }));
+}
+
+function compatibleVenue(mappingVenue: string | null, inputVenue: string | null) {
+  const normalizedMappingVenue = normalizeVenueForMatch(mappingVenue);
+  const normalizedInputVenue = normalizeVenueForMatch(inputVenue);
+  if (!normalizedMappingVenue || !normalizedInputVenue) return true;
+  return normalizedMappingVenue === normalizedInputVenue;
+}
+
+function canFallbackByName(incomingCashRegisterId: string | null, mapping: ReturnType<typeof toOnlinePosLocationMapping>) {
+  return !incomingCashRegisterId || !normalizeOnlinePosCashRegisterId(mapping.cashRegisterId);
+}
+
+function mappingNameMatches(mapping: ReturnType<typeof toOnlinePosLocationMapping>, normalizedName: string | null) {
+  if (!normalizedName) return false;
+  return mapping.normalizedCashRegisterName === normalizedName
+    || normalizeOnlinePosCashRegisterName(mapping.cashRegisterName) === normalizedName;
+}
+
+function normalizeVenueForMatch(value: string | null | undefined) {
+  const normalized = value?.trim().toLocaleLowerCase("da-DK");
+  if (!normalized || normalized === "-" || normalized === "all" || normalized === "default" || normalized === "generic" || normalized === "unknown" || normalized === "null" || normalized === "undefined") {
+    return null;
+  }
+  return normalized;
 }
 
 function minDate(a: string | null, b: string | null) {
