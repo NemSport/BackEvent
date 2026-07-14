@@ -6,11 +6,13 @@ const handling = readFileSync("supabase/migrations/202607140002_backevent_receip
 const email = readFileSync("supabase/migrations/202607140003_deprecate_backevent_operational_email.sql", "utf8");
 const hardening = readFileSync("supabase/migrations/202607140004_backevent_v1_access_hardening.sql", "utf8");
 const emailPrivileges = readFileSync("supabase/migrations/202607140005_harden_deprecated_email_log_privileges.sql", "utf8");
+const rpcPrivileges = readFileSync("supabase/migrations/202607140006_harden_v1_rpc_execute_privileges.sql", "utf8");
 
 test("V1 migration filenames preserve dependency order", () => {
   assert.ok("202607140002" < "202607140003");
   assert.ok("202607140003" < "202607140004");
   assert.ok("202607140004" < "202607140005");
+  assert.ok("202607140005" < "202607140006");
 });
 
 test("receipt-control handling is restricted to Ejer and active Økonomiansvarlige", () => {
@@ -40,8 +42,17 @@ test("stock-changing RPCs are service-role only", () => {
   assert.equal(grants.length, 2);
 });
 
+test("V1 RPC grants remove PUBLIC and anon execution", () => {
+  assert.match(rpcPrivileges, /backevent_create_stock_movement_batch[\s\S]*from public, anon, authenticated/i);
+  assert.match(rpcPrivileges, /backevent_apply_onlinepos_inventory_sync[\s\S]*from public, anon, authenticated/i);
+  assert.match(rpcPrivileges, /backevent_can_manage_receipt_controls[\s\S]*from public, anon/i);
+  assert.match(rpcPrivileges, /backevent_handle_receipt_control[\s\S]*from public, anon/i);
+  const serviceRoleGrants = rpcPrivileges.match(/grant execute[\s\S]*?to service_role;/gi) ?? [];
+  assert.equal(serviceRoleGrants.length, 2);
+});
+
 test("V1 migrations contain no destructive data operation", () => {
-  for (const migration of [handling, email, hardening, emailPrivileges]) {
+  for (const migration of [handling, email, hardening, emailPrivileges, rpcPrivileges]) {
     assert.doesNotMatch(migration, /drop table|truncate table|delete from/i);
   }
 });
