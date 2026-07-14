@@ -43,10 +43,14 @@ test("stock-changing RPCs are service-role only", () => {
 });
 
 test("V1 RPC grants remove PUBLIC and anon execution", () => {
+  assert.match(rpcPrivileges, /create or replace function public\.backevent_can_manage_receipt_controls/);
+  assert.match(rpcPrivileges, /select public\.backevent_is_owner\(\) or exists/);
+  assert.match(rpcPrivileges, /create or replace function public\.backevent_is_finance_responsible[\s\S]*select public\.backevent_can_manage_receipt_controls\(\)/);
   assert.match(rpcPrivileges, /backevent_create_stock_movement_batch[\s\S]*from public, anon, authenticated/i);
   assert.match(rpcPrivileges, /backevent_apply_onlinepos_inventory_sync[\s\S]*from public, anon, authenticated/i);
   assert.match(rpcPrivileges, /backevent_can_manage_receipt_controls[\s\S]*from public, anon/i);
   assert.match(rpcPrivileges, /backevent_handle_receipt_control[\s\S]*from public, anon/i);
+  assert.match(rpcPrivileges, /backevent_is_finance_responsible[\s\S]*from public, anon/i);
   const serviceRoleGrants = rpcPrivileges.match(/grant execute[\s\S]*?to service_role;/gi) ?? [];
   assert.equal(serviceRoleGrants.length, 2);
 });
