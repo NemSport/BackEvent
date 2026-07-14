@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireBackEventRole } from "@/lib/backevent/server-auth";
 
 type HealthResponse = {
   ok: boolean;
@@ -26,7 +27,9 @@ const reportUrl = `${restBaseUrl}/reports/getSalesPerProduct`;
 const timeFilter = "Last7Days";
 const timeoutMs = 8000;
 
-export async function GET() {
+export async function GET(request: Request) {
+  const auth = await requireBackEventRole(request, "ejer");
+  if (!auth.ok) return NextResponse.json({ ok: false, message: auth.message }, { status: auth.status });
   const hasClientId = Boolean(process.env.ONLINEPOS_CLIENT_ID);
   const hasClientSecret = Boolean(process.env.ONLINEPOS_CLIENT_SECRET);
   const hasVenueId = Boolean(process.env.ONLINEPOS_VENUE_ID);

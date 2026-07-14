@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Ubuntu } from "next/font/google";
 import "./globals.css";
+import { BackEventAuthProvider } from "@/lib/backevent/auth";
 
 const ubuntu = Ubuntu({
   subsets: ["latin"],
@@ -35,7 +36,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="da">
-      <body className={`${ubuntu.variable} font-sans antialiased`}>{children}</body>
+      <body className={`${ubuntu.variable} font-sans antialiased`}><BackEventAuthProvider>{children}</BackEventAuthProvider></body>
     </html>
   );
 }

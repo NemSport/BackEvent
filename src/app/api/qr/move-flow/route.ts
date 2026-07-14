@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { locations as mockLocations, products as mockProducts, stockBalances as mockBalances } from "@/lib/backevent/mock-data";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { requireBackEventRole } from "@/lib/backevent/server-auth";
 
 type LocationRow = {
   id: string;
@@ -31,6 +32,8 @@ type BalanceRow = {
 };
 
 export async function GET(request: Request) {
+  const auth = await requireBackEventRole(request, "frivillig");
+  if (!auth.ok) return NextResponse.json({ ok: false, message: auth.message }, { status: auth.status });
   const { searchParams } = new URL(request.url);
   const suggestedLocationId = searchParams.get("locationId");
   const supabase = createSupabaseAdminClient();

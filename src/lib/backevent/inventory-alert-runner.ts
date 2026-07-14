@@ -627,7 +627,7 @@ function isWebPushConfigured() {
 }
 
 function getPublicVapidKey() {
-  return process.env.WEB_PUSH_PUBLIC_KEY || process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || null;
+  return process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || null;
 }
 
 function isExpiredSubscription(error: unknown) {

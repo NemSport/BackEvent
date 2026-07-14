@@ -3,7 +3,7 @@ import { requireReturnAccess } from "@/lib/backevent/return-access";
 
 export async function POST(request: Request, context: { params: Promise<{ returnId: string }> }) {
   const auth = await requireReturnAccess(request);
-  if (!auth.ok) return NextResponse.json({ ok: false, message: auth.message, debug: auth.debug }, { status: auth.status });
+  if (!auth.ok) return NextResponse.json({ ok: false, message: auth.message }, { status: auth.status });
   if (!auth.canControl || !auth.supabase) return NextResponse.json({ ok: false, message: "Kun ejer kan gøre dette" }, { status: 403 });
 
   const { returnId } = await context.params;

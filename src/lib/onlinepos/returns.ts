@@ -1,10 +1,18 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import webPush from "web-push";
-import type { OnlinePosInventoryMapping, OnlinePosMappingAction } from "./inventory-mappings";
+import type { OnlinePosInventoryMapping, OnlinePosMappingAction } from "./inventory-mappings.ts";
 import {
+  createOnlinePosLocationResolver,
   getOnlinePosLocationMappings,
   resolveOnlinePosLocation,
-} from "./location-mappings";
+  type OnlinePosLocationResolution,
+} from "./location-mappings.ts";
+import {
+  analyzeOnlinePosReceipt,
+  buildOnlinePosReceiptControlKey,
+  type OnlinePosReceiptControlAnalysis,
+} from "./receipt-control.ts";
+import { calculateOnlinePosInventoryConsumption } from "./inventory-unit-conversion.ts";
 
 export type ReturnHandling = "waste" | "return_to_stock" | "manual_review" | "no_stock_effect";
 export type ReturnEconomicDirection = "refund" | "charge" | "neutral";
@@ -76,6 +84,8 @@ export type ReturnRegistrationOptions = {
   createdByName?: string | null;
   extraMappings?: OnlinePosInventoryMapping[];
   forceControlReasons?: string[];
+  locationResolution?: OnlinePosLocationResolution;
+  skipFinanceNotification?: boolean;
 };
 
 type TokenResponse = {
@@ -107,16 +117,34 @@ export async function runOnlinePosReturnSync({
   const run = await createReturnSyncRun(supabase, { datetimeFrom, datetimeTo, source });
   try {
     const fetched = await fetchOnlinePosTransactions({ datetimeFrom, datetimeTo });
+    const receiptAnalyses = fetched.transactions.map(analyzeRawOnlinePosReceipt);
     const returns = fetched.transactions.map(parseOnlinePosReturn).filter((item): item is ParsedOnlinePosReturn => Boolean(item));
     const context = await loadReturnContext(supabase);
+    const venueId = process.env.ONLINEPOS_VENUE_ID ?? null;
+    const locationResolver = createOnlinePosLocationResolver(
+      returns.map((item) => ({ venueId, cashRegisterId: item.cashRegisterId, cashRegisterName: item.cashRegisterName })),
+      context.locationMappings,
+      context.locations,
+    );
     const registered = [];
     let processedLineCount = 0;
     let reviewCount = 0;
     let duplicateCount = 0;
 
+    for (const analysis of receiptAnalyses.filter((item) => item.controlTypes.length > 0)) {
+      await notifyFinanceAboutReceiptControls(supabase, analysis).catch(() => undefined);
+    }
+
     for (const parsedReturn of returns) {
       try {
-        const result = await registerAndProcessReturn(supabase, parsedReturn, context);
+        const result = await registerAndProcessReturn(supabase, parsedReturn, context, {
+          locationResolution: locationResolver.resolve({
+            venueId,
+            cashRegisterId: parsedReturn.cashRegisterId,
+            cashRegisterName: parsedReturn.cashRegisterName,
+          }),
+          skipFinanceNotification: true,
+        });
         registered.push(result);
         processedLineCount += result.processedLineCount;
         reviewCount += result.reviewCount;
@@ -169,7 +197,7 @@ export async function runOnlinePosReturnSync({
 
 export function parseOnlinePosReturn(transaction: Record<string, unknown>, transactionIndex = 0): ParsedOnlinePosReturn | null {
   const rawLines = findTransactionLines(transaction);
-  const returnSignal = hasReturnSignal(transaction, rawLines);
+  const returnSignal = hasReturnSignal(transaction);
   if (!returnSignal.isReturn) return null;
 
   const parsedLines = rawLines
@@ -240,6 +268,30 @@ export function parseOnlinePosReturn(transaction: Record<string, unknown>, trans
   };
 }
 
+export function analyzeRawOnlinePosReceipt(transaction: Record<string, unknown>): OnlinePosReceiptControlAnalysis {
+  const rawLines = findTransactionLines(transaction);
+  return analyzeOnlinePosReceipt({
+    venueId: process.env.ONLINEPOS_VENUE_ID ?? null,
+    transactionId: stringOrNull(pickField(transaction, ["transaction_id", "transactionId", "id"])),
+    receiptNumber: stringOrNull(pickField(transaction, ["receipt_number", "receiptNumber", "receipt"])),
+    transactionType: stringOrNull(pickField(transaction, ["type", "kind", "transaction_type", "transactionType"])),
+    transactionStatus: stringOrNull(pickField(transaction, ["status", "transaction_status", "transactionStatus"])),
+    returnId: stringOrNull(pickField(transaction, ["return_id", "returnId"])),
+    refundId: stringOrNull(pickField(transaction, ["refund_id", "refundId"])),
+    total: numberValue(pickField(transaction, ["total", "amount", "net_price", "netPrice", "price"])),
+    lines: rawLines.map((line) => {
+      const productName = stringOrNull(pickField(line, ["product_name", "productName", "productname", "name", "receipt_text", "receiptText"]));
+      const productGroupName = stringOrNull(pickField(line, ["product_group_name", "productGroupName", "productgroupname"]));
+      return {
+        productName,
+        lineType: classifyOnlinePosLine(productName, productGroupName).lineType,
+        quantity: numberValue(pickField(line, ["quantity", "qty", "count", "amount"])) ?? 0,
+        amount: numberValue(pickField(line, ["net_price", "netPrice", "netprice", "price", "gross_price", "grossPrice"])) ?? 0,
+      };
+    }),
+  });
+}
+
 export async function registerAndProcessReturn(
   supabase: SupabaseClient,
   parsedReturn: ParsedOnlinePosReturn,
@@ -250,7 +302,7 @@ export async function registerAndProcessReturn(
     ...context,
     mappings: [...(options.extraMappings ?? []), ...context.mappings],
   };
-  const locationResolution = resolveOnlinePosLocation(
+  const locationResolution = options.locationResolution ?? resolveOnlinePosLocation(
     { venueId: process.env.ONLINEPOS_VENUE_ID ?? null, cashRegisterId: parsedReturn.cashRegisterId, cashRegisterName: parsedReturn.cashRegisterName },
     context.locationMappings,
     context.locations,
@@ -375,7 +427,9 @@ export async function registerAndProcessReturn(
     await supabase.from("backevent_returns").update({ control_status: "open", control_reasons: finalControlReasons }).eq("id", returnId);
   }
 
-  await notifyFinanceAboutReturn(supabase, returnId, parsedReturn, location?.name ?? null);
+  if (!options.skipFinanceNotification) {
+    await notifyFinanceAboutReturn(supabase, returnId, parsedReturn, location?.name ?? null);
+  }
   const seriousReasons = getSeriousReturnControlReasons(finalControlReasons);
   if (seriousReasons.length > 0) {
     await notifyOwnersAboutReturnControl(supabase, returnId, parsedReturn, seriousReasons);
@@ -614,7 +668,21 @@ function prepareReturnLine(
     ? "no_stock_effect"
     : explicitReturnHandling ?? "manual_review";
   const conversionFactor = firstComponent?.conversionFactor ?? 0;
-  const calculatedStockQuantity = Math.abs(line.returnedQuantity) * Number(conversionFactor);
+  const calculatedStockQuantity = product && Number(conversionFactor) > 0
+    ? calculateOnlinePosInventoryConsumption({
+      soldQuantity: line.returnedQuantity,
+      consumptionPerSale: Number(conversionFactor),
+      product: {
+        unit: product.unit,
+        unitsPerCase: product.units_per_case,
+        purchaseUnitLabel: product.purchase_unit_label,
+        unitsPerPurchaseUnit: product.units_per_purchase_unit,
+        stockUnitLabel: product.stock_unit_label,
+        contentPerStockUnit: product.content_per_stock_unit,
+        consumptionUnitLabel: product.consumption_unit_label,
+      },
+    }).storedQuantity
+    : 0;
   const reasons = [];
 
   if (handling !== "no_stock_effect" && (!mapping || mapping.status !== "approved")) reasons.push("Mangler godkendt mapping");
@@ -657,6 +725,82 @@ export function returnLineNeedsStockSource(row: { return_handling?: string | nul
 }
 
 type ReturnNotificationRecipient = { id: string; email: string | null };
+
+export async function persistReceiptControls(
+  supabase: SupabaseClient,
+  analysis: OnlinePosReceiptControlAnalysis,
+  options: { sendNotifications?: boolean; source?: "live" | "historical_replay"; replayRunId?: string | null } = {},
+) {
+  if (analysis.controlTypes.length === 0) return;
+  const control = await getOrCreateReceiptControl(supabase, analysis, options);
+  if (options.sendNotifications === false) return control;
+  if (!control) return;
+  const financeMembers = analysis.controlTypes.some((type) => type !== "MANUAL_REVIEW") ? await getFinanceMembers(supabase) : [];
+  const ownerMembers = analysis.controlTypes.includes("MANUAL_REVIEW") ? await getOwnerMembers(supabase) : [];
+  const members = [...financeMembers, ...ownerMembers]
+    .filter((member, index, all) => all.findIndex((candidate) => candidate.id === member.id) === index);
+  console.info("[receipt-control-notification] dispatch", {
+    receiptControlId: control.id,
+    source: options.source ?? "live",
+    replayRunId: options.replayRunId ?? null,
+    controlTypes: analysis.controlTypes,
+    recipientCount: members.length,
+    webPushConfigured: isWebPushConfigured(),
+  });
+  if (members.length === 0) return control;
+
+  const title = analysis.controlTypes.length > 1 ? "Bon kræver økonomikontrol" : "Økonomikontrol af bon";
+  const body = buildReceiptControlNotificationText(analysis);
+  for (const member of members) {
+    try {
+      await dispatchReceiptControlNotification(supabase, {
+        receiptControlId: control.id,
+        member,
+        dedupeKey: buildReceiptControlNotificationDedupeKey(analysis.receiptKey, member.id),
+        title,
+        body,
+        targetUrl: `/retur/kontrol/${control.id}`,
+      });
+    } catch {
+      // Økonomikontrol må ikke blokere OnlinePOS-sync.
+    }
+  }
+}
+
+const notifyFinanceAboutReceiptControls = persistReceiptControls;
+
+async function getOrCreateReceiptControl(
+  supabase: SupabaseClient,
+  analysis: OnlinePosReceiptControlAnalysis,
+  options: { source?: "live" | "historical_replay"; replayRunId?: string | null } = {},
+) {
+  const row = {
+    receipt_key: analysis.receiptKey,
+    onlinepos_transaction_id: analysis.transactionId,
+    receipt_number: analysis.receiptNumber,
+    classification: analysis.classification,
+    control_types: analysis.controlTypes,
+    control_keys: analysis.controlTypes.map((controlType) =>
+      buildOnlinePosReceiptControlKey(analysis.receiptKey, controlType),
+    ),
+    deposit_return_quantity: analysis.depositReturnQuantity,
+    deposit_breakdown: analysis.depositBreakdown,
+    purchase_value: analysis.purchaseValue,
+    deposit_return_value: analysis.depositReturnValue,
+    final_total: analysis.finalTotal,
+    source: options.source ?? "live",
+    replay_run_id: options.replayRunId ?? null,
+  };
+  const inserted = await supabase.from("backevent_onlinepos_receipt_controls").insert(row).select("id").single();
+  if (!inserted.error) return { id: String(inserted.data.id) };
+  if (!isUniqueViolation(inserted.error)) throw inserted.error;
+  const existing = await supabase
+    .from("backevent_onlinepos_receipt_controls")
+    .select("id")
+    .eq("receipt_key", analysis.receiptKey)
+    .maybeSingle();
+  return existing.data ? { id: String(existing.data.id) } : null;
+}
 
 async function notifyFinanceAboutReturn(supabase: SupabaseClient, returnId: string, parsedReturn: ParsedOnlinePosReturn, locationName: string | null) {
   const members = await getFinanceMembers(supabase);
@@ -796,6 +940,110 @@ async function dispatchReturnNotification(
   }
 }
 
+async function dispatchReceiptControlNotification(
+  supabase: SupabaseClient,
+  input: {
+    receiptControlId: string;
+    member: ReturnNotificationRecipient;
+    dedupeKey: string;
+    title: string;
+    body: string;
+    targetUrl: string;
+  },
+) {
+  const claim = await claimReceiptControlNotification(supabase, input);
+  if (!claim) return;
+
+  let messageId: string | null = null;
+  try {
+    const message = await createPushMessage(supabase, {
+      recipientUserId: input.member.id,
+      recipientEmail: input.member.email,
+      senderName: "BackEvent",
+      title: input.title,
+      body: input.body,
+      targetUrl: input.targetUrl,
+      category: "group",
+    });
+    messageId = message.id;
+    await updateReceiptControlNotification(supabase, claim.id, { push_message_id: message.id });
+  } catch (error) {
+    const message = `Indbakke kunne ikke oprettes: ${safeErrorMessage(error)}`;
+    await updateReceiptControlNotification(supabase, claim.id, { status: "failed", error_message: message });
+    await createReturnPushLog(supabase, input.member, input.title, input.body, "failed", message);
+    return;
+  }
+
+  if (!isWebPushConfigured()) {
+    await updateReceiptControlNotification(supabase, claim.id, { status: "skipped", error_message: "Push er ikke konfigureret" });
+    await createReturnPushLog(supabase, input.member, input.title, input.body, "skipped", "Push er ikke konfigureret");
+    return;
+  }
+
+  webPush.setVapidDetails(process.env.WEB_PUSH_SUBJECT!, getPublicVapidKey()!, process.env.WEB_PUSH_PRIVATE_KEY!);
+  const { data: subscriptions } = await supabase
+    .from("backevent_push_subscriptions")
+    .select("id,endpoint,p256dh,auth")
+    .eq("user_id", input.member.id)
+    .eq("active", true);
+
+  if (!subscriptions?.length) {
+    await updateReceiptControlNotification(supabase, claim.id, { status: "skipped", error_message: "Ingen aktiv push-enhed" });
+    await createReturnPushLog(supabase, input.member, input.title, input.body, "skipped", "Ingen aktiv push-enhed");
+    return;
+  }
+
+  let sentCount = 0;
+  let failedCount = 0;
+  for (const subscription of subscriptions) {
+    try {
+      await webPush.sendNotification(
+        {
+          endpoint: String(subscription.endpoint),
+          keys: { p256dh: String(subscription.p256dh), auth: String(subscription.auth) },
+        },
+        JSON.stringify(pushPayload({ title: input.title, body: input.body, messageId, url: input.targetUrl })),
+      );
+      sentCount += 1;
+      await createReturnPushLog(supabase, input.member, input.title, input.body, "sent", null);
+    } catch (error) {
+      failedCount += 1;
+      const errorMessage = safeErrorMessage(error);
+      if (isExpiredSubscription(error)) {
+        await supabase.from("backevent_push_subscriptions").update({ active: false }).eq("id", subscription.id);
+      }
+      await createReturnPushLog(supabase, input.member, input.title, input.body, "failed", errorMessage);
+    }
+  }
+
+  await updateReceiptControlNotification(supabase, claim.id, sentCount > 0
+    ? { status: "sent", error_message: failedCount > 0 ? `${failedCount} push fejlede` : null }
+    : { status: "failed", error_message: "Alle push-forsøg fejlede" });
+}
+
+async function claimReceiptControlNotification(
+  supabase: SupabaseClient,
+  input: { receiptControlId: string; member: ReturnNotificationRecipient; dedupeKey: string },
+) {
+  const { data, error } = await supabase
+    .from("backevent_onlinepos_receipt_control_notifications")
+    .insert({
+      receipt_control_id: input.receiptControlId,
+      recipient_user_id: input.member.id,
+      dedupe_key: input.dedupeKey,
+      status: "pending",
+    })
+    .select("id")
+    .single();
+  if (!error) return { id: String(data.id) };
+  if (isUniqueViolation(error)) return null;
+  throw error;
+}
+
+async function updateReceiptControlNotification(supabase: SupabaseClient, id: string, patch: Record<string, unknown>) {
+  await supabase.from("backevent_onlinepos_receipt_control_notifications").update(patch).eq("id", id);
+}
+
 async function claimReturnNotification(
   supabase: SupabaseClient,
   input: { returnId: string; member: ReturnNotificationRecipient; dedupeKey: string; notificationType: string },
@@ -847,6 +1095,40 @@ export function buildReturnNotificationDedupeKey(returnId: string, scope: "finan
   return `return:${scope}:${returnId}:${userId}`;
 }
 
+export function buildReceiptControlNotificationDedupeKey(receiptKey: string, userId: string) {
+  return `${receiptKey}:finance-notification:${userId}`;
+}
+
+export function buildReceiptControlNotificationText(analysis: OnlinePosReceiptControlAnalysis) {
+  const reasons: string[] = [];
+  if (analysis.controlTypes.includes("RETURN_RECEIPT")) reasons.push("Egentlig returbon");
+  if (analysis.controlTypes.includes("HIGH_DEPOSIT_RETURN")) {
+    reasons.push(
+      `${formatControlNumber(analysis.depositReturnQuantity)} pant-enheder ` +
+      `(krus ${formatControlNumber(analysis.depositBreakdown.cups)}, kander ${formatControlNumber(analysis.depositBreakdown.pitchers)})`,
+    );
+  }
+  if (analysis.controlTypes.includes("NEGATIVE_RECEIPT_TOTAL")) {
+    reasons.push(`Negativ total ${formatControlMoney(analysis.finalTotal)}`);
+  }
+  if (analysis.controlTypes.includes("MANUAL_REVIEW")) reasons.push("Kræver manuel kontrol");
+  return [
+    `Bon: ${analysis.receiptNumber ?? analysis.transactionId ?? "Mangler"}`,
+    ...reasons.map((reason) => `Årsag: ${reason}`),
+    `Køb: ${formatControlMoney(analysis.purchaseValue)}`,
+    `Pantretur: ${formatControlMoney(analysis.depositReturnValue)}`,
+    `Sluttotal: ${formatControlMoney(analysis.finalTotal)}`,
+  ].join("\n");
+}
+
+function formatControlMoney(value: number) {
+  return `${value.toLocaleString("da-DK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} kr.`;
+}
+
+function formatControlNumber(value: number) {
+  return value.toLocaleString("da-DK", { maximumFractionDigits: 3 });
+}
+
 export function getSeriousReturnControlReasons(reasons: string[]) {
   return uniqueJson(reasons.filter(isSeriousReturnControlReason));
 }
@@ -871,7 +1153,7 @@ async function getFinanceMembers(supabase: SupabaseClient): Promise<Array<{ id: 
     .select("profile_id, backevent_member_groups!inner(name,active), backevent_profiles!inner(id,email,active)")
     .eq("backevent_member_groups.active", true)
     .eq("backevent_profiles.active", true)
-    .ilike("backevent_member_groups.name", "Ã˜konomiansvarlige");
+    .ilike("backevent_member_groups.name", "Økonomiansvarlige");
 
   return (data ?? []).map((row) => {
     const profile = row.backevent_profiles as { id?: string; email?: string | null } | null;
@@ -1083,19 +1365,13 @@ function toReturnLine(line: Record<string, unknown>, transactionId: string | nul
   };
 }
 
-function hasReturnSignal(transaction: Record<string, unknown>, lines: Record<string, unknown>[]) {
-  const typeText = [
-    stringOrNull(pickField(transaction, ["type", "kind", "status", "transaction_type", "transactionType"])),
-    stringOrNull(pickField(transaction, ["return_id", "refund_id", "returnId", "refundId"])),
-  ].filter(Boolean).join(" ").toLocaleLowerCase("da-DK");
-  const explicit = /return|refund|retur|credit/.test(typeText);
-  const voidOrCancel = /void|cancel|cancelled|canceled|annuller/.test(typeText);
-  const negativeLine = lines.some((line) => (numberValue(pickField(line, ["quantity", "qty", "count", "amount"])) ?? 0) < 0 || (numberValue(pickField(line, ["net_price", "price", "gross_price"])) ?? 0) < 0);
-  const negativeTotal = (numberValue(pickField(transaction, ["total", "amount", "net_price", "price"])) ?? 0) < 0;
-  const isReturn = explicit || (!voidOrCancel && negativeLine && negativeTotal);
-  const reasons = [];
-  if (!explicit && isReturn) reasons.push("Retur fundet ud fra negative linjer");
-  return { isReturn, weak: !explicit && isReturn, reasons };
+function hasReturnSignal(transaction: Record<string, unknown>) {
+  const analysis = analyzeRawOnlinePosReceipt(transaction);
+  return {
+    isReturn: analysis.classification === "return_receipt",
+    weak: false,
+    reasons: [] as string[],
+  };
 }
 
 function parseTransactions(text: string): { transactions: Record<string, unknown>[]; pagination: ReturnPagination } {
@@ -1243,7 +1519,7 @@ function isWebPushConfigured() {
 }
 
 function getPublicVapidKey() {
-  return process.env.NEXT_PUBLIC_WEB_PUSH_PUBLIC_KEY ?? process.env.WEB_PUSH_PUBLIC_KEY ?? null;
+  return process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ?? null;
 }
 
 function isExpiredSubscription(error: unknown) {

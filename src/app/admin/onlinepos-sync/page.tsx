@@ -36,6 +36,16 @@ type SyncLine = {
   quantitySold: number;
   stockDelta: number;
   stockDeltaText?: string;
+  consumptionDiagnostics?: Array<{
+    soldQuantity?: number;
+    consumptionPerSale?: number;
+    consumptionUnit?: string;
+    totalConsumptionQuantity?: number;
+    conversionDivisor?: number;
+    conversionMultiplier?: number;
+    finalStoredDelta?: number;
+    humanReadableDelta?: string;
+  }>;
   createdAt: string;
 };
 
@@ -246,6 +256,13 @@ export default function OnlinePosSyncPage() {
                   </span>
                   <span className="text-muted">{line.stockDeltaText ?? formatNumber(line.quantitySold)}</span>
                   <span className="text-muted">{line.errorReason ?? "-"}</span>
+                  {line.consumptionDiagnostics?.map((diagnostic, index) => (
+                    <span key={index} className="text-xs font-medium text-muted md:col-span-6">
+                      Beregning: {formatNumber(diagnostic.soldQuantity ?? 0)} salg × {formatNumber(diagnostic.consumptionPerSale ?? 0)} {diagnostic.consumptionUnit ?? "enheder"}
+                      {" = "}{formatNumber(diagnostic.totalConsumptionQuantity ?? 0)} {diagnostic.consumptionUnit ?? "enheder"}
+                      {" · ÷ "}{formatNumber(diagnostic.conversionDivisor ?? 1)} · lagerværdi {formatNumber(diagnostic.finalStoredDelta ?? 0)} · {diagnostic.humanReadableDelta ?? "-"}
+                    </span>
+                  ))}
                 </div>
               ))}
             </div>

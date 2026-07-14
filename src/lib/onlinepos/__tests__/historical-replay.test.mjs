@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildReplayWindows,
+  canonicalizeReplayConfirmation,
+  isReplayConfirmationMatch,
   isOnlinePosReplayEnabled,
   productionExternalLineId,
   replayExternalLineId,
@@ -59,8 +61,29 @@ test("dry-run og cleanup confirmations er sikre", () => {
   assert.equal(validateReplayConfirmation("dry-run", null), null);
   assert.equal(validateReplayConfirmation("test-run", null), "Test-run kræver bekræftelsen KØR HISTORISK TEST");
   assert.equal(validateReplayConfirmation("test-run", "KØR HISTORISK TEST"), null);
+  assert.match(validateReplayConfirmation("replay", null) ?? "", /KØR FAKTISK REPLAY/);
+  assert.equal(validateReplayConfirmation("replay", "kør faktisk replay"), null);
   assert.equal(validateCleanupConfirmation("SLET REPLAYDATA"), true);
   assert.equal(validateCleanupConfirmation("SLET ALT"), false);
+});
+
+test("historical replay confirmation accepterer typing lowercase og whitespace", () => {
+  assert.equal(isReplayConfirmationMatch("KØR HISTORISK TEST"), true);
+  assert.equal(isReplayConfirmationMatch("kør historisk test"), true);
+  assert.equal(isReplayConfirmationMatch("  KØR   HISTORISK   TEST  "), true);
+  assert.equal(validateReplayConfirmation("test-run", "  kør   historisk test  "), null);
+});
+
+test("historical replay confirmation accepterer pasted tekst og Unicode-normalisering", () => {
+  const pasted = `\n\tKØR\u00a0HISTORISK\u2003TEST\r\n`;
+  assert.equal(isReplayConfirmationMatch(pasted), true);
+  assert.equal(canonicalizeReplayConfirmation("æ ø a\u030a"), "Æ Ø Å");
+  assert.equal(canonicalizeReplayConfirmation("ＫØＲ　ＨＩＳＴＯＲＩＳＫ　ＴＥＳＴ"), "KØR HISTORISK TEST");
+});
+
+test("historical replay confirmation afviser forkert tekst", () => {
+  assert.equal(isReplayConfirmationMatch("KØR HISTORIK TEST"), false);
+  assert.equal(validateReplayConfirmation("test-run", "KØR HISTORIK TEST"), "Test-run kræver bekræftelsen KØR HISTORISK TEST");
 });
 
 test("feature flag slukket afviser adgang", () => {

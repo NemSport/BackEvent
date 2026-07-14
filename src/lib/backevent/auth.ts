@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { createContext, createElement, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { User } from "@supabase/supabase-js";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { isSupabaseConfigured } from "@/lib/supabase/is-configured";
@@ -14,6 +14,7 @@ export type BackEventProfile = {
   role: BackEventRole;
   active: boolean;
   permissions: BackEventPermissionKey[];
+  groupNames: string[];
   isMock: boolean;
 };
 
@@ -24,6 +25,7 @@ const mockProfile: BackEventProfile = {
   role: "ejer",
   active: true,
   permissions: [],
+  groupNames: ["Økonomiansvarlige"],
   isMock: true,
 };
 
@@ -46,13 +48,18 @@ export async function getCurrentProfile(): Promise<BackEventProfile | null> {
     return null;
   }
 
-  const [{ data }, permissionsResponse] = await Promise.all([
+  const [{ data }, permissionsResponse, groupsResponse] = await Promise.all([
     supabase
     .from("backevent_profiles")
     .select("id,full_name,role,active")
     .eq("id", user.id)
       .single(),
     supabase.from("backevent_profile_permissions").select("permission_key,enabled").eq("profile_id", user.id).eq("enabled", true),
+    supabase
+      .from("backevent_member_group_members")
+      .select("backevent_member_groups!inner(name,active)")
+      .eq("profile_id", user.id)
+      .eq("backevent_member_groups.active", true),
   ]);
 
   return {
@@ -62,6 +69,10 @@ export async function getCurrentProfile(): Promise<BackEventProfile | null> {
     role: normalizeRole(data?.role),
     active: data?.active ?? true,
     permissions: (permissionsResponse.data ?? []).map((row) => row.permission_key as BackEventPermissionKey),
+    groupNames: (groupsResponse.data ?? []).flatMap((row) => {
+      const group = row.backevent_member_groups as unknown as { name?: string } | { name?: string }[] | null;
+      return (Array.isArray(group) ? group : [group]).map((item) => item?.name).filter((name): name is string => Boolean(name));
+    }),
     isMock: false,
   };
 }
@@ -165,7 +176,7 @@ export async function signOut() {
   }
 }
 
-export function useBackEventAuth() {
+function useBackEventAuthState() {
   const mockMode = isMockMode();
   const [profile, setProfile] = useState<BackEventProfile | null>(mockMode ? mockProfile : null);
   const [loading, setLoading] = useState(!mockMode);
@@ -224,7 +235,7 @@ export function useBackEventAuth() {
     };
   }, []);
 
-  return {
+  return useMemo(() => ({
     profile,
     user,
     loading,
@@ -234,5 +245,19 @@ export function useBackEventAuth() {
     isOwner: isOwnerRole(profile?.role),
     can: (permission: BackEventPermissionKey) => hasPermission(profile?.role, profile?.permissions, permission),
     isAuthenticated: Boolean(profile),
-  };
+  }), [profile, user, loading]);
+}
+
+type BackEventAuthValue = ReturnType<typeof useBackEventAuthState>;
+const BackEventAuthContext = createContext<BackEventAuthValue | null>(null);
+
+export function BackEventAuthProvider({ children }: { children: ReactNode }) {
+  const value = useBackEventAuthState();
+  return createElement(BackEventAuthContext.Provider, { value }, children);
+}
+
+export function useBackEventAuth() {
+  const value = useContext(BackEventAuthContext);
+  if (!value) throw new Error("useBackEventAuth must be used inside BackEventAuthProvider");
+  return value;
 }

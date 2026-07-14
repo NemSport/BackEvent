@@ -12,6 +12,7 @@ type PushMessageRow = {
   target_url: string;
   category: string;
   read_at: string | null;
+  resolved_at: string | null;
   deleted_at: string | null;
   created_at: string;
 };
@@ -33,7 +34,7 @@ export async function GET(request: Request) {
   const [messagesResponse, unreadResponse] = await Promise.all([
     auth.supabase
       .from("backevent_push_messages")
-      .select("id,recipient_user_id,recipient_email,sender_name,group_id,title,body,target_url,category,read_at,deleted_at,created_at")
+      .select("id,recipient_user_id,recipient_email,sender_name,group_id,title,body,target_url,category,read_at,resolved_at,deleted_at,created_at")
       .eq("recipient_user_id", auth.userId)
       .is("deleted_at", null)
       .order("created_at", { ascending: false })
@@ -43,6 +44,7 @@ export async function GET(request: Request) {
       .select("id", { count: "exact", head: true })
       .eq("recipient_user_id", auth.userId)
       .is("deleted_at", null)
+      .is("resolved_at", null)
       .is("read_at", null),
   ]);
 
@@ -69,8 +71,9 @@ function toMessage(row: PushMessageRow) {
     targetUrl: row.target_url,
     category: row.category,
     readAt: row.read_at,
+    resolvedAt: row.resolved_at,
     deletedAt: row.deleted_at,
     createdAt: row.created_at,
-    unread: !row.read_at,
+    unread: !row.read_at && !row.resolved_at,
   };
 }

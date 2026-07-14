@@ -1,11 +1,15 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { OnlinePosInventoryMapping, OnlinePosInventoryMappingComponent, OnlinePosLineType, OnlinePosMappingAction } from "./inventory-mappings";
+import type { OnlinePosInventoryMapping, OnlinePosInventoryMappingComponent, OnlinePosLineType, OnlinePosMappingAction } from "./inventory-mappings.ts";
 import {
+  createOnlinePosLocationResolver,
   getOnlinePosLocationMappings,
-  resolveOnlinePosLocation,
   type OnlinePosLocationDiagnostics,
   type OnlinePosLocationMapping,
-} from "./location-mappings";
+} from "./location-mappings.ts";
+import {
+  calculateOnlinePosInventoryConsumption,
+  type OnlinePosConsumptionDiagnostics,
+} from "./inventory-unit-conversion.ts";
 
 export type OnlinePosSyncLineStatus = "processed" | "ignored" | "failed";
 
@@ -37,6 +41,7 @@ export type OnlinePosTransactionLine = {
 export type OnlinePosSyncDecision = {
   externalLineId: string;
   transactionId: string | null;
+  transactionDatetime: string | null;
   receiptNumber: string | null;
   lineId: string | null;
   onlineposProductId: string | null;
@@ -60,6 +65,7 @@ export type OnlinePosSyncDecision = {
     productId: string;
     locationId: string;
     quantity: number;
+    consumptionDiagnostics: OnlinePosConsumptionDiagnostics;
   }>;
 };
 
@@ -89,6 +95,12 @@ type ProductRow = {
   name: string;
   unit: string | null;
   active: boolean | null;
+  unitsPerCase?: number | null;
+  purchaseUnitLabel?: string | null;
+  unitsPerPurchaseUnit?: number | null;
+  stockUnitLabel?: string | null;
+  contentPerStockUnit?: number | null;
+  consumptionUnitLabel?: string | null;
 };
 
 type LocationRow = {
@@ -276,20 +288,29 @@ export function buildSyncDecisions(
   locations: LocationRow[],
   locationMappings: OnlinePosLocationMapping[] = [],
 ): OnlinePosSyncDecision[] {
+  const venueId = process.env.ONLINEPOS_VENUE_ID ?? null;
+  const locationInputs = lines.map((line) => ({
+    venueId,
+    cashRegisterId: line.cashRegisterId,
+    cashRegisterName: line.cashRegisterName,
+  }));
+  const locationResolver = createOnlinePosLocationResolver(locationInputs, locationMappings, locations);
+
   return lines.map((line) => {
     const mapping = findMapping(line, mappings);
     const mappingAction = mapping?.mappingAction ?? defaultMappingAction(line);
     const mappingStatus = mapping?.status ?? "unmapped";
-    const locationResolution = resolveOnlinePosLocation(
-      { venueId: process.env.ONLINEPOS_VENUE_ID ?? null, cashRegisterId: line.cashRegisterId, cashRegisterName: line.cashRegisterName },
-      locationMappings,
-      locations,
-    );
+    const locationResolution = locationResolver.resolve({
+      venueId,
+      cashRegisterId: line.cashRegisterId,
+      cashRegisterName: line.cashRegisterName,
+    });
     const location = locationResolution.ok ? locationResolution.location : null;
     const sourceLocationId = location?.source_location_id ?? null;
     const base = {
       externalLineId: buildExternalLineId(line),
       transactionId: line.transactionId,
+      transactionDatetime: line.transactionDatetime,
       receiptNumber: line.receiptNumber,
       lineId: line.lineId,
       onlineposProductId: line.onlineposProductId,
@@ -301,7 +322,7 @@ export function buildSyncDecisions(
       mappingId: mapping?.id ?? null,
       mappingStatus,
       mappingAction,
-      locationDiagnostics: locationResolution.ok ? null : locationResolution.diagnostics,
+      locationDiagnostics: locationResolution.diagnostics,
       locationId: location?.id ?? null,
       sourceLocationId,
       quantitySold: line.quantitySold,
@@ -330,11 +351,19 @@ export function buildSyncDecisions(
 
     const components = normalizeComponents(mapping.components, mapping).map((component) => {
       const product = products.find((item) => item.id === component.backeventInventoryItemId);
+      const conversion = product && Number(component.conversionFactor) > 0
+        ? calculateOnlinePosInventoryConsumption({
+          soldQuantity: line.quantitySold,
+          consumptionPerSale: Number(component.conversionFactor),
+          product,
+        })
+        : null;
       return {
         productId: component.backeventInventoryItemId ?? "",
         locationId: sourceLocationId,
-        quantity: roundNumber(Math.abs(line.quantitySold) * Number(component.conversionFactor ?? 0)),
-        valid: Boolean(product && component.backeventInventoryItemId && Number(component.conversionFactor) > 0),
+        quantity: conversion?.storedQuantity ?? 0,
+        consumptionDiagnostics: conversion?.diagnostics ?? null,
+        valid: Boolean(product && component.backeventInventoryItemId && conversion),
       };
     });
 
@@ -342,13 +371,18 @@ export function buildSyncDecisions(
       return failedDecision(base, "Mapping mangler gyldige lagerkomponenter");
     }
 
-    const validComponents = components.map(({ productId, locationId, quantity }) => ({ productId, locationId, quantity }));
+    const validComponents = components.map(({ productId, locationId, quantity, consumptionDiagnostics }) => ({
+      productId,
+      locationId,
+      quantity,
+      consumptionDiagnostics: consumptionDiagnostics!,
+    }));
 
     return {
       ...base,
       status: "processed",
       errorReason: null,
-      stockDelta: roundNumber(validComponents.reduce((sum, component) => sum + component.quantity, 0)),
+      stockDelta: validComponents.reduce((sum, component) => sum + component.quantity, 0),
       components: validComponents,
     };
   });
@@ -622,9 +656,20 @@ function normalizeComponents(components: OnlinePosInventoryMappingComponent[], m
 }
 
 export async function getProducts(supabase: SupabaseClient) {
-  const { data, error } = await supabase.from("backevent_products").select("id,name,unit,active").eq("active", true);
+  const { data, error } = await supabase.from("backevent_products").select("id,name,unit,active,units_per_case,purchase_unit_label,units_per_purchase_unit,stock_unit_label,content_per_stock_unit,consumption_unit_label").eq("active", true);
   if (error) throw new Error("Produkter kunne ikke hentes");
-  return (data ?? []) as ProductRow[];
+  return (data ?? []).map((row) => ({
+    id: String(row.id),
+    name: String(row.name),
+    unit: stringOrNull(row.unit),
+    active: row.active === null ? null : Boolean(row.active),
+    unitsPerCase: numberValue(row.units_per_case),
+    purchaseUnitLabel: stringOrNull(row.purchase_unit_label),
+    unitsPerPurchaseUnit: numberValue(row.units_per_purchase_unit),
+    stockUnitLabel: stringOrNull(row.stock_unit_label),
+    contentPerStockUnit: numberValue(row.content_per_stock_unit),
+    consumptionUnitLabel: stringOrNull(row.consumption_unit_label),
+  })) satisfies ProductRow[];
 }
 
 export async function getLocations(supabase: SupabaseClient) {
@@ -682,6 +727,7 @@ async function applySyncLines(supabase: SupabaseClient, runId: string, decisions
     p_lines: decisions.map((decision) => ({
       externalLineId: decision.externalLineId,
       transactionId: decision.transactionId,
+      transactionDatetime: decision.transactionDatetime,
       receiptNumber: decision.receiptNumber,
       lineId: decision.lineId,
       onlineposProductId: decision.onlineposProductId,
@@ -707,6 +753,10 @@ async function applySyncLines(supabase: SupabaseClient, runId: string, decisions
   if (error) {
     throw new Error("OnlinePOS-linjer kunne ikke behandles");
   }
+
+  await Promise.all(decisions.map((decision) => decision.transactionDatetime
+    ? supabase.from("onlinepos_inventory_sync_lines").update({ transaction_datetime: decision.transactionDatetime }).eq("external_line_id", decision.externalLineId)
+    : Promise.resolve()));
 
   const result = data as Record<string, unknown>;
   return {
@@ -853,9 +903,6 @@ function numberValue(value: unknown) {
   return null;
 }
 
-function roundNumber(value: number) {
-  return Math.round(value * 1000) / 1000;
-}
 
 function safeErrorMessage(error: unknown) {
   return error instanceof Error ? error.message.slice(0, 300) : "OnlinePOS sync fejlede";

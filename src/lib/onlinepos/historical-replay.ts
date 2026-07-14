@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { createHash } from "node:crypto";
 import {
   buildReplayWindows,
   isOnlinePosReplayEnabled,
@@ -7,7 +8,7 @@ import {
   validateCleanupConfirmation,
   validateReplayConfirmation,
   type ReplayMode,
-} from "./historical-replay-core";
+} from "./historical-replay-core.ts";
 import {
   applyOnlinePosSyncDecisions,
   buildSyncDecisions,
@@ -17,13 +18,19 @@ import {
   getProducts,
   type OnlinePosSyncDecision,
   type OnlinePosTransactionLine,
-} from "./inventory-sync";
+} from "./inventory-sync.ts";
 import {
   getOnlinePosLocationMappings,
   recordOnlinePosLocationDiscoveries,
   type OnlinePosLocationDiagnostics,
   type OnlinePosLocationMapping,
-} from "./location-mappings";
+} from "./location-mappings.ts";
+import {
+  analyzeOnlinePosReceipt,
+  type OnlinePosReceiptControlAnalysis,
+  type OnlinePosReceiptControlType,
+} from "./receipt-control.ts";
+import { persistReceiptControls } from "./returns.ts";
 
 export {
   buildReplayWindows,
@@ -34,7 +41,7 @@ export {
   validateReplayConfirmation,
 };
 
-export type { ReplayMode } from "./historical-replay-core";
+export type { ReplayMode } from "./historical-replay-core.ts";
 
 export type HistoricalReplayInput = {
   date: string;
@@ -46,6 +53,14 @@ export type HistoricalReplayInput = {
   cashRegister?: string | null;
   mode: ReplayMode;
   replayRunId: string;
+};
+
+export type HistoricalReplayDryRunMeta = {
+  id: string;
+  completedAt: string;
+  inputKey: string;
+  fingerprint: string;
+  blockingErrorSummary: Array<{ code: string; count: number }>;
 };
 
 export async function runHistoricalReplayDryRun({
@@ -64,14 +79,31 @@ export async function runHistoricalReplayTestRun({
   input,
   actorUserId,
   actorEmail,
+  expectedDryRun,
 }: {
   supabase: SupabaseClient;
   input: HistoricalReplayInput;
   actorUserId: string | null;
   actorEmail: string | null;
+  expectedDryRun: HistoricalReplayDryRunMeta | null;
 }) {
   const analysis = await analyzeHistoricalReplay({ supabase, input: { ...input, mode: "dry-run" }, externalLineIdMode: "test-run" });
   const blockingErrors = getHistoricalReplayBlockingErrors(analysis.errorDetails);
+
+  if (!expectedDryRun || !isCurrentHistoricalReplayDryRun(expectedDryRun, analysis.dryRun)) {
+    return {
+      ...stripInternalDecisions(analysis),
+      ok: false,
+      mode: "test-run" as const,
+      staleDryRun: true,
+      message: "Dry-run-resultatet er forældet. Kør et nyt dry-run med samme interval før test-run.",
+      testRun: {
+        enabled: false,
+        blockingErrors,
+        blockingErrorSummary: groupErrors(blockingErrors),
+      },
+    };
+  }
 
   if (blockingErrors.length > 0) {
     return {
@@ -87,22 +119,23 @@ export async function runHistoricalReplayTestRun({
     };
   }
 
-  const interval = selectedReplayInterval(input);
-  const applyResult = await applyOnlinePosSyncDecisions({
-    supabase,
-    datetimeFrom: interval.from,
-    datetimeTo: interval.to,
-    actorUserId,
-    actorEmail,
-    source: "historical_replay",
-    decisions: analysis.internalDecisions,
-  });
+  const testLog = await createHistoricalReplayTestLog(supabase, input, actorUserId, actorEmail, analysis);
+  const applyResult = {
+    ok: !testLog.error,
+    runId: testLog.id,
+    status: testLog.error ? "failed" : "previewed",
+    processedCount: 0,
+    ignoredCount: analysis.testRunPlan.ignoredLineCount,
+    failedCount: testLog.error ? 1 : 0,
+    missingMappingCount: analysis.testRunPlan.mappingSkippedLineCount,
+    duplicateCount: 0,
+  };
 
-  return {
+  const result = {
     ...stripInternalDecisions(analysis),
     ok: applyResult.ok,
     mode: "test-run" as const,
-    message: applyResult.ok ? "Historical replay test-run er gennemført" : applyResult.message ?? "Historical replay test-run fejlede",
+    message: applyResult.ok ? "Historical replay test-run er gennemført" : "Historical replay test-run fejlede",
     testRun: {
       enabled: true,
       blockingErrors: [],
@@ -110,18 +143,119 @@ export async function runHistoricalReplayTestRun({
     },
     applyResult,
     actualStockChanges: analysis.stockPreview,
+    testRunResult: {
+      safelyProcessedCount: analysis.testRunPlan.safeLineCount,
+      actualStockChangeCount: 0,
+      duplicateCount: applyResult.duplicateCount,
+      ignoredLineCount: analysis.testRunPlan.ignoredLineCount,
+      manualReviewReceiptCount: analysis.testRunPlan.manualReviewReceiptCount,
+      manualReviewLineCount: analysis.testRunPlan.manualReviewLineCount,
+      mappingSkippedLineCount: analysis.testRunPlan.mappingSkippedLineCount,
+      economicControlCount: analysis.testRunPlan.economicControlCount,
+      wouldCreateControlMessageCount: analysis.testRunPlan.wouldCreateControlMessageCount,
+      technicalErrorCount: applyResult.failedCount,
+    },
     safety: {
       mode: "test-run",
-      writesStock: true,
-      writesSyncLines: true,
+      writesStock: false,
+      writesSyncLines: false,
       sendsPush: false,
-      createsNotifications: false,
+      createsNotifications: true,
       changesMappings: false,
       updatesLocationDiscovery: true,
       changesReturnStatus: false,
       testRunEnabled: true,
     },
   };
+  return result;
+}
+
+export async function runHistoricalReplay({
+  supabase,
+  input,
+  actorUserId,
+  actorEmail,
+  expectedDryRun,
+}: {
+  supabase: SupabaseClient;
+  input: HistoricalReplayInput;
+  actorUserId: string | null;
+  actorEmail: string | null;
+  expectedDryRun: HistoricalReplayDryRunMeta | null;
+}) {
+  const analysis = await analyzeHistoricalReplay({ supabase, input: { ...input, mode: "dry-run" }, externalLineIdMode: "dry-run" });
+  const blockingErrors = getHistoricalReplayBlockingErrors(analysis.errorDetails);
+  if (!expectedDryRun || !isCurrentHistoricalReplayDryRun(expectedDryRun, analysis.dryRun) || blockingErrors.length > 0) {
+    return {
+      ...stripInternalDecisions(analysis),
+      ok: false,
+      mode: "replay" as const,
+      staleDryRun: !expectedDryRun || !isCurrentHistoricalReplayDryRun(expectedDryRun, analysis.dryRun),
+      message: blockingErrors.length ? `Replay er blokeret: ${formatBlockingReason(blockingErrors)}` : "Dry-run-resultatet er forældet.",
+    };
+  }
+  const interval = selectedReplayInterval(input);
+  const decisions = analysis.internalTestRunDecisions.map((decision) => ({
+    ...decision,
+    externalLineId: stripHistoricalReplayPrefix(decision.externalLineId),
+  }));
+  const applyResult = await applyOnlinePosSyncDecisions({
+    supabase,
+    datetimeFrom: interval.from,
+    datetimeTo: interval.to,
+    actorUserId,
+    actorEmail,
+    source: "historical_replay",
+    decisions,
+  });
+  let controlCount = 0;
+  for (const audit of analysis.returns.filter((item) => item.controlTriggers.length > 0)) {
+    await persistReceiptControls(supabase, replayAuditToControlAnalysis(audit), { source: "historical_replay", replayRunId: input.replayRunId });
+    controlCount += 1;
+  }
+  return {
+    ...stripInternalDecisions(analysis),
+    ok: applyResult.ok,
+    mode: "replay" as const,
+    message: applyResult.ok ? "Faktisk historical replay er gennemført" : applyResult.message,
+    applyResult,
+    persistedControlCount: controlCount,
+    safety: { mode: "replay", writesStock: true, writesSyncLines: true, sendsPush: true, createsNotifications: true, changesMappings: false },
+  };
+}
+
+function replayAuditToControlAnalysis(audit: ReplayReturnAudit): OnlinePosReceiptControlAnalysis {
+  return {
+    receiptKey: audit.replayKey.replace(/^onlinepos-replay:/, "onlinepos-receipt:"),
+    transactionId: audit.transactionId,
+    receiptNumber: audit.receiptNumber,
+    classification: audit.classification === "Verificeret retur" ? "return_receipt" : audit.classification === "Usikker retur" ? "uncertain" : audit.classification === "Almindeligt salg med pantretur" ? "sale_with_deposit_return" : "sale",
+    classificationLabel: audit.classification,
+    signals: audit.signals,
+    controlTypes: audit.controlTriggers,
+    depositReturnQuantity: audit.depositReturnQuantity,
+    depositBreakdown: audit.depositBreakdown,
+    purchaseValue: audit.purchaseValue,
+    depositReturnValue: audit.depositReturnValue,
+    finalTotal: audit.finalTotal,
+  };
+}
+
+async function createHistoricalReplayTestLog(supabase: SupabaseClient, input: HistoricalReplayInput, actorUserId: string | null, actorEmail: string | null, analysis: Awaited<ReturnType<typeof analyzeHistoricalReplay>>) {
+  const { data, error } = await supabase.from("backevent_historical_replay_test_logs").upsert({
+    replay_run_id: input.replayRunId,
+    run_by: actorUserId,
+    interval_from: selectedReplayInterval(input).from,
+    interval_to: selectedReplayInterval(input).to,
+    preview: {
+      controls: analysis.returns.filter((item) => item.controlTriggers.length > 0),
+      errors: analysis.errorDetails,
+      notificationRecipients: ["Oekonomiansvarlige"],
+      pushRecipients: ["Test-run sender ikke push til rigtige modtagere"],
+      runByEmail: actorEmail,
+    },
+  }, { onConflict: "replay_run_id" }).select("id").single();
+  return { id: data?.id ? String(data.id) : input.replayRunId, error };
 }
 
 async function analyzeHistoricalReplay({
@@ -140,17 +274,21 @@ async function analyzeHistoricalReplay({
     getLocations(supabase),
   ]);
   let latestLocationMappings = await getOnlinePosLocationMappings(supabase);
+  const manualClassifications = await getManualReplayClassifications(supabase);
+  const notificationRecipients = await getReplayNotificationRecipients(supabase);
   const initialLocationMappings = latestLocationMappings;
   const locationMappingWindows: Array<{
     replayWindow: string;
     activeApprovedMappingCount: number;
     mappingsLoaded: ReturnType<typeof safeLocationMappingRows>;
+    canonicalLocations: OnlinePosLocationDiagnostics[];
   }> = [];
   const seenProductionLineIds = new Set<string>();
   const seenTransactionIds = new Set<string>();
   const totals = emptyTotals();
   const windowResults = [];
   const allErrorDetails: ReplayErrorDetail[] = [];
+  const allIgnoredDetails: ReplayIgnoredDetail[] = [];
   const allReturnAudits: ReplayReturnAudit[] = [];
   const allModifierAudits: ReplayModifierAudit[] = [];
   const allStockPreview: ReplayStockPreviewLine[] = [];
@@ -170,13 +308,14 @@ async function analyzeHistoricalReplay({
     }));
     await recordOnlinePosLocationDiscoveries(supabase, windowLocationDiscoveries);
     latestLocationMappings = await getOnlinePosLocationMappings(supabase);
+    const decisionLines = filteredLines.filter((line) => isLineInsideDisplayWindow(line, input.date, window.displayFrom, window.displayTo));
+    const decisions = buildSyncDecisions(decisionLines, mappings, products, locations, latestLocationMappings);
     locationMappingWindows.push({
       replayWindow: window.label,
       activeApprovedMappingCount: countActiveApprovedLocationMappings(latestLocationMappings),
       mappingsLoaded: safeLocationMappingRows(latestLocationMappings),
+      canonicalLocations: canonicalLocationDiagnostics(decisions),
     });
-    const decisionLines = filteredLines.filter((line) => isLineInsideDisplayWindow(line, input.date, window.displayFrom, window.displayTo));
-    const decisions = buildSyncDecisions(decisionLines, mappings, products, locations, latestLocationMappings);
     const uniqueDecisions: OnlinePosSyncDecision[] = [];
     let duplicateCount = 0;
     const windowDuplicateDetails: ReplayDuplicateDetail[] = [];
@@ -211,12 +350,15 @@ async function analyzeHistoricalReplay({
     }
 
     const summary = summarizeDecisions(uniqueDecisions, duplicateCount);
-    const errorDetails = buildErrorDetails(window.label, uniqueDecisions, decisionLines);
-    const returnAudits = buildReturnAudits(window.label, decisionLines);
+    const errorDetails = buildErrorDetails(window.label, uniqueDecisions, decisionLines, manualClassifications, input.venue ?? null);
+    const ignoredDetails = buildIgnoredDetails(window.label, uniqueDecisions, decisionLines);
+    const returnAudits = buildReturnAudits(window.label, decisionLines, manualClassifications, input.venue ?? null);
     const modifierAudits = buildModifierAudits(window.label, decisionLines, uniqueDecisions);
-    const stockPreview = buildStockPreview(window.label, uniqueDecisions, products, locations);
+    const safeWindowDecisions = excludeUncertainReceiptDecisions(uniqueDecisions, returnAudits);
+    const stockPreview = buildStockPreview(window.label, safeWindowDecisions, products, locations);
     allInternalDecisions.push(...uniqueDecisions);
     allErrorDetails.push(...errorDetails);
+    allIgnoredDetails.push(...ignoredDetails);
     allReturnAudits.push(...returnAudits);
     allModifierAudits.push(...modifierAudits);
     allStockPreview.push(...stockPreview);
@@ -230,13 +372,15 @@ async function analyzeHistoricalReplay({
       ...summary,
       cashRegisters: distinct(decisionLines.map((line) => line.cashRegisterName ?? line.cashRegisterId).filter(Boolean) as string[]),
       unmappedProducts: distinct(uniqueDecisions.filter((line) => line.errorReason === "Mangler godkendt mapping").map((line) => line.onlineposProductName ?? "Ukendt vare")),
-      unmappedLocations: distinct(uniqueDecisions.filter((line) => line.errorReason === "OnlinePOS-kasse mangler lokationsmapping" || line.errorReason === "OnlinePOS-lokationsmapping er inaktiv" || line.errorReason === "Ukendt BackEvent-lokation" || line.errorReason === "Bar mangler lagerkilde").map((line) => line.cashRegisterName ?? "Ukendt sted")),
+      unmappedLocations: distinct(uniqueDecisions.filter((line) => line.errorReason === "OnlinePOS-kasse mangler lokationsmapping" || line.errorReason === "OnlinePOS-lokationsmapping er inaktiv" || line.errorReason === "OnlinePOS-lokationsmapping har konflikt" || line.errorReason === "Ukendt BackEvent-lokation" || line.errorReason === "Bar mangler lagerkilde").map((line) => line.cashRegisterName ?? "Ukendt sted")),
       modifiers: uniqueDecisions.filter((line) => line.lineType === "modifier_stock_item").length,
       deposits: uniqueDecisions.filter((line) => line.lineType === "deposit_fee" || line.lineType === "deposit_return").length,
       expectedStockChanges: groupStockChanges(uniqueDecisions),
       controlErrors: uniqueDecisions.filter((line) => line.status === "failed" || line.errorReason === "Mangler godkendt mapping").map((line) => line.errorReason ?? "Fejl"),
       errorSummary: groupErrors(errorDetails),
       errorDetails: errorDetails.slice(0, 100),
+      ignoredSummary: groupIgnoredLines(ignoredDetails),
+      ignoredDetails: ignoredDetails.slice(0, 100),
       returnAudits,
       modifierAudits,
       stockPreview: stockPreview.slice(0, 100),
@@ -247,7 +391,9 @@ async function analyzeHistoricalReplay({
   const unmappedProducts = summarizeUnmappedProducts(allErrorDetails, allModifierAudits, products);
   const returnSummary = summarizeReturns(allReturnAudits);
   const blockingErrors = getHistoricalReplayBlockingErrors(allErrorDetails);
-  return {
+  const blockingIssueGroups = buildBlockingIssueGroups(allErrorDetails, allModifierAudits, allReturnAudits);
+  const testRunPlan = buildHistoricalReplayTestRunPlan(allInternalDecisions, allReturnAudits, allErrorDetails);
+  const result = {
     ok: true,
     mode: input.mode,
     replayRunId: input.replayRunId,
@@ -257,6 +403,7 @@ async function analyzeHistoricalReplay({
       uniqueLineCount: seenProductionLineIds.size,
       uniqueTransactionCount: seenTransactionIds.size,
       errorCount: allErrorDetails.length,
+      classifiedIgnoredCount: allIgnoredDetails.length,
       returnCount: allReturnAudits.length,
       uncertainReturnCount: allReturnAudits.filter((item) => item.classification === "Usikker retur").length,
       modifierAuditCount: allModifierAudits.length,
@@ -264,12 +411,17 @@ async function analyzeHistoricalReplay({
     },
     errorSummary: groupErrors(allErrorDetails),
     errorDetails: allErrorDetails.slice(0, 500),
+    ignoredSummary: groupIgnoredLines(allIgnoredDetails),
+    ignoredDetails: allIgnoredDetails.slice(0, 500),
     returns: allReturnAudits.slice(0, 200),
     returnSummary,
     modifierAudit: allModifierAudits.slice(0, 300),
     unmappedProducts,
+    blockingIssueGroups,
+    testRunPlan: testRunPlan.summary,
     stockPreview: allStockPreview.slice(0, 500),
     duplicateDetails: duplicateDetails.slice(0, 300),
+    notificationPreview: buildReplayNotificationPreview(allReturnAudits, allErrorDetails, notificationRecipients),
     locationMappingDebug: {
       supabaseProjectHostOnly: supabaseProjectHostOnly(),
       initial: {
@@ -299,12 +451,113 @@ async function analyzeHistoricalReplay({
       testRunEnabled: blockingErrors.length === 0,
     },
     internalDecisions: allInternalDecisions,
+    internalTestRunDecisions: testRunPlan.safeDecisions,
+  };
+  return {
+    ...result,
+    dryRun: buildHistoricalReplayDryRunMeta(input, result),
   };
 }
 
-function stripInternalDecisions<T extends { internalDecisions?: OnlinePosSyncDecision[] }>(result: T) {
+async function getReplayNotificationRecipients(supabase: SupabaseClient) {
+  const [{ data: financeRows }, { data: ownerRows }] = await Promise.all([
+    supabase
+      .from("backevent_member_group_members")
+      .select("profile_id,backevent_member_groups!inner(name,active),backevent_profiles!inner(id,email,full_name,active)")
+      .eq("backevent_member_groups.active", true)
+      .eq("backevent_profiles.active", true)
+      .ilike("backevent_member_groups.name", "Økonomiansvarlige"),
+    supabase.from("backevent_profiles").select("id,email,full_name").eq("active", true).eq("role", "ejer"),
+  ]);
+  const finance = (financeRows ?? []).map((row) => {
+    const profile = row.backevent_profiles as { id?: string; email?: string | null; full_name?: string | null } | null;
+    return { id: String(profile?.id ?? row.profile_id), email: profile?.email ?? null, name: profile?.full_name ?? null, role: "Oekonomiansvarlig" };
+  });
+  const owners = (ownerRows ?? []).map((row) => ({ id: String(row.id), email: row.email ?? null, name: row.full_name ?? null, role: "Ejer" }));
+  return { finance, owners };
+}
+
+function buildReplayNotificationPreview(
+  audits: ReplayReturnAudit[],
+  errors: ReplayErrorDetail[],
+  recipients: Awaited<ReturnType<typeof getReplayNotificationRecipients>>,
+) {
+  const controls = audits.filter((audit) => audit.controlTriggers.length > 0).map((audit) => ({
+    receiptKey: audit.replayKey,
+    receiptNumber: audit.receiptNumber,
+    transactionId: audit.transactionId,
+    rules: audit.controlTriggers,
+    why: audit.signals,
+    wouldCreateControlCase: true,
+    wouldCreatePermanentNotifications: recipients.finance.map((member) => member.id),
+    wouldSendPushTo: recipients.finance,
+  }));
+  const seriousHistoricalErrors = errors.map((error) => ({
+    rule: error.errorCode,
+    why: error.message,
+    receiptNumber: error.receiptNumber,
+    transactionId: error.transactionId,
+    wouldCreatePermanentNotifications: recipients.owners.map((member) => member.id),
+    wouldSendPushTo: recipients.owners,
+  }));
+  return { controls, seriousHistoricalErrors, recipients, eventResponsibleRecipients: [] };
+}
+
+export function historicalReplayInputKey(input: Pick<HistoricalReplayInput, "date" | "startTime" | "endTime" | "intervalMinutes" | "overlapMinutes" | "venue" | "cashRegister">) {
+  return [
+    input.date,
+    input.startTime,
+    input.endTime,
+    input.intervalMinutes,
+    input.overlapMinutes,
+    input.venue ?? "",
+    input.cashRegister?.trim() ?? "",
+  ].join("|");
+}
+
+export function isCurrentHistoricalReplayDryRun(expected: HistoricalReplayDryRunMeta, current: HistoricalReplayDryRunMeta) {
+  return expected.id === current.id && expected.inputKey === current.inputKey && expected.fingerprint === current.fingerprint;
+}
+
+function buildHistoricalReplayDryRunMeta(
+  input: HistoricalReplayInput,
+  result: {
+    errorDetails: ReplayErrorDetail[];
+    ignoredDetails: ReplayIgnoredDetail[];
+    internalDecisions: OnlinePosSyncDecision[];
+    returns: ReplayReturnAudit[];
+    stockPreview: ReplayStockPreviewLine[];
+    locationMappingDebug: unknown;
+  },
+): HistoricalReplayDryRunMeta {
+  const fingerprintPayload = {
+    errors: result.errorDetails,
+    ignored: result.ignoredDetails,
+    decisions: result.internalDecisions.map((decision) => ({
+      externalLineId: stripHistoricalReplayPrefix(decision.externalLineId),
+      status: decision.status,
+      errorReason: decision.errorReason,
+      locationId: decision.locationId,
+      stockDelta: decision.stockDelta,
+      mappingId: decision.mappingId,
+    })),
+    returns: result.returns,
+    stockPreview: result.stockPreview,
+    locationMappings: (result.locationMappingDebug as { latest?: unknown }).latest ?? null,
+  };
+  return {
+    id: input.replayRunId,
+    completedAt: new Date().toISOString(),
+    inputKey: historicalReplayInputKey(input),
+    fingerprint: createHash("sha256").update(JSON.stringify(fingerprintPayload)).digest("hex"),
+    blockingErrorSummary: groupErrors(getHistoricalReplayBlockingErrors(result.errorDetails)),
+  };
+}
+
+function stripInternalDecisions<T extends { internalDecisions?: OnlinePosSyncDecision[]; internalTestRunDecisions?: OnlinePosSyncDecision[] }>(result: T) {
   const publicResult = { ...result };
   delete publicResult.internalDecisions;
+  delete publicResult.internalTestRunDecisions;
   return publicResult;
 }
 
@@ -323,6 +576,51 @@ function safeLocationMappingRows(mappings: OnlinePosLocationMapping[]) {
     active: mapping.active,
     hasBackeventLocation: Boolean(mapping.backeventLocationId),
   }));
+}
+
+function canonicalLocationDiagnostics(decisions: OnlinePosSyncDecision[]) {
+  const diagnostics = new Map<string, OnlinePosLocationDiagnostics>();
+  for (const decision of decisions) {
+    const item = decision.locationDiagnostics;
+    if (item && !diagnostics.has(item.canonicalKey)) diagnostics.set(item.canonicalKey, item);
+  }
+  return Array.from(diagnostics.values()).sort((a, b) => a.canonicalKey.localeCompare(b.canonicalKey, "da"));
+}
+
+async function getManualReplayClassifications(supabase: SupabaseClient) {
+  const classifications = new Map<string, ManualReplayClassification>();
+  const { data, error } = await supabase
+    .from("backevent_onlinepos_replay_classifications")
+    .select("replay_key,venue_id,transaction_id,receipt_number,cash_register_id,cash_register_name,classification,reason");
+
+  if (error) {
+    return classifications;
+  }
+
+  for (const row of data ?? []) {
+    const classification = String(row.classification) as ManualReplayClassificationValue;
+    if (!["sale", "return", "void", "ignored_testdata"].includes(classification)) continue;
+    classifications.set(String(row.replay_key), {
+      replayKey: String(row.replay_key),
+      venueId: stringOrNull(row.venue_id),
+      transactionId: stringOrNull(row.transaction_id),
+      receiptNumber: stringOrNull(row.receipt_number),
+      cashRegisterId: stringOrNull(row.cash_register_id),
+      cashRegisterName: stringOrNull(row.cash_register_name),
+      classification,
+      reason: stringOrNull(row.reason),
+    });
+  }
+  return classifications;
+}
+
+export function buildReplayClassificationKey(input: { venueId?: string | null; transactionId?: string | null; receiptNumber?: string | null }) {
+  return [
+    "onlinepos-replay",
+    normalizeKeyPart(input.venueId) ?? "venue",
+    normalizeKeyPart(input.transactionId) ?? "transaction",
+    normalizeKeyPart(input.receiptNumber) ?? "receipt",
+  ].join(":");
 }
 
 function isLineInsideDisplayWindow(line: OnlinePosTransactionLine, date: string, displayFrom: string, displayTo: string) {
@@ -353,6 +651,7 @@ function supabaseProjectHostOnly() {
 
 export type ReplayErrorCode =
   | "LOCATION_MAPPING_MISSING"
+  | "LOCATION_MAPPING_CONFLICT"
   | "PRODUCT_MAPPING_MISSING"
   | "RETURN_DETECTION_UNCERTAIN"
   | "UNIT_CONVERSION_FAILED"
@@ -378,7 +677,25 @@ export type ReplayErrorDetail = {
   locationDiagnostics?: OnlinePosLocationDiagnostics | null;
 };
 
+export type ReplayIgnoredCode = "IGNORED_NON_STOCK_LINE" | "IGNORED_CONTAINER_ONLY";
+
+export type ReplayIgnoredDetail = {
+  replayWindow: string;
+  transactionId: string | null;
+  receiptNumber: string | null;
+  datetime: string | null;
+  cashRegister: string | null;
+  lineId: string | null;
+  onlineposProductId: string | null;
+  productName: string | null;
+  quantity: number;
+  amount: number;
+  ignoredCode: ReplayIgnoredCode;
+  message: string;
+};
+
 type ReplayReturnAudit = {
+  replayKey: string;
   replayWindow: string;
   transactionId: string | null;
   receiptNumber: string | null;
@@ -390,8 +707,17 @@ type ReplayReturnAudit = {
   returnId: string | null;
   refundId: string | null;
   negativeLines: number;
+  depositLines: number;
   signals: string[];
-  classification: "Verificeret retur" | "Sandsynlig retur" | "Usikker retur";
+  classification: "Verificeret retur" | "Almindeligt salg med pantretur" | "Almindeligt salg" | "Usikker retur";
+  manualClassification: ManualReplayClassificationValue | null;
+  controlTriggers: OnlinePosReceiptControlType[];
+  depositReturnQuantity: number;
+  depositBreakdown: OnlinePosReceiptControlAnalysis["depositBreakdown"];
+  purchaseValue: number;
+  depositReturnValue: number;
+  finalTotal: number;
+  lines: ReplayReturnAuditLine[];
 };
 
 type ReplayModifierAudit = {
@@ -412,6 +738,44 @@ type ReplayModifierAudit = {
   decision: string;
 };
 
+type ReplayReturnAuditLine = {
+  lineId: string | null;
+  productName: string | null;
+  productGroupName: string | null;
+  quantity: number;
+  amount: number;
+  lineType: string;
+};
+
+export type ManualReplayClassificationValue = "sale" | "return" | "void" | "ignored_testdata";
+
+type ManualReplayClassification = {
+  replayKey: string;
+  venueId: string | null;
+  transactionId: string | null;
+  receiptNumber: string | null;
+  cashRegisterId: string | null;
+  cashRegisterName: string | null;
+  classification: ManualReplayClassificationValue;
+  reason: string | null;
+};
+
+type ReplayBlockingIssueGroup = {
+  code: ReplayErrorCode;
+  groupKey: string;
+  label: string;
+  count: number;
+  exampleReceiptNumber: string | null;
+  exampleTransactionId: string | null;
+  cashRegister: string | null;
+  datetime: string | null;
+  quantity: number;
+  amount: number;
+  adminHref: string;
+  adminLabel: string;
+  details: string;
+};
+
 type ReplayStockPreviewLine = {
   replayWindow: string;
   locationId: string;
@@ -425,6 +789,14 @@ type ReplayStockPreviewLine = {
   quantity: number;
   quantityText: string;
   internalQuantity: number;
+  soldQuantity: number;
+  consumptionPerSale: number;
+  consumptionUnit: string;
+  totalConsumptionQuantity: number;
+  conversionDivisor: number;
+  conversionMultiplier: number;
+  finalStoredDelta: number;
+  humanReadableDelta: string;
   mappingId: string | null;
   decision: "Klar";
 };
@@ -441,18 +813,114 @@ type ReplayDuplicateDetail = {
 
 const blockingTestRunErrorCodes = new Set<ReplayErrorCode>([
   "LOCATION_MAPPING_MISSING",
+  "LOCATION_MAPPING_CONFLICT",
   "PRODUCT_MAPPING_MISSING",
   "MODIFIER_MAPPING_FAILED",
   "RETURN_DETECTION_UNCERTAIN",
 ]);
 
-function summarizeDecisions(decisions: OnlinePosSyncDecision[], duplicateCount: number) {
+const hardBlockingTestRunErrorCodes = new Set<ReplayErrorCode>(["OTHER"]);
+const mappingSkipErrorCodes = new Set<ReplayErrorCode>([
+  "LOCATION_MAPPING_MISSING",
+  "LOCATION_MAPPING_CONFLICT",
+  "PRODUCT_MAPPING_MISSING",
+  "MODIFIER_MAPPING_FAILED",
+  "UNIT_CONVERSION_FAILED",
+]);
+
+export type HistoricalReplayTestRunPlan = {
+  safeDecisions: OnlinePosSyncDecision[];
+  summary: {
+    safeLineCount: number;
+    actualStockChangeCount: number;
+    ignoredLineCount: number;
+    manualReviewReceiptCount: number;
+    manualReviewLineCount: number;
+    mappingSkippedLineCount: number;
+    economicControlCount: number;
+    wouldCreateControlMessageCount: number;
+    technicalErrorCount: number;
+    manualReviews: Array<{
+      replayKey: string;
+      receiptNumber: string | null;
+      transactionId: string | null;
+      reason: string;
+      signals: string[];
+      lineCount: number;
+      wouldCreateControlMessage: true;
+    }>;
+  };
+};
+
+export function buildHistoricalReplayTestRunPlan(
+  decisions: OnlinePosSyncDecision[],
+  returnAudits: ReplayReturnAudit[],
+  errors: ReplayErrorDetail[],
+): HistoricalReplayTestRunPlan {
+  const uncertainAudits = returnAudits.filter((item) => item.classification === "Usikker retur");
+  const uncertainReceiptKeys = new Set(uncertainAudits.map(receiptIdentity));
+  const safeDecisions = decisions.filter((decision) =>
+    decision.status === "processed" && !uncertainReceiptKeys.has(receiptIdentity(decision)),
+  );
+  const mappingSkippedLineCount = decisions.filter((decision) => {
+    const code = mapReplayErrorCode(decision);
+    return code !== null && mappingSkipErrorCodes.has(code);
+  }).length;
+  const economicControlReceipts = new Set(
+    returnAudits.filter((item) => item.controlTriggers.length > 0).map((item) => item.replayKey),
+  );
+  const controlMessageReceipts = new Set([
+    ...uncertainAudits.map((item) => item.replayKey),
+    ...economicControlReceipts,
+  ]);
+
+  return {
+    safeDecisions,
+    summary: {
+      safeLineCount: safeDecisions.length,
+      actualStockChangeCount: safeDecisions.reduce((count, decision) => count + decision.components.length, 0),
+      ignoredLineCount: decisions.filter((decision) => Boolean(mapReplayIgnoredCode(decision))).length,
+      manualReviewReceiptCount: uncertainAudits.length,
+      manualReviewLineCount: decisions.filter((decision) => uncertainReceiptKeys.has(receiptIdentity(decision))).length,
+      mappingSkippedLineCount,
+      economicControlCount: economicControlReceipts.size,
+      wouldCreateControlMessageCount: controlMessageReceipts.size,
+      technicalErrorCount: errors.filter((error) => hardBlockingTestRunErrorCodes.has(error.errorCode)).length,
+      manualReviews: uncertainAudits.map((audit) => ({
+        replayKey: audit.replayKey,
+        receiptNumber: audit.receiptNumber,
+        transactionId: audit.transactionId,
+        reason: audit.signals.join(", ") || "Returklassifikation er usikker",
+        signals: audit.signals,
+        lineCount: audit.lines.length,
+        wouldCreateControlMessage: true as const,
+      })),
+    },
+  };
+}
+
+function excludeUncertainReceiptDecisions(decisions: OnlinePosSyncDecision[], returnAudits: ReplayReturnAudit[]) {
+  const uncertainReceiptKeys = new Set(
+    returnAudits.filter((item) => item.classification === "Usikker retur").map(receiptIdentity),
+  );
+  return decisions.filter((decision) => !uncertainReceiptKeys.has(receiptIdentity(decision)));
+}
+
+function receiptIdentity(value: { transactionId: string | null; receiptNumber: string | null }) {
+  return `${value.transactionId ?? ""}|${value.receiptNumber ?? ""}`;
+}
+
+export function summarizeDecisions(decisions: OnlinePosSyncDecision[], duplicateCount: number) {
+  const ignoredCodes = decisions.map(mapReplayIgnoredCode).filter((code): code is ReplayIgnoredCode => Boolean(code));
   return {
     processedCount: decisions.filter((line) => line.status === "processed").length,
     ignoredCount: decisions.filter((line) => line.status === "ignored").length,
     failedCount: decisions.filter((line) => line.status === "failed").length,
     missingMappingCount: decisions.filter((line) => line.errorReason === "Mangler godkendt mapping").length,
     duplicateCount,
+    classifiedIgnoredCount: ignoredCodes.length,
+    ignoredNonStockLineCount: ignoredCodes.filter((code) => code === "IGNORED_NON_STOCK_LINE").length,
+    ignoredContainerOnlyCount: ignoredCodes.filter((code) => code === "IGNORED_CONTAINER_ONLY").length,
     expectedStockDelta: decisions.reduce((sum, line) => sum + Math.abs(line.stockDelta), 0),
   };
 }
@@ -464,6 +932,8 @@ export function historicalReplayTestRunExternalLineId(productionLineId: string) 
 export function mapReplayErrorCode(decision: Pick<OnlinePosSyncDecision, "errorReason" | "lineType">): ReplayErrorCode | null {
   const reason = decision.errorReason ?? "";
   if (!reason) return null;
+  if (mapReplayIgnoredCode(decision)) return null;
+  if (reason.includes("lokationsmapping har konflikt")) return "LOCATION_MAPPING_CONFLICT";
   if (reason.includes("lokationsmapping") || reason.includes("BackEvent-lokation") || reason.includes("lagerkilde")) return "LOCATION_MAPPING_MISSING";
   if (reason === "Mangler godkendt mapping" && decision.lineType === "modifier_stock_item") return "MODIFIER_MAPPING_FAILED";
   if (reason === "Mangler godkendt mapping") return "PRODUCT_MAPPING_MISSING";
@@ -471,25 +941,78 @@ export function mapReplayErrorCode(decision: Pick<OnlinePosSyncDecision, "errorR
   return "OTHER";
 }
 
+export function mapReplayIgnoredCode(
+  decision: Pick<OnlinePosSyncDecision, "errorReason" | "lineType">,
+): ReplayIgnoredCode | null {
+  const reason = decision.errorReason ?? "";
+  if (reason === "Mapping handling: container_only") return "IGNORED_CONTAINER_ONLY";
+  if (
+    reason === "Pant/gebyr behandles ikke som vareforbrug" ||
+    reason === "Mapping handling: ignore" ||
+    reason === "Mapping handling: deposit_fee" ||
+    reason === "Mapping handling: deposit_return" ||
+    decision.lineType === "deposit_fee" ||
+    decision.lineType === "deposit_return"
+  ) {
+    return "IGNORED_NON_STOCK_LINE";
+  }
+  return null;
+}
+
 export function getHistoricalReplayBlockingErrors(details: ReplayErrorDetail[]) {
-  return details.filter((detail) => blockingTestRunErrorCodes.has(detail.errorCode));
+  return details.filter((detail) => hardBlockingTestRunErrorCodes.has(detail.errorCode));
 }
 
 function formatBlockingReason(details: ReplayErrorDetail[]) {
   return groupErrors(details).map((item) => `${item.code} (${item.count})`).join(", ");
 }
 
-export function classifyReplayReturn(lines: OnlinePosTransactionLine[]): ReplayReturnAudit["classification"] | null {
-  const signals = getReturnSignals(lines);
-  if (signals.length === 0) return null;
-  if (signals.includes("explicit_refund_type") || signals.includes("return_id_present") || signals.includes("refund_id_present")) {
-    return "Verificeret retur";
+export function classifyReplayReturn(
+  lines: OnlinePosTransactionLine[],
+  manualClassification: Pick<ManualReplayClassification, "classification"> | null = null,
+): ReplayReturnAudit["classification"] | null {
+  if (manualClassification?.classification === "return") return "Verificeret retur";
+  if (
+    manualClassification?.classification === "sale" ||
+    manualClassification?.classification === "void" ||
+    manualClassification?.classification === "ignored_testdata"
+  ) {
+    return null;
   }
-  if (signals.includes("negative_total_and_lines")) return "Sandsynlig retur";
-  return "Usikker retur";
+
+  const analysis = analyzeReplayReceipt(lines);
+  if (analysis.classification === "return_receipt") return "Verificeret retur";
+  if (analysis.classification === "uncertain") return "Usikker retur";
+  return null;
 }
 
-function buildErrorDetails(replayWindow: string, decisions: OnlinePosSyncDecision[], lines: OnlinePosTransactionLine[]) {
+export function analyzeReplayReceipt(lines: OnlinePosTransactionLine[]) {
+  const first = lines[0];
+  return analyzeOnlinePosReceipt({
+    venueId: process.env.ONLINEPOS_VENUE_ID ?? null,
+    transactionId: first?.transactionId ?? null,
+    receiptNumber: first?.receiptNumber ?? null,
+    transactionType: first?.transactionType ?? null,
+    transactionStatus: first?.transactionStatus ?? null,
+    returnId: first?.returnId ?? null,
+    refundId: first?.refundId ?? null,
+    total: first?.transactionTotal ?? null,
+    lines: lines.map((line) => ({
+      productName: line.onlineposProductName,
+      lineType: line.lineType,
+      quantity: line.quantitySold,
+      amount: line.revenue,
+    })),
+  });
+}
+
+function buildErrorDetails(
+  replayWindow: string,
+  decisions: OnlinePosSyncDecision[],
+  lines: OnlinePosTransactionLine[],
+  manualClassifications: Map<string, ManualReplayClassification>,
+  venueId: string | null,
+) {
   const details: ReplayErrorDetail[] = [];
   const linesByKey = new Map(lines.map((line) => [productionExternalLineId(line), line]));
   for (const decision of decisions) {
@@ -509,11 +1032,11 @@ function buildErrorDetails(replayWindow: string, decisions: OnlinePosSyncDecisio
       amount: decision.revenue,
       errorCode: code,
       message: readableReplayError(code, decision.errorReason),
-      locationDiagnostics: code === "LOCATION_MAPPING_MISSING" ? decision.locationDiagnostics ?? null : null,
+      locationDiagnostics: code === "LOCATION_MAPPING_MISSING" || code === "LOCATION_MAPPING_CONFLICT" ? decision.locationDiagnostics ?? null : null,
     });
   }
 
-  for (const audit of buildReturnAudits(replayWindow, lines)) {
+  for (const audit of buildReturnAudits(replayWindow, lines, manualClassifications, venueId)) {
     if (audit.classification !== "Usikker retur") continue;
     details.push({
       replayWindow,
@@ -533,6 +1056,37 @@ function buildErrorDetails(replayWindow: string, decisions: OnlinePosSyncDecisio
   return details;
 }
 
+function buildIgnoredDetails(
+  replayWindow: string,
+  decisions: OnlinePosSyncDecision[],
+  lines: OnlinePosTransactionLine[],
+) {
+  const details: ReplayIgnoredDetail[] = [];
+  const linesByKey = new Map(lines.map((line) => [productionExternalLineId(line), line]));
+  for (const decision of decisions) {
+    const ignoredCode = mapReplayIgnoredCode(decision);
+    if (!ignoredCode) continue;
+    const line = linesByKey.get(stripHistoricalReplayPrefix(decision.externalLineId));
+    details.push({
+      replayWindow,
+      transactionId: decision.transactionId,
+      receiptNumber: decision.receiptNumber,
+      datetime: line?.transactionDatetime ?? null,
+      cashRegister: decision.cashRegisterName ?? decision.cashRegisterId,
+      lineId: decision.lineId,
+      onlineposProductId: decision.onlineposProductId,
+      productName: decision.onlineposProductName,
+      quantity: decision.quantitySold,
+      amount: decision.revenue,
+      ignoredCode,
+      message: ignoredCode === "IGNORED_CONTAINER_ONLY"
+        ? "Containerprodukt er eksplicit markeret uden lagerforbrug"
+        : "Pant/gebyr eller eksplicit ikke-lagerført linje",
+    });
+  }
+  return details;
+}
+
 function stripHistoricalReplayPrefix(externalLineId: string) {
   if (externalLineId.startsWith("historical-replay:test-run:")) {
     return externalLineId.replace(/^historical-replay:test-run:/, "");
@@ -541,15 +1095,28 @@ function stripHistoricalReplayPrefix(externalLineId: string) {
   return match?.[1] ?? externalLineId;
 }
 
-function buildReturnAudits(replayWindow: string, lines: OnlinePosTransactionLine[]) {
+function buildReturnAudits(
+  replayWindow: string,
+  lines: OnlinePosTransactionLine[],
+  manualClassifications: Map<string, ManualReplayClassification>,
+  venueId: string | null,
+) {
   const groups = groupLinesByTransaction(lines);
   const audits: ReplayReturnAudit[] = [];
   for (const group of groups.values()) {
-    const signals = getReturnSignals(group);
-    const classification = classifyReplayReturn(group);
-    if (!classification) continue;
     const first = group[0];
+    const replayKey = buildReplayClassificationKey({
+      venueId,
+      transactionId: first.transactionId,
+      receiptNumber: first.receiptNumber,
+    });
+    const manual = manualClassifications.get(replayKey) ?? null;
+    const analysis = analyzeReplayReceipt(group);
+    const signals = getReturnSignals(group, manual);
+    const classification = replayReceiptClassification(analysis, manual);
+    if (!classification && analysis.controlTypes.length === 0) continue;
     audits.push({
+      replayKey,
       replayWindow,
       transactionId: first.transactionId,
       receiptNumber: first.receiptNumber,
@@ -561,15 +1128,31 @@ function buildReturnAudits(replayWindow: string, lines: OnlinePosTransactionLine
       returnId: first.returnId,
       refundId: first.refundId,
       negativeLines: group.filter((line) => line.quantitySold < 0 || line.revenue < 0).length,
+      depositLines: group.filter((line) => line.lineType === "deposit_fee" || line.lineType === "deposit_return").length,
       signals,
-      classification,
+      classification: classification ?? (analysis.classification === "sale_with_deposit_return" ? "Almindeligt salg med pantretur" : "Almindeligt salg"),
+      manualClassification: manual?.classification ?? null,
+      controlTriggers: analysis.controlTypes,
+      depositReturnQuantity: analysis.depositReturnQuantity,
+      depositBreakdown: analysis.depositBreakdown,
+      purchaseValue: analysis.purchaseValue,
+      depositReturnValue: analysis.depositReturnValue,
+      finalTotal: analysis.finalTotal,
+      lines: group.map((line) => ({
+        lineId: line.lineId,
+        productName: line.onlineposProductName,
+        productGroupName: line.onlineposProductGroupName,
+        quantity: line.quantitySold,
+        amount: line.revenue,
+        lineType: line.lineType,
+      })),
     });
   }
   return audits;
 }
 
 function buildModifierAudits(replayWindow: string, lines: OnlinePosTransactionLine[], decisions: OnlinePosSyncDecision[]) {
-  const decisionsByKey = new Map(decisions.map((decision) => [decision.externalLineId, decision]));
+  const decisionsByKey = new Map(decisions.map((decision) => [stripHistoricalReplayPrefix(decision.externalLineId), decision]));
   return lines
     .filter((line) => line.parentLineId || line.lineType === "modifier_stock_item" || line.revenue === 0)
     .map((line) => {
@@ -617,8 +1200,9 @@ function buildStockPreview(
         transactionId: decision.transactionId,
         lineId: decision.lineId,
         quantity: -Math.abs(component.quantity),
-        quantityText: formatReplayQuantity(-Math.abs(component.quantity), product?.name),
+        quantityText: component.consumptionDiagnostics.humanReadableDelta,
         internalQuantity: component.quantity,
+        ...component.consumptionDiagnostics,
         mappingId: decision.mappingId,
         decision: "Klar",
       });
@@ -635,10 +1219,18 @@ function groupErrors(details: ReplayErrorDetail[]) {
     .sort((a, b) => b.count - a.count || a.code.localeCompare(b.code, "da"));
 }
 
+function groupIgnoredLines(details: ReplayIgnoredDetail[]) {
+  const counts = new Map<ReplayIgnoredCode, number>();
+  for (const detail of details) counts.set(detail.ignoredCode, (counts.get(detail.ignoredCode) ?? 0) + 1);
+  return Array.from(counts.entries())
+    .map(([code, count]) => ({ code, count }))
+    .sort((a, b) => b.count - a.count || a.code.localeCompare(b.code, "da"));
+}
+
 function summarizeReturns(returns: ReplayReturnAudit[]) {
   return {
     verified: returns.filter((item) => item.classification === "Verificeret retur").length,
-    probable: returns.filter((item) => item.classification === "Sandsynlig retur").length,
+    saleWithDepositReturn: returns.filter((item) => item.classification === "Almindeligt salg med pantretur").length,
     uncertain: returns.filter((item) => item.classification === "Usikker retur").length,
   };
 }
@@ -693,17 +1285,103 @@ function summarizeUnmappedProducts(
   }));
 }
 
-function getReturnSignals(lines: OnlinePosTransactionLine[]) {
-  if (lines.length === 0) return [];
-  const first = lines[0];
-  const typeText = `${first.transactionType ?? ""} ${first.transactionStatus ?? ""}`.toLocaleLowerCase("da-DK");
-  const signals: string[] = [];
-  if (typeText.includes("refund") || typeText.includes("return") || typeText.includes("retur")) signals.push("explicit_refund_type");
-  if (first.returnId) signals.push("return_id_present");
-  if (first.refundId) signals.push("refund_id_present");
-  if ((first.transactionTotal ?? 0) < 0 && lines.some((line) => line.quantitySold < 0 || line.revenue < 0)) signals.push("negative_total_and_lines");
-  if (lines.some((line) => (line.onlineposProductName ?? "").toLocaleLowerCase("da-DK").includes("retur"))) signals.push("return_text_signal");
+function buildBlockingIssueGroups(
+  errors: ReplayErrorDetail[],
+  modifierAudits: ReplayModifierAudit[],
+  returnAudits: ReplayReturnAudit[],
+) {
+  const groups = new Map<string, ReplayBlockingIssueGroup>();
+
+  for (const error of errors) {
+    if (!blockingTestRunErrorCodes.has(error.errorCode)) continue;
+    if (error.errorCode === "RETURN_DETECTION_UNCERTAIN") continue;
+    const modifier = modifierAudits.find((item) => item.transactionId === error.transactionId && item.lineId === error.lineId);
+    const isLocationIssue = error.errorCode === "LOCATION_MAPPING_MISSING" || error.errorCode === "LOCATION_MAPPING_CONFLICT";
+    const groupKey = isLocationIssue
+      ? `${error.errorCode}:${error.locationDiagnostics?.canonicalKey ?? error.cashRegister ?? ""}`
+      : error.errorCode === "MODIFIER_MAPPING_FAILED"
+      ? `${error.errorCode}:${error.onlineposProductId ?? ""}:${error.productName ?? ""}:${modifier?.economyProduct ?? ""}`
+      : `${error.errorCode}:${error.onlineposProductId ?? ""}:${error.productName ?? ""}`;
+    upsertBlockingGroup(groups, groupKey, {
+      code: error.errorCode,
+      groupKey,
+      label: isLocationIssue ? error.cashRegister ?? "Ukendt OnlinePOS-kasse" : error.productName ?? "Ukendt OnlinePOS-produkt",
+      count: 1,
+      exampleReceiptNumber: error.receiptNumber,
+      exampleTransactionId: error.transactionId,
+      cashRegister: error.cashRegister,
+      datetime: error.datetime,
+      quantity: Math.abs(error.quantity),
+      amount: error.amount,
+      adminHref: isLocationIssue ? "/admin/onlinepos/lokationer" : onlinePosMappingHref(error),
+      adminLabel: isLocationIssue ? "Ret lokationsmapping" : error.errorCode === "MODIFIER_MAPPING_FAILED" ? "Ret modifier i Produktmapping" : "Ret produkt i Produktmapping",
+      details: isLocationIssue
+        ? `Canonical key: ${error.locationDiagnostics?.canonicalKey ?? "mangler"} · Kandidater: ${error.locationDiagnostics?.candidateMappingsLoaded.length ?? 0}`
+        : error.errorCode === "MODIFIER_MAPPING_FAILED"
+        ? `Modifier: ${error.productName ?? "Ukendt"} · Parent: ${modifier?.economyProduct ?? "Ukendt"}`
+        : `OnlinePOS ID: ${error.onlineposProductId ?? "mangler"}`,
+    });
+  }
+
+  for (const audit of returnAudits.filter((item) => item.classification === "Usikker retur")) {
+    const reason = audit.signals.join(", ") || "Ingen sikre retursignaler";
+    const groupKey = `RETURN_DETECTION_UNCERTAIN:${reason}`;
+    upsertBlockingGroup(groups, groupKey, {
+      code: "RETURN_DETECTION_UNCERTAIN",
+      groupKey,
+      label: reason,
+      count: 1,
+      exampleReceiptNumber: audit.receiptNumber,
+      exampleTransactionId: audit.transactionId,
+      cashRegister: audit.cashRegister,
+      datetime: audit.datetime,
+      quantity: audit.lines.reduce((sum, line) => sum + Math.abs(line.quantity), 0),
+      amount: audit.total ?? 0,
+      adminHref: "#returklassifikation",
+      adminLabel: "Klassificér bon her på siden",
+      details: `Negative linjer: ${audit.negativeLines} · Pantlinjer: ${audit.depositLines} · Linjer: ${audit.lines.length}`,
+    });
+  }
+
+  return Array.from(groups.values()).sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, "da"));
+}
+
+function upsertBlockingGroup(groups: Map<string, ReplayBlockingIssueGroup>, key: string, next: ReplayBlockingIssueGroup) {
+  const current = groups.get(key);
+  if (!current) {
+    groups.set(key, next);
+    return;
+  }
+  current.count += next.count;
+  current.quantity += next.quantity;
+  current.amount += next.amount;
+}
+
+function onlinePosMappingHref(error: ReplayErrorDetail) {
+  const params = new URLSearchParams();
+  if (error.onlineposProductId) params.set("onlineposProductId", error.onlineposProductId);
+  if (error.productName) params.set("onlineposName", error.productName);
+  params.set("source", "historical-replay");
+  params.set("errorCode", error.errorCode);
+  return `/onlinepos/mapping?${params.toString()}`;
+}
+
+function getReturnSignals(lines: OnlinePosTransactionLine[], manualClassification: Pick<ManualReplayClassification, "classification"> | null = null) {
+  const signals = [...analyzeReplayReceipt(lines).signals];
+  if (manualClassification?.classification) signals.push(`manual_${manualClassification.classification}`);
   return signals;
+}
+
+function replayReceiptClassification(
+  analysis: OnlinePosReceiptControlAnalysis,
+  manual: Pick<ManualReplayClassification, "classification"> | null,
+): ReplayReturnAudit["classification"] | null {
+  if (manual?.classification === "return") return "Verificeret retur";
+  if (manual?.classification === "void" || manual?.classification === "ignored_testdata") return null;
+  if (analysis.classification === "return_receipt") return "Verificeret retur";
+  if (analysis.classification === "uncertain" && manual?.classification !== "sale") return "Usikker retur";
+  if (analysis.classification === "sale_with_deposit_return") return "Almindeligt salg med pantretur";
+  return null;
 }
 
 function groupLinesByTransaction(lines: OnlinePosTransactionLine[]) {
@@ -719,6 +1397,7 @@ function groupLinesByTransaction(lines: OnlinePosTransactionLine[]) {
 
 function readableReplayError(code: ReplayErrorCode, fallback: string | null) {
   if (code === "LOCATION_MAPPING_MISSING") return "OnlinePOS-kassen mangler godkendt lokationsmapping";
+  if (code === "LOCATION_MAPPING_CONFLICT") return "OnlinePOS-kassen matcher flere aktive godkendte lokationsmappinger";
   if (code === "PRODUCT_MAPPING_MISSING") return "OnlinePOS-produktet mangler godkendt produktmapping";
   if (code === "MODIFIER_MAPPING_FAILED") return "Modifier/MSG-linjen mangler godkendt lagerkomponent";
   if (code === "UNIT_CONVERSION_FAILED") return "Mapping mangler gyldig vare eller forbrug pr. salg";
@@ -735,19 +1414,26 @@ function normalizeName(value: string | null | undefined) {
   return value?.trim().toLocaleLowerCase("da-DK").replace(/[^a-z0-9æøå]+/g, "-").replace(/^-|-$/g, "") || null;
 }
 
-function formatReplayQuantity(quantity: number, productName: string | null | undefined) {
-  const absolute = Math.abs(quantity).toLocaleString("da-DK", { maximumFractionDigits: 3 });
-  const prefix = quantity < 0 ? "-" : "";
-  return `${prefix}${absolute} ${productName ? "enheder" : "enheder"}`;
-}
-
 function emptyTotals() {
-  return { processedCount: 0, ignoredCount: 0, failedCount: 0, missingMappingCount: 0, duplicateCount: 0, expectedStockDelta: 0 };
+  return {
+    processedCount: 0,
+    ignoredCount: 0,
+    classifiedIgnoredCount: 0,
+    ignoredNonStockLineCount: 0,
+    ignoredContainerOnlyCount: 0,
+    failedCount: 0,
+    missingMappingCount: 0,
+    duplicateCount: 0,
+    expectedStockDelta: 0,
+  };
 }
 
 function addTotals(totals: ReturnType<typeof emptyTotals>, summary: ReturnType<typeof summarizeDecisions>) {
   totals.processedCount += summary.processedCount;
   totals.ignoredCount += summary.ignoredCount;
+  totals.classifiedIgnoredCount += summary.classifiedIgnoredCount;
+  totals.ignoredNonStockLineCount += summary.ignoredNonStockLineCount;
+  totals.ignoredContainerOnlyCount += summary.ignoredContainerOnlyCount;
   totals.failedCount += summary.failedCount;
   totals.missingMappingCount += summary.missingMappingCount;
   totals.duplicateCount += summary.duplicateCount;
@@ -777,4 +1463,14 @@ function countReturnTransactions(lines: OnlinePosTransactionLine[]) {
 
 function distinct(values: string[]) {
   return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b, "da"));
+}
+
+function stringOrNull(value: unknown) {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value === "number") return String(value);
+  return null;
+}
+
+function normalizeKeyPart(value: string | null | undefined) {
+  return value?.trim().toLocaleLowerCase("da-DK").replace(/\s+/g, " ") || null;
 }

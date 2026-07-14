@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  analyzeRawOnlinePosReceipt,
   buildReturnNotificationDedupeKey,
   buildReturnNotificationText,
   buildReturnNotificationTitle,
@@ -22,24 +23,26 @@ test("almindeligt salg bliver ikke behandlet som retur", () => {
   assert.equal(parsed, null);
 });
 
-test("negativ transaktion bliver registreret som retur", () => {
-  const parsed = parseOnlinePosReturn({
+test("negativ produkttransaktion uden retursignal går til manuel kontrol", () => {
+  const transaction = {
     transaction_id: "tx-2",
     receipt_number: "101",
     total: -40,
     cash_register: { name: "Rødbar" },
     lines: [{ line_id: "1", product_id: "233", product_name: "Kildevand", quantity: -2, net_price: -40 }],
-  });
+  };
+  const parsed = parseOnlinePosReturn(transaction);
+  const analysis = analyzeRawOnlinePosReceipt(transaction);
 
-  assert.equal(parsed?.receiptNumber, "101");
-  assert.equal(parsed?.lines[0].returnedQuantity, 2);
-  assert.equal(parsed?.controlReasons.includes("Retur fundet ud fra negative linjer"), true);
+  assert.equal(parsed, null);
+  assert.equal(analysis.classification, "uncertain");
 });
 
 test("pant og krus markeres uden normal lagerpåvirkning", () => {
   const parsed = parseOnlinePosReturn({
     transaction_id: "tx-3",
     receipt_number: "102",
+    type: "refund",
     total: -20,
     lines: [
       { line_id: "1", product_name: "RETUR Krus", product_group_name: "Pant", quantity: -1, net_price: -20 },

@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { OnlinePosInventoryMapping } from "../onlinepos/inventory-mappings";
-import { loadReturnContext, parseOnlinePosReturn, registerAndProcessReturn } from "../onlinepos/returns";
+import type { OnlinePosInventoryMapping } from "../onlinepos/inventory-mappings.ts";
+import { calculateOnlinePosInventoryConsumption } from "../onlinepos/inventory-unit-conversion.ts";
+import { loadReturnContext, parseOnlinePosReturn, registerAndProcessReturn } from "../onlinepos/returns.ts";
 import {
   buildReturnTestTransaction,
   calculateReturnTestAdjustmentReversal,
@@ -23,7 +24,7 @@ import {
   type PreparedReturnTestLine,
   type ReturnTestLineInput,
   type ReturnTestScenarioId,
-} from "./return-test-harness-core";
+} from "./return-test-harness-core.ts";
 
 export {
   buildReturnTestTransaction,
@@ -124,6 +125,21 @@ export async function runReturnTestHarnessScenario(supabase: SupabaseClient, inp
 
 function buildTestMapping(scenario: ReturnTestScenarioId, line: PreparedReturnTestLine): OnlinePosInventoryMapping {
   const action = scenarioMappingAction(scenario, line.lineType);
+  const consumptionPerSale = line.product && action === "consume_stock"
+    ? line.conversionFactor / calculateOnlinePosInventoryConsumption({
+      soldQuantity: 1,
+      consumptionPerSale: 1,
+      product: {
+        unit: line.product.unit,
+        unitsPerCase: line.product.units_per_case,
+        purchaseUnitLabel: line.product.purchase_unit_label,
+        unitsPerPurchaseUnit: line.product.units_per_purchase_unit,
+        stockUnitLabel: line.product.stock_unit_label,
+        contentPerStockUnit: line.product.content_per_stock_unit,
+        consumptionUnitLabel: line.product.consumption_unit_label,
+      },
+    }).storedQuantity
+    : null;
   return {
     id: `test-harness-${line.lineId}`,
     onlineposProductId: line.onlineposProductId,
@@ -131,10 +147,10 @@ function buildTestMapping(scenario: ReturnTestScenarioId, line: PreparedReturnTe
     onlineposProductGroupName: scenarioProductGroup(scenario, line.lineType),
     lineType: scenarioLineType(scenario, line.lineType),
     backeventInventoryItemId: action === "consume_stock" ? line.product?.id ?? null : null,
-    conversionFactor: action === "consume_stock" ? line.conversionFactor : null,
+    conversionFactor: action === "consume_stock" ? consumptionPerSale : null,
     mappingAction: action,
     status: "approved",
-    components: action === "consume_stock" ? [{ backeventInventoryItemId: line.product?.id ?? null, conversionFactor: line.conversionFactor, sortOrder: 0 }] : [],
+    components: action === "consume_stock" ? [{ backeventInventoryItemId: line.product?.id ?? null, conversionFactor: consumptionPerSale, sortOrder: 0 }] : [],
     createdAt: null,
     updatedAt: null,
   };

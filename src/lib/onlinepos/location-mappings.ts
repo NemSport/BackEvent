@@ -29,19 +29,46 @@ export type OnlinePosCashRegisterRef = {
 };
 
 export type OnlinePosLocationDiagnostics = {
+  canonicalKey: string;
   incomingName: string | null;
   incomingId: string | null;
   venueId: string | null;
   normalizedName: string | null;
-  candidateMappingsLoaded: Array<{
-    id: string;
-    venueId: string | null;
-    cashRegisterId: string | null;
-    cashRegisterName: string;
-    normalizedCashRegisterName: string;
-    active: boolean;
-    hasBackeventLocation: boolean;
-  }>;
+  incomingNames: string[];
+  incomingIds: string[];
+  venueValues: string[];
+  selectedMappingRow: OnlinePosLocationDiagnosticCandidate | null;
+  matchMethod: "id" | "exact_name" | null;
+  duplicateCandidates: OnlinePosLocationDiagnosticCandidate[];
+  conflictingCandidates: OnlinePosLocationDiagnosticCandidate[];
+  candidateMappingsLoaded: OnlinePosLocationDiagnosticCandidate[];
+};
+
+export type OnlinePosLocationDiagnosticCandidate = {
+  id: string;
+  venueId: string | null;
+  cashRegisterId: string | null;
+  cashRegisterName: string;
+  normalizedCashRegisterName: string;
+  backeventLocationId: string | null;
+  active: boolean;
+  hasBackeventLocation: boolean;
+};
+
+export type OnlinePosCanonicalLocationResolution = {
+  canonicalKey: string;
+  resolution: OnlinePosLocationResolution;
+};
+
+export type OnlinePosLocationResolver = {
+  resolve: (input: OnlinePosCashRegisterRef) => OnlinePosLocationResolution;
+  resolutions: OnlinePosCanonicalLocationResolution[];
+};
+
+type LocationDiagnosticSets = {
+  names: string[];
+  ids: string[];
+  venues: string[];
 };
 
 export type OnlinePosLocationResolution =
@@ -50,13 +77,18 @@ export type OnlinePosLocationResolution =
       mapping: OnlinePosLocationMapping;
       location: BackEventLocationForMapping;
       matchedBy: "cash_register_id" | "name";
+      diagnostics: OnlinePosLocationDiagnostics;
     }
   | {
       ok: false;
       mapping: null;
       location: null;
       matchedBy: null;
-      errorCode: "ONLINEPOS_LOCATION_UNMAPPED" | "ONLINEPOS_LOCATION_MAPPING_INACTIVE" | "BACKEVENT_LOCATION_UNKNOWN";
+      errorCode:
+        | "ONLINEPOS_LOCATION_UNMAPPED"
+        | "ONLINEPOS_LOCATION_MAPPING_INACTIVE"
+        | "ONLINEPOS_LOCATION_MAPPING_CONFLICT"
+        | "BACKEVENT_LOCATION_UNKNOWN";
       errorReason: string;
       diagnostics: OnlinePosLocationDiagnostics;
     };
@@ -120,28 +152,116 @@ export function resolveOnlinePosLocation(
   mappings: OnlinePosLocationMapping[],
   locations: BackEventLocationForMapping[],
 ): OnlinePosLocationResolution {
+  return createOnlinePosLocationResolver([input], mappings, locations).resolve(input);
+}
+
+export function createOnlinePosLocationResolver(
+  inputs: OnlinePosCashRegisterRef[],
+  mappings: OnlinePosLocationMapping[],
+  locations: BackEventLocationForMapping[],
+): OnlinePosLocationResolver {
+  const sortedMappings = sortOnlinePosLocationMappings(mappings);
+  const inputGroups = new Map<string, OnlinePosCashRegisterRef[]>();
+
+  for (const input of inputs) {
+    const key = buildOnlinePosCanonicalLocationKey(input, sortedMappings);
+    const group = inputGroups.get(key) ?? [];
+    group.push(input);
+    inputGroups.set(key, group);
+  }
+
+  const cache = new Map<string, OnlinePosLocationResolution>();
+  for (const [canonicalKey, group] of inputGroups) {
+    cache.set(canonicalKey, resolveCanonicalLocation(canonicalKey, group, sortedMappings, locations));
+  }
+
+  return {
+    resolve(input) {
+      const canonicalKey = buildOnlinePosCanonicalLocationKey(input, sortedMappings);
+      const cached = cache.get(canonicalKey);
+      if (cached) return cached;
+      const resolution = resolveCanonicalLocation(canonicalKey, [input], sortedMappings, locations);
+      cache.set(canonicalKey, resolution);
+      return resolution;
+    },
+    get resolutions() {
+      return Array.from(cache.entries())
+        .map(([canonicalKey, resolution]) => ({ canonicalKey, resolution }))
+        .sort((a, b) => a.canonicalKey.localeCompare(b.canonicalKey, "da"));
+    },
+  };
+}
+
+export function buildOnlinePosCanonicalLocationKey(
+  input: OnlinePosCashRegisterRef,
+  mappings: OnlinePosLocationMapping[] = [],
+) {
+  const cashRegisterId = normalizeOnlinePosCashRegisterId(input.cashRegisterId);
+  const normalizedName = normalizeOnlinePosCashRegisterName(input.cashRegisterName);
+  const baseKey = cashRegisterId ? `id:${cashRegisterId}` : `name:${normalizedName ?? "unknown"}`;
+  const inputVenue = normalizeVenueForMatch(input.venueId);
+  if (!inputVenue) return baseKey;
+
+  const hasStoredRealVenue = mappings.some((mapping) => {
+    if (!normalizeVenueForMatch(mapping.venueId)) return false;
+    if (cashRegisterId && normalizeOnlinePosCashRegisterId(mapping.cashRegisterId) === cashRegisterId) return true;
+    return Boolean(normalizedName && canFallbackByName(cashRegisterId, mapping) && mappingNameMatches(mapping, normalizedName));
+  });
+  return hasStoredRealVenue ? `${baseKey}|venue:${inputVenue}` : baseKey;
+}
+
+function resolveCanonicalLocation(
+  canonicalKey: string,
+  inputs: OnlinePosCashRegisterRef[],
+  mappings: OnlinePosLocationMapping[],
+  locations: BackEventLocationForMapping[],
+): OnlinePosLocationResolution {
+  const input = inputs[0] ?? {};
   const venueId = normalizeVenue(input.venueId);
   const cashRegisterId = normalizeOnlinePosCashRegisterId(input.cashRegisterId);
   const normalizedName = normalizeOnlinePosCashRegisterName(input.cashRegisterName);
-  const approvedMappings = mappings.filter((mapping) => mapping.backeventLocationId && compatibleVenue(mapping.venueId, venueId));
-  const activeMappings = approvedMappings.filter((mapping) => mapping.active);
-  const inactiveMappings = approvedMappings.filter((mapping) => !mapping.active);
-  const diagnostics = buildLocationDiagnostics(input, venueId, cashRegisterId, normalizedName, mappings);
+  const normalizedNames = distinctSorted(inputs.map((item) => normalizeOnlinePosCashRegisterName(item.cashRegisterName)));
+  const approvedMappings = mappings.filter((mapping) => mapping.active && mapping.backeventLocationId && compatibleVenue(mapping.venueId, venueId));
+  const inactiveMappings = mappings.filter((mapping) => !mapping.active && mapping.backeventLocationId && compatibleVenue(mapping.venueId, venueId));
+  const diagnosticSets = collectDiagnosticSets(inputs);
+  let matchedCandidates: OnlinePosLocationMapping[] = [];
+  let matchMethod: "id" | "exact_name" | null = null;
 
   if (cashRegisterId) {
-    const mapping = activeMappings.find((item) => normalizeOnlinePosCashRegisterId(item.cashRegisterId) === cashRegisterId);
-    if (mapping) return resolveMappedLocation(mapping, locations, "cash_register_id");
-    const inactive = inactiveMappings.find((item) => normalizeOnlinePosCashRegisterId(item.cashRegisterId) === cashRegisterId);
-    if (inactive) return inactiveResolution(diagnostics);
+    matchedCandidates = approvedMappings.filter((item) => normalizeOnlinePosCashRegisterId(item.cashRegisterId) === cashRegisterId);
+    if (matchedCandidates.length > 0) matchMethod = "id";
   }
 
-  if (normalizedName) {
-    const mapping = activeMappings.find((item) => canFallbackByName(cashRegisterId, item) && mappingNameMatches(item, normalizedName));
-    if (mapping) return resolveMappedLocation(mapping, locations, "name");
-    const inactive = inactiveMappings.find((item) => canFallbackByName(cashRegisterId, item) && mappingNameMatches(item, normalizedName));
-    if (inactive) return inactiveResolution(diagnostics);
+  if (matchedCandidates.length === 0 && normalizedNames.length > 0) {
+    matchedCandidates = approvedMappings.filter((item) =>
+      canFallbackByName(cashRegisterId, item) && normalizedNames.some((name) => mappingNameMatches(item, name)),
+    );
+    if (matchedCandidates.length > 0) matchMethod = "exact_name";
   }
 
+  const diagnostics = buildLocationDiagnostics(
+    canonicalKey,
+    input,
+    venueId,
+    cashRegisterId,
+    normalizedName,
+    normalizedNames,
+    mappings,
+    diagnosticSets,
+    matchedCandidates,
+    matchMethod,
+  );
+
+  if (matchedCandidates.length > 1) return conflictResolution(diagnostics);
+  if (matchedCandidates.length === 1 && matchMethod) {
+    return resolveMappedLocation(matchedCandidates[0], locations, matchMethod === "id" ? "cash_register_id" : "name", diagnostics);
+  }
+
+  const inactiveMatch = inactiveMappings.some((item) => {
+    if (cashRegisterId && normalizeOnlinePosCashRegisterId(item.cashRegisterId) === cashRegisterId) return true;
+    return normalizedNames.some((name) => canFallbackByName(cashRegisterId, item) && mappingNameMatches(item, name));
+  });
+  if (inactiveMatch) return inactiveResolution(diagnostics);
   return unmappedResolution(diagnostics);
 }
 
@@ -155,7 +275,7 @@ export async function getOnlinePosLocationMappings(supabase: SupabaseClient): Pr
     throw new Error("OnlinePOS-lokationsmappinger kunne ikke hentes");
   }
 
-  return (data ?? []).map(toOnlinePosLocationMapping);
+  return sortOnlinePosLocationMappings((data ?? []).map(toOnlinePosLocationMapping));
 }
 
 export function toOnlinePosLocationMapping(row: Record<string, unknown>): OnlinePosLocationMapping {
@@ -178,19 +298,22 @@ export async function recordOnlinePosLocationDiscoveries(
   supabase: SupabaseClient,
   discoveries: OnlinePosLocationDiscoveryInput[],
 ) {
-  const rows = mergeLocationDiscoveries(discoveries);
+  const storedMappings = await getOnlinePosLocationMappings(supabase);
+  const rows = mergeLocationDiscoveries(discoveries, storedMappings);
   for (const row of rows) {
-    const existing = await findExistingLocationDiscovery(supabase, row);
-    if (existing) {
-      await supabase
-        .from("backevent_onlinepos_location_mappings")
-        .update({
-          onlinepos_cash_register_name: row.cashRegisterName,
-          normalized_cash_register_name: row.normalizedCashRegisterName,
-          first_seen_at: minDate(existing.first_seen_at, row.firstSeenAt),
-          last_seen_at: maxDate(existing.last_seen_at, row.lastSeenAt),
-        })
-        .eq("id", existing.id);
+    const existingRows = storedMappings.filter((mapping) => locationDiscoveryMatches(row, mapping));
+    if (existingRows.length > 0) {
+      for (const existing of existingRows) {
+        await supabase
+          .from("backevent_onlinepos_location_mappings")
+          .update({
+            onlinepos_cash_register_name: row.cashRegisterName,
+            normalized_cash_register_name: row.normalizedCashRegisterName,
+            first_seen_at: minDate(existing.firstSeenAt, row.firstSeenAt),
+            last_seen_at: maxDate(existing.lastSeenAt, row.lastSeenAt),
+          })
+          .eq("id", existing.id);
+      }
       continue;
     }
 
@@ -207,7 +330,10 @@ export async function recordOnlinePosLocationDiscoveries(
   }
 }
 
-export function mergeLocationDiscoveries(discoveries: OnlinePosLocationDiscoveryInput[]) {
+export function mergeLocationDiscoveries(
+  discoveries: OnlinePosLocationDiscoveryInput[],
+  storedMappings: OnlinePosLocationMapping[] = [],
+) {
   const merged = new Map<string, {
     venueId: string | null;
     cashRegisterId: string | null;
@@ -224,7 +350,7 @@ export function mergeLocationDiscoveries(discoveries: OnlinePosLocationDiscovery
 
     const venueId = normalizeVenue(discovery.venueId);
     const cashRegisterId = normalizeOnlinePosCashRegisterId(discovery.cashRegisterId);
-    const key = `${venueId ?? ""}:${cashRegisterId ? `id:${cashRegisterId}` : `name:${normalizedCashRegisterName}`}`;
+    const key = buildOnlinePosCanonicalLocationKey({ venueId, cashRegisterId, cashRegisterName }, storedMappings);
     const existing = merged.get(key);
     if (!existing) {
       merged.set(key, {
@@ -253,6 +379,7 @@ function resolveMappedLocation(
   mapping: OnlinePosLocationMapping,
   locations: BackEventLocationForMapping[],
   matchedBy: "cash_register_id" | "name",
+  diagnostics: OnlinePosLocationDiagnostics,
 ): OnlinePosLocationResolution {
   const location = locations.find((item) => item.id === mapping.backeventLocationId && item.active !== false);
   if (!location) {
@@ -263,16 +390,10 @@ function resolveMappedLocation(
       matchedBy: null,
       errorCode: "BACKEVENT_LOCATION_UNKNOWN",
       errorReason: "Ukendt BackEvent-lokation",
-      diagnostics: {
-        incomingName: mapping.cashRegisterName,
-        incomingId: mapping.cashRegisterId,
-        venueId: mapping.venueId,
-        normalizedName: mapping.normalizedCashRegisterName,
-        candidateMappingsLoaded: [toDiagnosticCandidate(mapping)],
-      },
+      diagnostics,
     };
   }
-  return { ok: true, mapping, location, matchedBy };
+  return { ok: true, mapping, location, matchedBy, diagnostics };
 }
 
 function inactiveResolution(diagnostics: OnlinePosLocationDiagnostics): OnlinePosLocationResolution {
@@ -299,35 +420,27 @@ function unmappedResolution(diagnostics: OnlinePosLocationDiagnostics): OnlinePo
   };
 }
 
-async function findExistingLocationDiscovery(
-  supabase: SupabaseClient,
+function conflictResolution(diagnostics: OnlinePosLocationDiagnostics): OnlinePosLocationResolution {
+  return {
+    ok: false,
+    mapping: null,
+    location: null,
+    matchedBy: null,
+    errorCode: "ONLINEPOS_LOCATION_MAPPING_CONFLICT",
+    errorReason: "OnlinePOS-lokationsmapping har konflikt",
+    diagnostics,
+  };
+}
+
+function locationDiscoveryMatches(
   row: ReturnType<typeof mergeLocationDiscoveries>[number],
+  mapping: OnlinePosLocationMapping,
 ) {
-  if (row.cashRegisterId) {
-    const { data } = await supabase
-      .from("backevent_onlinepos_location_mappings")
-      .select("id,onlinepos_venue_id,first_seen_at,last_seen_at")
-      .eq("onlinepos_cash_register_id", row.cashRegisterId)
-      .limit(20);
-    return (data ?? []).find((item) => compatibleVenue(stringOrNull(item.onlinepos_venue_id), row.venueId)) ?? null;
-  }
-
-  const exactName = await supabase
-    .from("backevent_onlinepos_location_mappings")
-    .select("id,onlinepos_venue_id,first_seen_at,last_seen_at")
-    .is("onlinepos_cash_register_id", null)
-    .eq("normalized_cash_register_name", row.normalizedCashRegisterName)
-    .limit(20);
-  const exactNameMatch = (exactName.data ?? []).find((item) => compatibleVenue(stringOrNull(item.onlinepos_venue_id), row.venueId));
-  if (exactNameMatch) return exactNameMatch;
-
-  const storedName = await supabase
-    .from("backevent_onlinepos_location_mappings")
-    .select("id,onlinepos_venue_id,first_seen_at,last_seen_at")
-    .is("onlinepos_cash_register_id", null)
-    .eq("onlinepos_cash_register_name", row.cashRegisterName)
-    .limit(20);
-  return (storedName.data ?? []).find((item) => compatibleVenue(stringOrNull(item.onlinepos_venue_id), row.venueId)) ?? null;
+  if (!compatibleVenue(mapping.venueId, row.venueId)) return false;
+  const rowId = normalizeOnlinePosCashRegisterId(row.cashRegisterId);
+  const mappingId = normalizeOnlinePosCashRegisterId(mapping.cashRegisterId);
+  if (rowId || mappingId) return Boolean(rowId && mappingId && rowId === mappingId);
+  return mappingNameMatches(mapping, row.normalizedCashRegisterName);
 }
 
 function compatibleVenue(mappingVenue: string | null, inputVenue: string | null) {
@@ -367,27 +480,41 @@ function normalizeLocationNameForSuggestion(value: string) {
 }
 
 function buildLocationDiagnostics(
+  canonicalKey: string,
   input: OnlinePosCashRegisterRef,
   venueId: string | null,
   cashRegisterId: string | null,
   normalizedName: string | null,
+  normalizedNames: string[],
   mappings: OnlinePosLocationMapping[],
+  sets: LocationDiagnosticSets,
+  matchedCandidates: OnlinePosLocationMapping[],
+  matchMethod: "id" | "exact_name" | null,
 ): OnlinePosLocationDiagnostics {
   const candidates = mappings
     .filter((mapping) => compatibleVenue(mapping.venueId, venueId))
     .filter((mapping) => {
       if (cashRegisterId && normalizeOnlinePosCashRegisterId(mapping.cashRegisterId) === cashRegisterId) return true;
-      if (normalizedName && canFallbackByName(cashRegisterId, mapping) && mappingNameMatches(mapping, normalizedName)) return true;
+      if (normalizedNames.some((name) => canFallbackByName(cashRegisterId, mapping) && mappingNameMatches(mapping, name))) return true;
       return false;
     })
-    .slice(0, 10)
+    .slice(0, 20)
     .map(toDiagnosticCandidate);
+  const matched = matchedCandidates.map(toDiagnosticCandidate);
 
   return {
+    canonicalKey,
     incomingName: input.cashRegisterName ?? null,
     incomingId: cashRegisterId,
     venueId,
     normalizedName,
+    incomingNames: sets.names,
+    incomingIds: sets.ids,
+    venueValues: sets.venues,
+    selectedMappingRow: matched.length === 1 ? matched[0] : null,
+    matchMethod,
+    duplicateCandidates: matched.length > 1 ? matched : [],
+    conflictingCandidates: matched.length > 1 ? matched : [],
     candidateMappingsLoaded: candidates,
   };
 }
@@ -399,9 +526,43 @@ function toDiagnosticCandidate(mapping: OnlinePosLocationMapping) {
     cashRegisterId: mapping.cashRegisterId,
     cashRegisterName: mapping.cashRegisterName,
     normalizedCashRegisterName: mapping.normalizedCashRegisterName,
+    backeventLocationId: mapping.backeventLocationId,
     active: mapping.active,
     hasBackeventLocation: Boolean(mapping.backeventLocationId),
   };
+}
+
+function collectDiagnosticSets(inputs: OnlinePosCashRegisterRef[]): LocationDiagnosticSets {
+  return {
+    names: distinctSorted(inputs.map((input) => input.cashRegisterName?.trim() || null)),
+    ids: distinctSorted(inputs.map((input) => normalizeOnlinePosCashRegisterId(input.cashRegisterId))),
+    venues: distinctSorted(inputs.map((input) => normalizeVenue(input.venueId))),
+  };
+}
+
+function distinctSorted(values: Array<string | null>) {
+  return Array.from(new Set(values.filter((value): value is string => Boolean(value))))
+    .sort((a, b) => a.localeCompare(b, "da"));
+}
+
+function sortOnlinePosLocationMappings(mappings: OnlinePosLocationMapping[]) {
+  return [...mappings].sort((a, b) => {
+    const aParts = [
+      normalizeOnlinePosCashRegisterId(a.cashRegisterId) ?? "",
+      normalizeOnlinePosCashRegisterName(a.cashRegisterName) ?? "",
+      normalizeVenueForMatch(a.venueId) ?? "",
+      a.backeventLocationId ?? "",
+      a.id,
+    ];
+    const bParts = [
+      normalizeOnlinePosCashRegisterId(b.cashRegisterId) ?? "",
+      normalizeOnlinePosCashRegisterName(b.cashRegisterName) ?? "",
+      normalizeVenueForMatch(b.venueId) ?? "",
+      b.backeventLocationId ?? "",
+      b.id,
+    ];
+    return aParts.join("|").localeCompare(bParts.join("|"), "da");
+  });
 }
 
 function minDate(a: string | null, b: string | null) {

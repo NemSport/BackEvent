@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  applyOnlinePosSyncDecisions,
   buildExternalLineId,
   buildSyncDecisions,
   classifyOnlinePosLine,
@@ -109,4 +110,116 @@ test("umappet kasse påvirker ikke lager og bruger ikke Centrallager fallback", 
   assert.equal(decision.errorReason, "OnlinePOS-kasse mangler lokationsmapping");
   assert.equal(decision.sourceLocationId, null);
   assert.equal(decision.components.length, 0);
+});
+
+test("live sync resolver samme canonical kasse ens på 100 linjer", () => {
+  const lines = Array.from({ length: 100 }, (_, index) => line({
+    transactionId: `tx-${index}`,
+    lineId: `line-${index}`,
+    lineIndex: index,
+  }));
+  const decisions = buildSyncDecisions(lines, [approvedMapping], [product], locations, locationMappings);
+
+  assert.equal(decisions.length, 100);
+  assert.equal(decisions.every((item) => item.status === "processed" && item.locationId === "roedbar"), true);
+  assert.equal(new Set(decisions.map((item) => item.locationDiagnostics?.canonicalKey)).size, 1);
+  assert.equal(decisions[0].locationDiagnostics?.incomingNames.length, 1);
+});
+
+test("lokationskonflikt stopper live sync eksplicit", () => {
+  const duplicateMappings = [
+    locationMappings[0],
+    { ...locationMappings[0], id: "loc-map-roedbar-duplicate", venueId: "15249", backeventLocationId: "central" },
+  ];
+  const [decision] = buildSyncDecisions([line()], [approvedMapping], [product], locations, duplicateMappings);
+
+  assert.equal(decision.status, "failed");
+  assert.equal(decision.errorReason, "OnlinePOS-lokationsmapping har konflikt");
+  assert.equal(decision.locationDiagnostics?.conflictingCandidates.length, 2);
+});
+
+test("live sync bruger mappingens forbrugsenhed for Shaker Sport", () => {
+  const shaker = {
+    id: "shaker",
+    name: "Shaker Sport",
+    unit: "kasser",
+    active: true,
+    unitsPerPurchaseUnit: 24,
+    stockUnitLabel: "dåse",
+    contentPerStockUnit: 1,
+    consumptionUnitLabel: "dåser",
+  };
+  const mapping = {
+    ...approvedMapping,
+    id: "mapping-shaker",
+    onlineposProductId: "shaker-sale",
+    onlineposProductName: "Shaker Sport",
+    components: [{ backeventInventoryItemId: "shaker", conversionFactor: 1, sortOrder: 0 }],
+  };
+  const [decision] = buildSyncDecisions([
+    line({ onlineposProductId: "shaker-sale", onlineposProductName: "Shaker Sport", quantitySold: 5 }),
+  ], [mapping], [shaker], locations, locationMappings);
+
+  assert.equal(decision.components[0].quantity, 5 / 24);
+  assert.equal(decision.components[0].consumptionDiagnostics.totalConsumptionQuantity, 5);
+  assert.equal(decision.components[0].consumptionDiagnostics.humanReadableDelta, "-5 dåser");
+});
+
+test("live sync og replay-beslutning bruger samme Postmix-konvertering", () => {
+  const postmix = {
+    id: "postmix",
+    name: "Postmix",
+    unit: "kasser",
+    active: true,
+    unitsPerPurchaseUnit: 1,
+    stockUnitLabel: "sirupskasse",
+    contentPerStockUnit: 500,
+    consumptionUnitLabel: "cl",
+  };
+  const mapping = {
+    ...approvedMapping,
+    id: "mapping-postmix",
+    onlineposProductId: "postmix-sale",
+    onlineposProductName: "Postmix",
+    components: [{ backeventInventoryItemId: "postmix", conversionFactor: 10.5, sortOrder: 0 }],
+  };
+  const input = [line({ onlineposProductId: "postmix-sale", onlineposProductName: "Postmix", quantitySold: 5 })];
+  const liveDecision = buildSyncDecisions(input, [mapping], [postmix], locations, locationMappings)[0];
+  const replayDecision = buildSyncDecisions(input, [mapping], [postmix], locations, locationMappings)[0];
+
+  assert.equal(liveDecision.components[0].quantity, 0.105);
+  assert.deepEqual(replayDecision.components[0], liveDecision.components[0]);
+  assert.equal(liveDecision.components[0].consumptionDiagnostics.humanReadableDelta, "-52,5 cl");
+});
+
+test("databasefejl stopper apply sikkert uden at rapportere behandlede linjer", async () => {
+  const supabase = {
+    from() {
+      return {
+        insert() {
+          return { select: () => ({ single: async () => ({ data: { id: "run-1" }, error: null }) }) };
+        },
+        update() {
+          return { eq: async () => ({ error: null }) };
+        },
+      };
+    },
+    async rpc() {
+      return { data: null, error: { message: "Simuleret databasefejl" } };
+    },
+  };
+  const safeDecision = buildSyncDecisions([line()], [approvedMapping], [product], locations, locationMappings)[0];
+  const result = await applyOnlinePosSyncDecisions({
+    supabase,
+    datetimeFrom: "2025-07-17T15:00:00Z",
+    datetimeTo: "2025-07-17T15:10:00Z",
+    actorUserId: "owner",
+    actorEmail: "owner@example.com",
+    decisions: [safeDecision],
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "failed");
+  assert.equal(result.processedCount, 0);
+  assert.equal(result.failedCount, 1);
 });

@@ -1,6 +1,7 @@
 import { isSupabaseConfigured } from "@/lib/supabase/is-configured";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { hasRoleAtLeast, isOwnerRole } from "./permissions";
+import { canTreatReceiptControl } from "./return-control-contract";
 
 export type ReturnAccess =
   | {
@@ -73,9 +74,10 @@ export async function requireReturnAccess(request: Request): Promise<ReturnAcces
     userEmail: user.email ?? null,
     profileRole: role,
     isOwner: isOwnerRole(role),
-    canControl: isOwnerRole(role),
+    canControl: canTreatReceiptControl(isOwnerRole(role), financeGroup),
   };
 }
+
 
 async function isFinanceGroupMember(supabase: NonNullable<ReturnType<typeof createSupabaseServerClient>>, userId: string) {
   const { data } = await supabase

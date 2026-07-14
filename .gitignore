@@ -17,9 +17,27 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+*.log
+
+# local test and browser output
+/coverage/
+/test-results/
+/playwright-report/
+/.playwright-mcp/
+/.browser-profile/
+
+# local editor and backup files
+.idea/
+.vscode/
+*.bak
+*.tmp
+*.old
+*.orig
+*.rej
 
 # local env files
 .env*
+!.env.example
 
 # typescript
 *.tsbuildinfo

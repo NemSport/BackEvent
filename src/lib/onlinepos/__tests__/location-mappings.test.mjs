@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildOnlinePosCanonicalLocationKey,
+  createOnlinePosLocationResolver,
   findSuggestedBackEventLocationId,
   getLocationMappingSuggestion,
   mergeLocationDiscoveries,
@@ -246,4 +248,90 @@ test("kun Ejer har skriveadgang til lokationsmapping", () => {
   assert.equal(hasRoleAtLeast("ejer", "ejer"), true);
   assert.equal(hasRoleAtLeast("ansvarlig", "ejer"), false);
   assert.equal(hasRoleAtLeast("frivillig", "ejer"), false);
+});
+
+test("samme canonical key genbruger samme mapping for 100 linjer", () => {
+  const inputs = Array.from({ length: 100 }, () => ({ venueId: "15249", cashRegisterName: "Blå bar" }));
+  const resolver = createOnlinePosLocationResolver(inputs, [mapping()], locations);
+  const resolvedIds = inputs.map((input) => {
+    const result = resolver.resolve(input);
+    return result.ok ? result.mapping.id : null;
+  });
+
+  assert.equal(new Set(resolvedIds).size, 1);
+  assert.equal(resolver.resolutions.length, 1);
+  assert.equal(resolver.resolutions[0].resolution.diagnostics.incomingNames.length, 1);
+});
+
+test("samme navn med og uden ID behandles stabilt som separate canonical keys", () => {
+  const approved = mapping({
+    id: "name-row",
+    cashRegisterId: null,
+    cashRegisterName: "Blå bar",
+    normalizedCashRegisterName: normalizeOnlinePosCashRegisterName("Blå bar"),
+  });
+  const inputs = [
+    { venueId: "15249", cashRegisterId: "register-1", cashRegisterName: "Blå bar" },
+    { venueId: "15249", cashRegisterId: null, cashRegisterName: "Blå bar" },
+  ];
+  const resolver = createOnlinePosLocationResolver(inputs, [approved], locations);
+
+  assert.equal(resolver.resolve(inputs[0]).ok, true);
+  assert.equal(resolver.resolve(inputs[1]).ok, true);
+  assert.deepEqual(resolver.resolutions.map((item) => item.canonicalKey).sort(), ["id:register-1|venue:15249", "name:blå bar|venue:15249"].sort());
+});
+
+test("samme navn med forskellige IDs er separate kasser ved ID match", () => {
+  const mappings = [
+    mapping({ id: "id-a", cashRegisterId: "a", backeventLocationId: "blaa" }),
+    mapping({ id: "id-b", cashRegisterId: "b", backeventLocationId: "roed" }),
+  ];
+  const inputs = [
+    { venueId: "15249", cashRegisterId: "a", cashRegisterName: "Fælles navn" },
+    { venueId: "15249", cashRegisterId: "b", cashRegisterName: "Fælles navn" },
+  ];
+  const resolver = createOnlinePosLocationResolver(inputs, mappings, locations);
+
+  assert.equal(resolver.resolve(inputs[0]).ok && resolver.resolve(inputs[0]).location.id, "blaa");
+  assert.equal(resolver.resolve(inputs[1]).ok && resolver.resolve(inputs[1]).location.id, "roed");
+  assert.equal(resolver.resolutions.length, 2);
+});
+
+test("null venue og real venue deler key når stored venue er null", () => {
+  const stored = mapping({ venueId: null });
+  assert.equal(
+    buildOnlinePosCanonicalLocationKey({ venueId: "15249", cashRegisterName: "Blå bar" }, [stored]),
+    "name:blå bar",
+  );
+  const resolver = createOnlinePosLocationResolver(
+    [{ venueId: null, cashRegisterName: "Blå bar" }, { venueId: "15249", cashRegisterName: "Blå bar" }],
+    [stored],
+    locations,
+  );
+  assert.equal(resolver.resolutions.length, 1);
+  assert.equal(resolver.resolutions[0].resolution.ok, true);
+});
+
+test("duplicate approved rows giver conflict i stedet for første match", () => {
+  const duplicates = [
+    mapping({ id: "duplicate-a", venueId: null, backeventLocationId: "blaa" }),
+    mapping({ id: "duplicate-b", venueId: "15249", backeventLocationId: "roed" }),
+  ];
+  const result = resolveOnlinePosLocation({ venueId: "15249", cashRegisterName: "Blå bar" }, duplicates, locations);
+
+  assert.equal(result.ok, false);
+  assert.equal(!result.ok && result.errorCode, "ONLINEPOS_LOCATION_MAPPING_CONFLICT");
+  assert.equal(result.diagnostics.conflictingCandidates.length, 2);
+  assert.equal(result.diagnostics.selectedMappingRow, null);
+});
+
+test("inactive duplicate ignoreres ved canonical resolution", () => {
+  const result = resolveOnlinePosLocation(
+    { venueId: "15249", cashRegisterName: "Blå bar" },
+    [mapping({ id: "active" }), mapping({ id: "inactive", active: false, backeventLocationId: "roed" })],
+    locations,
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.ok && result.mapping.id, "active");
+  assert.equal(result.diagnostics.conflictingCandidates.length, 0);
 });

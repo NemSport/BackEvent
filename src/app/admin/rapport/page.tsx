@@ -3,6 +3,7 @@
 import { ArrowRight } from "lucide-react";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import Link from "next/link";
 import { AppShell } from "@/components/backevent/app-shell";
 import { BackButton } from "@/components/backevent/buttons";
 import {
@@ -109,6 +110,9 @@ function AdminRapportContent() {
       <section className="mb-6 rounded-[2rem] bg-soft p-6 shadow-soft">
         <h1 className="text-4xl font-bold text-ink">Forbrugsrapport</h1>
         <p className="mt-2 text-lg font-medium text-muted">Åbning + flytninger - lukning = beregnet forbrug</p>
+        <Link href="/admin/rapport/flowvarer" className="mt-4 inline-flex items-center gap-2 rounded-2xl bg-pantone123 px-4 py-3 text-sm font-bold text-ink shadow-soft">
+          Se OnlinePOS-flowvarer <ArrowRight className="h-4 w-4" aria-hidden />
+        </Link>
       </section>
 
       <section className="mb-6 grid gap-3 rounded-[2rem] border border-line bg-macro p-5 shadow-soft md:grid-cols-3">

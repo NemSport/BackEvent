@@ -1,4 +1,4 @@
-export type ReplayMode = "dry-run" | "test-run";
+export type ReplayMode = "dry-run" | "test-run" | "replay";
 
 export type HistoricalReplayWindowInput = {
   date: string;
@@ -71,10 +71,28 @@ export function productionExternalLineId(line: HistoricalReplayLineIdentity) {
 }
 
 export function validateReplayConfirmation(mode: ReplayMode, confirmation: string | null | undefined) {
-  if (mode === "test-run" && confirmation !== "KØR HISTORISK TEST") {
+  if (mode === "test-run" && !isReplayConfirmationMatch(confirmation)) {
     return "Test-run kræver bekræftelsen KØR HISTORISK TEST";
   }
+  if (mode === "replay" && canonicalizeReplayConfirmation(confirmation) !== canonicalizeReplayConfirmation(historicalReplayProductionConfirmationText)) {
+    return `Faktisk replay kræver bekræftelsen ${historicalReplayProductionConfirmationText}`;
+  }
   return null;
+}
+
+export const historicalReplayConfirmationText = "KØR HISTORISK TEST";
+export const historicalReplayProductionConfirmationText = "KØR FAKTISK REPLAY";
+
+export function canonicalizeReplayConfirmation(value: string | null | undefined) {
+  return (value ?? "")
+    .normalize("NFKC")
+    .trim()
+    .replace(/\s+/gu, " ")
+    .toLocaleUpperCase("da-DK");
+}
+
+export function isReplayConfirmationMatch(value: string | null | undefined) {
+  return canonicalizeReplayConfirmation(value) === canonicalizeReplayConfirmation(historicalReplayConfirmationText);
 }
 
 export function validateCleanupConfirmation(confirmation: string | null | undefined) {

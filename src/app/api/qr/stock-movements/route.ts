@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isSupabaseConfigured } from "@/lib/supabase/is-configured";
+import { requireBackEventRole } from "@/lib/backevent/server-auth";
 
 type QrMoveRequest = {
   fromLocationId?: unknown;
@@ -17,6 +18,8 @@ type QrMoveLine = {
 };
 
 export async function POST(request: Request) {
+  const auth = await requireBackEventRole(request, "frivillig");
+  if (!auth.ok) return NextResponse.json({ ok: false, message: auth.message }, { status: auth.status });
   const body = (await request.json().catch(() => null)) as QrMoveRequest | null;
   const validation = validateBody(body);
 
@@ -29,7 +32,7 @@ export async function POST(request: Request) {
       ok: true,
       batchId: `mock-batch-${Date.now()}`,
       createdAt: new Date().toISOString(),
-      createdByName: validation.actorName,
+      createdByName: auth.userEmail ?? validation.actorName,
       message: "Mock mode: samlet QR-flytning gemt",
     });
   }
@@ -41,7 +44,7 @@ export async function POST(request: Request) {
   }
 
   const sessionActorName = await getSessionActorName(request);
-  const createdByName = sessionActorName ?? validation.actorName;
+  const createdByName = sessionActorName ?? auth.userEmail ?? validation.actorName;
 
   const { data, error } = await supabase.rpc("backevent_create_stock_movement_batch", {
     p_from_location_id: validation.fromLocationId,

@@ -1,13 +1,17 @@
 import { NextResponse } from "next/server";
 import { requireBackEventRole } from "@/lib/backevent/server-auth";
 import {
+  buildReplayClassificationKey,
   buildReplayWindows,
   isOnlinePosReplayEnabled,
   runHistoricalReplayDryRun,
+  runHistoricalReplay,
   runHistoricalReplayTestRun,
   validateCleanupConfirmation,
   validateReplayConfirmation,
   type ReplayMode,
+  type ManualReplayClassificationValue,
+  type HistoricalReplayDryRunMeta,
 } from "@/lib/onlinepos/historical-replay";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
@@ -22,6 +26,17 @@ type ReplayBody = {
   mode?: unknown;
   replayRunId?: unknown;
   confirmation?: unknown;
+  expectedDryRun?: unknown;
+};
+
+type ClassificationBody = {
+  venue?: unknown;
+  transactionId?: unknown;
+  receiptNumber?: unknown;
+  cashRegisterId?: unknown;
+  cashRegisterName?: unknown;
+  classification?: unknown;
+  reason?: unknown;
 };
 
 export async function GET(request: Request) {
@@ -52,6 +67,17 @@ export async function POST(request: Request) {
       input: validation.input,
       actorUserId: gate.userId,
       actorEmail: gate.userEmail,
+      expectedDryRun: normalizeDryRunMeta(body?.expectedDryRun),
+    });
+    return NextResponse.json(result, { status: result.ok ? 200 : 409 });
+  }
+  if (validation.input.mode === "replay") {
+    const result = await runHistoricalReplay({
+      supabase: gate.supabase,
+      input: validation.input,
+      actorUserId: gate.userId,
+      actorEmail: gate.userEmail,
+      expectedDryRun: normalizeDryRunMeta(body?.expectedDryRun),
     });
     return NextResponse.json(result, { status: result.ok ? 200 : 409 });
   }
@@ -77,6 +103,49 @@ export async function DELETE(request: Request) {
     reversedRows: 0,
     message: "Ingen historical_replay test-run data blev slettet. Dry-run opretter ingen data.",
   });
+}
+
+export async function PUT(request: Request) {
+  const gate = await requireReplayAccess(request);
+  if (!gate.ok) return gate.response;
+  const body = (await request.json().catch(() => null)) as ClassificationBody | null;
+  const classification = normalizeClassification(body?.classification);
+  const transactionId = stringOrNull(body?.transactionId);
+  const receiptNumber = stringOrNull(body?.receiptNumber);
+  const venueId = stringOrNull(body?.venue) ?? process.env.ONLINEPOS_VENUE_ID ?? null;
+
+  if (!classification) {
+    return NextResponse.json({ ok: false, message: "Klassifikation mangler" }, { status: 400 });
+  }
+  if (!transactionId && !receiptNumber) {
+    return NextResponse.json({ ok: false, message: "Bonnummer eller transaktion mangler" }, { status: 400 });
+  }
+
+  const replayKey = buildReplayClassificationKey({ venueId, transactionId, receiptNumber });
+  const payload = {
+    replay_key: replayKey,
+    venue_id: venueId,
+    transaction_id: transactionId,
+    receipt_number: receiptNumber,
+    cash_register_id: stringOrNull(body?.cashRegisterId),
+    cash_register_name: stringOrNull(body?.cashRegisterName),
+    classification,
+    reason: stringOrNull(body?.reason),
+    created_by: gate.userId,
+    updated_by: gate.userId,
+  };
+
+  const { data, error } = await gate.supabase
+    .from("backevent_onlinepos_replay_classifications")
+    .upsert(payload, { onConflict: "replay_key" })
+    .select("replay_key,classification,reason,updated_at")
+    .single();
+
+  if (error) {
+    return NextResponse.json({ ok: false, message: "Klassifikation kunne ikke gemmes" }, { status: 500 });
+  }
+
+  return NextResponse.json({ ok: true, classification: data });
 }
 
 async function requireReplayAccess(request: Request):
@@ -112,7 +181,7 @@ function defaultInput() {
 }
 
 function validateBody(body: ReplayBody | null) {
-  const mode = body?.mode === "test-run" ? "test-run" : "dry-run";
+  const mode = body?.mode === "test-run" || body?.mode === "replay" ? body.mode : "dry-run";
   const input = {
     ...defaultInput(),
     date: typeof body?.date === "string" ? body.date : "2025-07-17",
@@ -140,4 +209,37 @@ function numberValue(value: unknown) {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
+}
+
+function stringOrNull(value: unknown) {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value === "number") return String(value);
+  return null;
+}
+
+function normalizeClassification(value: unknown): ManualReplayClassificationValue | null {
+  if (value === "sale" || value === "return" || value === "void" || value === "ignored_testdata") return value;
+  return null;
+}
+
+function normalizeDryRunMeta(value: unknown): HistoricalReplayDryRunMeta | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  if (typeof row.id !== "string" || typeof row.completedAt !== "string" || typeof row.inputKey !== "string" || typeof row.fingerprint !== "string") return null;
+  const blockingErrorSummary = Array.isArray(row.blockingErrorSummary)
+    ? row.blockingErrorSummary.flatMap((item) => {
+      if (!item || typeof item !== "object") return [];
+      const summary = item as Record<string, unknown>;
+      return typeof summary.code === "string" && typeof summary.count === "number"
+        ? [{ code: summary.code, count: summary.count }]
+        : [];
+    })
+    : [];
+  return {
+    id: row.id,
+    completedAt: row.completedAt,
+    inputKey: row.inputKey,
+    fingerprint: row.fingerprint,
+    blockingErrorSummary,
+  };
 }

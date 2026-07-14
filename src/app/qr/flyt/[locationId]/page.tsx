@@ -70,7 +70,10 @@ export default function QrMovePage() {
 
     async function loadData() {
       try {
-        const response = await fetch(`/api/qr/move-flow?locationId=${encodeURIComponent(qrLocationId)}`);
+        const token = await getAccessToken();
+        const response = await fetch(`/api/qr/move-flow?locationId=${encodeURIComponent(qrLocationId)}`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        });
         const data = (await response.json()) as {
           ok: boolean;
           locations?: QrLocation[];

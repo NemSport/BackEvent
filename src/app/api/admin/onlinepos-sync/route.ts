@@ -43,7 +43,20 @@ type SyncLineRow = {
   error_reason: string | null;
   quantity_sold: number;
   stock_delta: number;
-  applied_components: Array<{ productId?: string; quantity?: number }> | null;
+  applied_components: Array<{
+    productId?: string;
+    quantity?: number;
+    consumptionDiagnostics?: {
+      soldQuantity?: number;
+      consumptionPerSale?: number;
+      consumptionUnit?: string;
+      totalConsumptionQuantity?: number;
+      conversionDivisor?: number;
+      conversionMultiplier?: number;
+      finalStoredDelta?: number;
+      humanReadableDelta?: string;
+    };
+  }> | null;
   revenue: number;
   created_at: string;
 };
@@ -211,6 +224,7 @@ function toRun(row: SyncRunRow) {
 
 function toLine(row: SyncLineRow, products: Product[]) {
   const components = Array.isArray(row.applied_components) ? row.applied_components : [];
+  const consumptionDiagnostics = components.flatMap((component) => component.consumptionDiagnostics ? [component.consumptionDiagnostics] : []);
   const stockDeltaText = components.length > 0
     ? components
         .map((component) => {
@@ -236,6 +250,7 @@ function toLine(row: SyncLineRow, products: Product[]) {
     quantitySold: Number(row.quantity_sold ?? 0),
     stockDelta: Number(row.stock_delta ?? 0),
     stockDeltaText,
+    consumptionDiagnostics,
     revenue: Number(row.revenue ?? 0),
     createdAt: row.created_at,
   };
