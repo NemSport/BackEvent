@@ -5,10 +5,12 @@ import test from "node:test";
 const handling = readFileSync("supabase/migrations/202607140002_backevent_receipt_control_handling.sql", "utf8");
 const email = readFileSync("supabase/migrations/202607140003_deprecate_backevent_operational_email.sql", "utf8");
 const hardening = readFileSync("supabase/migrations/202607140004_backevent_v1_access_hardening.sql", "utf8");
+const emailPrivileges = readFileSync("supabase/migrations/202607140005_harden_deprecated_email_log_privileges.sql", "utf8");
 
 test("V1 migration filenames preserve dependency order", () => {
   assert.ok("202607140002" < "202607140003");
   assert.ok("202607140003" < "202607140004");
+  assert.ok("202607140004" < "202607140005");
 });
 
 test("receipt-control handling is restricted to Ejer and active Økonomiansvarlige", () => {
@@ -25,6 +27,12 @@ test("operational e-mail migration preserves history and removes writes", () => 
   assert.doesNotMatch(email, /drop table|truncate|delete from/i);
 });
 
+test("deprecated operational e-mail history is read-only for client roles", () => {
+  assert.match(emailPrivileges, /revoke all privileges on table public\.backevent_email_logs from anon, authenticated/i);
+  assert.match(emailPrivileges, /grant select on table public\.backevent_email_logs to authenticated/i);
+  assert.doesNotMatch(emailPrivileges, /drop table|truncate table|delete from/i);
+});
+
 test("stock-changing RPCs are service-role only", () => {
   assert.match(hardening, /backevent_create_stock_movement_batch[\s\S]*from anon, authenticated/);
   assert.match(hardening, /backevent_apply_onlinepos_inventory_sync[\s\S]*from anon, authenticated/);
@@ -33,7 +41,7 @@ test("stock-changing RPCs are service-role only", () => {
 });
 
 test("V1 migrations contain no destructive data operation", () => {
-  for (const migration of [handling, email, hardening]) {
+  for (const migration of [handling, email, hardening, emailPrivileges]) {
     assert.doesNotMatch(migration, /drop table|truncate table|delete from/i);
   }
 });
