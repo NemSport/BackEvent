@@ -72,6 +72,7 @@ export type StockMovement = {
   unit: string;
   createdAt: string;
   createdBy: string;
+  performedByType?: "user" | "guest" | null;
   source?: string | null;
   batchId?: string | null;
   reversedAt?: string | null;
@@ -120,6 +121,7 @@ export type HistoryEntry =
       quantity: number;
       unit: string;
       createdBy: string;
+      performedByType?: "user" | "guest" | null;
       reversedAt?: string | null;
     }
   | {

@@ -36,6 +36,7 @@ type SaveResult = {
   batchId?: string;
   createdAt?: string;
   createdByName?: string;
+  performedByType?: "user" | "guest";
   message?: string;
 };
 
@@ -49,6 +50,9 @@ export default function QrMovePage() {
   const [locations, setLocations] = useState<QrLocation[]>([]);
   const [products, setProducts] = useState<QrProduct[]>([]);
   const [balances, setBalances] = useState<QrBalance[]>([]);
+  const [viewerAuthenticated, setViewerAuthenticated] = useState(false);
+  const [serverActorName, setServerActorName] = useState("");
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [step, setStep] = useState<FlowStep>("confirm-start");
   const [fromId, setFromId] = useState(qrLocationId);
   const [toId, setToId] = useState("");
@@ -76,6 +80,8 @@ export default function QrMovePage() {
         });
         const data = (await response.json()) as {
           ok: boolean;
+          authenticated?: boolean;
+          actorName?: string | null;
           locations?: QrLocation[];
           products?: QrProduct[];
           balances?: QrBalance[];
@@ -94,12 +100,13 @@ export default function QrMovePage() {
         setLocations(loadedLocations);
         setProducts(data.products ?? []);
         setBalances(data.balances ?? []);
-        setFromId(loadedLocations.some((location) => location.id === qrLocationId) ? qrLocationId : "");
-        setStep(loadedLocations.some((location) => location.id === qrLocationId) ? "confirm-start" : "choose-start");
-      } catch {
+        setViewerAuthenticated(Boolean(data.authenticated));
+        setServerActorName(data.actorName ?? "");
+        setFromId(qrLocationId);
+        setStep("confirm-start");
+      } catch (error) {
         if (mounted) {
-          setMessage("Vi kunne ikke hente lagerflowet lige nu.");
-          setStep("choose-start");
+          setLoadError(error instanceof Error ? error.message : "Vi kunne ikke hente lagerflowet lige nu.");
         }
       }
     }
@@ -114,33 +121,34 @@ export default function QrMovePage() {
   const fromLocation = locations.find((location) => location.id === fromId);
   const toLocation = locations.find((location) => location.id === toId);
   const destinationLocations = locations.filter((location) => location.id !== fromId);
-  const accountName = profile?.fullName || profile?.email || "";
+  const accountName = serverActorName || profile?.fullName || profile?.email || "";
+  const isGuest = !viewerAuthenticated;
   const selectedLines = useMemo(
     () =>
       products
         .map((product) => ({
           product,
           quantity: quantities[product.id] ?? 0,
-          available: getAvailable(product.id, fromId, balances),
+          available: viewerAuthenticated ? getAvailable(product.id, fromId, balances) : undefined,
         }))
         .filter((line) => line.quantity > 0),
-    [balances, fromId, products, quantities],
+    [balances, fromId, products, quantities, viewerAuthenticated],
   );
   const movableProducts = useMemo(
     () =>
       products
         .map((product) => ({
           product,
-          available: getAvailable(product.id, fromId, balances),
+          available: viewerAuthenticated ? getAvailable(product.id, fromId, balances) : undefined,
           quantity: quantities[product.id] ?? 0,
         }))
-        .filter((line) => line.available > 0),
-    [balances, fromId, products, quantities],
+        .filter((line) => !viewerAuthenticated || (line.available ?? 0) > 0),
+    [balances, fromId, products, quantities, viewerAuthenticated],
   );
   const canContinueDestination = Boolean(fromId && toId && fromId !== toId);
   const canContinueProducts = selectedLines.length > 0;
-  const finalName = isAuthenticated ? accountName : anonymousName.trim();
-  const canAccept = Boolean(finalName && fromLocation && toLocation && selectedLines.length > 0 && !isSaving);
+  const finalName = isGuest ? anonymousName.trim() : accountName;
+  const canAccept = Boolean(finalName.length >= 2 && fromLocation && toLocation && selectedLines.length > 0 && !isSaving);
 
   function chooseStart(id: string) {
     setFromId(id);
@@ -149,7 +157,7 @@ export default function QrMovePage() {
     setMessage(null);
   }
 
-  function changeQuantity(productId: string, change: number, available: number) {
+  function changeQuantity(productId: string, change: number, available?: number) {
     setQuantities((current) => {
       const next = clampQrMoveQuantity((current[productId] ?? 0) + change, available);
       return { ...current, [productId]: next };
@@ -161,7 +169,7 @@ export default function QrMovePage() {
       products.map((product) => ({
         productId: product.id,
         quantity: quantities[product.id] ?? 0,
-        available: getAvailable(product.id, fromId, balances),
+        available: viewerAuthenticated ? getAvailable(product.id, fromId, balances) : undefined,
       })),
     );
 
@@ -171,7 +179,7 @@ export default function QrMovePage() {
     }
 
     if (!canAccept || !fromLocation || !toLocation) {
-      setMessage(isAuthenticated ? "Tjek flytningen igen." : "Skriv dit navn før godkendelse.");
+      setMessage(isGuest ? "Skriv dit navn før godkendelse." : "Tjek flytningen igen.");
       return;
     }
 
@@ -223,7 +231,7 @@ export default function QrMovePage() {
     setAnonymousName("");
     setSaveResult(null);
     setMessage(null);
-    setStep(locations.some((location) => location.id === qrLocationId) ? "confirm-start" : "choose-start");
+    setStep("confirm-start");
   }
 
   function moveAgain() {
@@ -238,6 +246,14 @@ export default function QrMovePage() {
     return (
       <main className="grid min-h-screen place-items-center bg-macro px-4 text-center text-ink">
         <p className="rounded-2xl bg-soft px-4 py-3 text-base font-bold text-muted">Åbner lokationsside...</p>
+      </main>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <main className="grid min-h-screen place-items-center bg-macro px-4 text-center text-ink">
+        <Notice tone="danger" className="max-w-xl">{loadError}</Notice>
       </main>
     );
   }
@@ -265,9 +281,6 @@ export default function QrMovePage() {
             <div className="grid gap-3">
               <Button type="button" onClick={() => setStep("destination")}>
                 Ja, fortsæt
-              </Button>
-              <Button type="button" tone="secondary" onClick={() => setStep("choose-start")}>
-                Nej, vælg anden aktiv lokation
               </Button>
             </div>
           </Panel>
@@ -303,7 +316,9 @@ export default function QrMovePage() {
                       <div>
                         <h2 className="text-lg font-bold text-ink">{product.name}</h2>
                         <p className="text-sm font-bold text-muted">
-                          Enhed: {product.unit} · Aktuel beholdning: {formatStockQuantity(available, product)}
+                          {viewerAuthenticated && available !== undefined
+                            ? `Enhed: ${product.unit} · Aktuel beholdning: ${formatStockQuantity(available, product)}`
+                            : `Enhed: ${product.unit}`}
                         </p>
                       </div>
                       <p className="text-sm font-bold text-pantone140">{product.unit}</p>
@@ -313,7 +328,11 @@ export default function QrMovePage() {
                         <Minus className="h-5 w-5" aria-hidden />
                       </RoundButton>
                       <p className="rounded-2xl bg-soft px-4 py-3 text-center text-2xl font-bold text-ink">{formatStockQuantity(quantity, product)}</p>
-                      <RoundButton label="Plus" disabled={quantity >= available} onClick={() => changeQuantity(product.id, 1, available)}>
+                      <RoundButton
+                        label="Plus"
+                        disabled={available !== undefined && quantity >= available}
+                        onClick={() => changeQuantity(product.id, 1, available)}
+                      >
                         <Plus className="h-5 w-5" aria-hidden />
                       </RoundButton>
                     </div>
@@ -337,7 +356,7 @@ export default function QrMovePage() {
                 createdByName={finalName}
                 createdAt={new Date().toISOString()}
               />
-              {isAuthenticated ? (
+              {!isGuest ? (
                 <Notice tone="pending" className="mt-4">Flytningen registreres som {accountName}</Notice>
               ) : (
                 <label className="mt-4 block">
@@ -346,8 +365,11 @@ export default function QrMovePage() {
                     value={anonymousName}
                     onChange={(event) => setAnonymousName(event.target.value)}
                     className="min-h-12 w-full rounded-2xl border border-line px-4 text-base font-bold outline-none focus:border-pantone140"
-                    placeholder="Skriv navn"
+                    placeholder="Skriv dit for- og efternavn"
                   />
+                  <span className="mt-2 block text-sm font-medium text-muted">
+                    Navnet gemmes i historikken, så flytningen kan spores.
+                  </span>
                 </label>
               )}
               <div className="mt-5 grid gap-3">

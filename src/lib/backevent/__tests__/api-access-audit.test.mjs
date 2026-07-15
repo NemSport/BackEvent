@@ -17,11 +17,13 @@ test("OnlinePOS diagnostic endpoints require Ejer", () => {
   }
 });
 
-test("QR inventory reads and writes require an authenticated BackEvent user", () => {
-  for (const path of ["src/app/api/qr/move-flow/route.ts", "src/app/api/qr/stock-movements/route.ts"]) {
-    const source = readFileSync(path, "utf8");
-    assert.match(source, /requireBackEventRole\(request, "frivillig"\)/, path);
-  }
+test("only the QR flow endpoints allow a guest fallback", () => {
+  const readRoute = readFileSync("src/app/api/qr/move-flow/route.ts", "utf8");
+  const writeRoute = readFileSync("src/app/api/qr/stock-movements/route.ts", "utf8");
+  assert.match(readRoute, /Authentication is optional on this one narrowly scoped endpoint/);
+  assert.match(writeRoute, /narrowly[\s\S]*allowed guest operation/);
+  assert.doesNotMatch(readRoute, /return NextResponse\.json\(\{ ok: false, message: auth\.message/);
+  assert.doesNotMatch(writeRoute, /return NextResponse\.json\(\{ ok: false, message: auth\.message/);
 });
 
 test("stock-changing server RPCs cannot be called with anon or arbitrary authenticated JWTs", () => {

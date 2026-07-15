@@ -245,7 +245,7 @@ export async function getRecentMovements(): Promise<StockMovement[]> {
   const { data, error } = await supabase
     .from("backevent_stock_movements")
     .select(
-      "id,batch_id,product_id,from_location_id,to_location_id,quantity,unit,created_by_name,created_at,source,reversed_at,reversed_by_name,reversal_reason",
+      "id,batch_id,product_id,from_location_id,to_location_id,quantity,unit,created_by_name,performed_by_name,performed_by_type,created_at,source,reversed_at,reversed_by_name,reversal_reason",
     )
     .order("created_at", { ascending: false })
     .limit(50);
@@ -262,7 +262,8 @@ export async function getRecentMovements(): Promise<StockMovement[]> {
     quantity: Number(row.quantity),
     unit: row.unit ?? "kasser",
     createdAt: row.created_at,
-    createdBy: row.created_by_name ?? "Frivillig",
+    createdBy: row.performed_by_name ?? row.created_by_name ?? "Frivillig",
+    performedByType: row.performed_by_type === "guest" ? "guest" : row.performed_by_type === "user" ? "user" : null,
     source: row.source ?? null,
     batchId: row.batch_id ?? null,
     reversedAt: row.reversed_at,
@@ -572,6 +573,7 @@ export async function getHistoryEntries(): Promise<HistoryEntry[]> {
       quantity: movement.quantity,
       unit: movement.unit,
       createdBy: movement.createdBy,
+      performedByType: movement.performedByType,
       reversedAt: movement.reversedAt,
     })),
     ...adjustments.map<HistoryEntry>((adjustment) => ({

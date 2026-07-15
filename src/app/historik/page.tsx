@@ -94,7 +94,7 @@ function HistoryCard({
               {to?.name}
             </p>
             {entry.reversedAt ? <p className="mt-2 text-sm font-bold text-warmRed">Fortrudt</p> : null}
-            <Meta createdBy={entry.createdBy} createdAt={entry.createdAt} />
+            <Meta createdBy={entry.createdBy} createdAt={entry.createdAt} performedByType={entry.performedByType} />
           </div>
         </div>
       </article>
@@ -178,11 +178,20 @@ function IconBubble({ icon: Icon, urgent = false }: { icon: typeof Repeat; urgen
   );
 }
 
-function Meta({ createdBy, createdAt }: { createdBy: string; createdAt: string }) {
+function Meta({
+  createdBy,
+  createdAt,
+  performedByType,
+}: {
+  createdBy: string;
+  createdAt: string;
+  performedByType?: "user" | "guest" | null;
+}) {
   return (
-    <p className="mt-2 text-xs font-bold text-muted">
-      {createdBy} · {new Date(createdAt).toLocaleString("da-DK", { dateStyle: "short", timeStyle: "short" })}
-    </p>
+    <div className="mt-2 text-xs font-bold text-muted">
+      <p>{createdBy} · {new Date(createdAt).toLocaleString("da-DK", { dateStyle: "short", timeStyle: "short" })}</p>
+      {performedByType === "guest" ? <p className="mt-1 text-pantone140">Gæst / manuel registrering</p> : null}
+    </div>
   );
 }
 

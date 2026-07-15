@@ -38,7 +38,10 @@ export function MovementList({
                 </p>
                 {isReversed ? <StatusPill tone="danger" className="mt-2">Fortrudt</StatusPill> : null}
               </div>
-              <p className="shrink-0 text-sm font-bold text-pantone140">{movement.createdBy}</p>
+              <div className="shrink-0 text-right text-sm font-bold text-pantone140">
+                <p>{movement.createdBy}</p>
+                {movement.performedByType === "guest" ? <p className="mt-1 text-xs text-muted">Gæst / manuel registrering</p> : null}
+              </div>
             </div>
           </article>
         );
