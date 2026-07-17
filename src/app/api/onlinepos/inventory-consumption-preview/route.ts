@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireBackEventRole } from "@/lib/backevent/server-auth";
+import { getOnlinePosGrossAmount } from "@/lib/onlinepos/pricing";
 
 type InventoryConsumptionPreviewResponse = {
   ok: boolean;
@@ -361,7 +362,7 @@ function toConsumptionProduct(line: Record<string, unknown>): ConsumptionProduct
     product_group_id: pickScalarField(line, ["product_group_id", "productGroupId", "productgroupid"]),
     product_group_name: productGroupName,
     quantity_sold: numberValue(pickField(line, ["quantity", "qty", "count", "amount"])) ?? 0,
-    revenue: numberValue(pickField(line, ["net_price", "netPrice", "netprice", "price", "gross_price", "grossPrice"])) ?? 0,
+    revenue: getOnlinePosGrossAmount(line),
     ...classification,
   };
 }

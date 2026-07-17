@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   analyzeRawOnlinePosReceipt,
+  buildReceiptControlLocationContext,
   buildReturnNotificationDedupeKey,
   buildReturnNotificationText,
   buildReturnNotificationTitle,
@@ -36,6 +37,48 @@ test("negativ produkttransaktion uden retursignal går til manuel kontrol", () =
 
   assert.equal(parsed, null);
   assert.equal(analysis.classification, "uncertain");
+  assert.equal(analysis.cashRegisterName, "Rødbar");
+});
+
+test("bonkontrol bevarer oprindelig barreference og tidspunkt", () => {
+  const analysis = analyzeRawOnlinePosReceipt({
+    transaction_id: "tx-control-location",
+    receipt_number: "CTRL-1",
+    datetime: "2026-07-16T12:30:00Z",
+    cash_register: { id: "register-7", name: "Blå Bar" },
+    total: -40,
+    lines: [{ product_name: "Kildevand", quantity: -1, net_price: -40 }],
+  });
+
+  assert.equal(analysis.cashRegisterId, "register-7");
+  assert.equal(analysis.cashRegisterName, "Blå Bar");
+  assert.equal(analysis.transactionDatetime, "2026-07-16T12:30:00Z");
+  assert.deepEqual(analysis.controlTypes, ["MANUAL_REVIEW"]);
+});
+
+test("bonkontrol bruger OnlinePOS-bruttopris inkl. moms før nettopris", () => {
+  const analysis = analyzeRawOnlinePosReceipt({
+    transaction_id: "tx-gross-price",
+    receipt_number: "CTRL-GROSS",
+    lines: [{ product_name: "Kildevand", quantity: -1, net_price: -40, gross_price: -50 }],
+  });
+
+  assert.equal(analysis.finalTotal, -50);
+  assert.deepEqual(analysis.controlTypes, ["MANUAL_REVIEW"]);
+});
+
+test("sikkert lokationsmatch gemmes, mens usikkert match forbliver umappet", () => {
+  const mapped = buildReceiptControlLocationContext({
+    ok: true,
+    mapping: {},
+    location: { id: "location-1", name: "Blåbar", type: "bar", source_location_id: null, active: true },
+    matchedBy: "cash_register_id",
+    diagnostics: {},
+  });
+  const unmapped = buildReceiptControlLocationContext({ ok: false, mapping: null, location: null, matchedBy: null, errorCode: "ONLINEPOS_LOCATION_UNMAPPED", errorReason: "missing", diagnostics: {} });
+
+  assert.deepEqual(mapped, { locationId: "location-1", locationName: "Blåbar", mappingStatus: "mapped" });
+  assert.deepEqual(unmapped, { locationId: null, locationName: null, mappingStatus: "unmapped" });
 });
 
 test("pant og krus markeres uden normal lagerpåvirkning", () => {

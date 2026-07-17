@@ -10,6 +10,7 @@ import {
   calculateOnlinePosInventoryConsumption,
   type OnlinePosConsumptionDiagnostics,
 } from "./inventory-unit-conversion.ts";
+import { getOnlinePosGrossAmount, getOnlinePosGrossTotal } from "./pricing.ts";
 
 export type OnlinePosSyncLineStatus = "processed" | "ignored" | "failed";
 
@@ -519,6 +520,7 @@ export async function fetchOnlinePosTransactionLines({
 }
 
 function toTransactionLines(transaction: Record<string, unknown>, transactionIndex: number): OnlinePosTransactionLine[] {
+  const rawLines = findTransactionLines(transaction);
   const cashRegister = toSafeCashRegister(pickField(transaction, ["cash_register", "cashRegister"]));
   const transactionId = stringOrNull(pickField(transaction, ["transaction_id", "transactionId", "id"]));
   const receiptNumber = stringOrNull(pickField(transaction, ["receipt_number", "receiptNumber"]));
@@ -527,9 +529,9 @@ function toTransactionLines(transaction: Record<string, unknown>, transactionInd
   const transactionStatus = stringOrNull(pickField(transaction, ["status", "state"]));
   const returnId = stringOrNull(pickField(transaction, ["return_id", "returnId"]));
   const refundId = stringOrNull(pickField(transaction, ["refund_id", "refundId"]));
-  const transactionTotal = numberValue(pickField(transaction, ["total", "amount", "net_price", "netPrice", "price"])) ?? null;
+  const transactionTotal = getOnlinePosGrossTotal(transaction, rawLines);
 
-  return findTransactionLines(transaction).map((line, lineIndex) => {
+  return rawLines.map((line, lineIndex) => {
     const onlineposProductName = stringOrNull(pickField(line, ["product_name", "productName", "productname", "name", "receipt_text", "receiptText"]));
     const onlineposProductGroupName = stringOrNull(pickField(line, ["product_group_name", "productGroupName", "productgroupname"]));
     const classification = classifyOnlinePosLine(onlineposProductName, onlineposProductGroupName);
@@ -553,7 +555,7 @@ function toTransactionLines(transaction: Record<string, unknown>, transactionInd
       cashRegisterId: cashRegister?.id ?? null,
       cashRegisterName: cashRegister?.name ?? null,
       quantitySold: numberValue(pickField(line, ["quantity", "qty", "count", "amount"])) ?? 0,
-      revenue: numberValue(pickField(line, ["net_price", "netPrice", "netprice", "price", "gross_price", "grossPrice"])) ?? 0,
+      revenue: getOnlinePosGrossAmount(line),
       ...classification,
     };
   });

@@ -25,6 +25,10 @@ type ReceiptControl = {
   finalTotal: number;
   source: string;
   createdAt: string;
+  locationName: string | null;
+  cashRegisterName: string | null;
+  cashRegisterId: string | null;
+  locationMappingStatus: "mapped" | "unmapped";
 };
 
 export default function ReturKontrolPage() {
@@ -64,6 +68,7 @@ export default function ReturKontrolPage() {
               <div>
                 <p className="text-base font-bold text-ink">Bon {item.receiptNumber ?? item.transactionId ?? "ukendt"}</p>
                 <p className="mt-1 text-sm font-bold text-muted">{formatDate(item.createdAt)} · {item.source === "historical_replay" ? "Historisk replay" : "Live sync"}</p>
+                <p className="mt-1 text-sm font-bold text-ink">Bar: {item.locationName ?? item.cashRegisterName ?? item.cashRegisterId ?? "Ukendt"}{item.locationMappingStatus !== "mapped" ? " · Ikke mappet" : ""}</p>
               </div>
               <p className="rounded-xl bg-warmRed px-3 py-1 text-sm font-bold text-macro">{item.finalTotal.toLocaleString("da-DK")} kr.</p>
             </div>

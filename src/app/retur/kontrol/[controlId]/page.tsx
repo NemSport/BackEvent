@@ -31,7 +31,9 @@ type Control = Record<string, unknown> & {
   replay_run_id: string | null;
   status: string;
   location_name?: string | null;
+  location_mapping_status?: "mapped" | "unmapped";
   cash_register_name?: string | null;
+  cash_register_id?: string | null;
   handled_by_name?: string | null;
   handled_at?: string | null;
   internal_note?: string | null;
@@ -95,7 +97,8 @@ export default function ReceiptControlDetailPage() {
   if (!control) return <AppShell><div className="mx-auto max-w-5xl"><BackButton href="/retur/kontrol" /><Card className="my-5"><h1 className="text-2xl font-bold text-ink">Bonkontrol</h1><p className="mt-2 font-bold text-warmRed">{message}</p></Card></div></AppShell>;
 
   const primaryTime = control.transaction_datetime ?? control.created_at;
-  const hasLocation = Boolean(control.location_name || control.cash_register_name);
+  const hasLocation = Boolean(control.location_name || control.cash_register_name || control.cash_register_id);
+  const displayedLocation = control.location_name ?? control.cash_register_name ?? control.cash_register_id ?? "Ukendt";
   const rules = control.control_types ?? [];
   const sentCount = notifications.filter((item) => item.status === "sent").length;
   const failedCount = notifications.filter((item) => item.status === "failed" || item.status === "skipped").length;
@@ -109,16 +112,16 @@ export default function ReceiptControlDetailPage() {
         <div className="min-w-0">
           <h1 className="text-3xl font-bold leading-tight text-ink md:text-4xl">Bon {control.receipt_number ?? control.onlinepos_transaction_id ?? "ukendt"}</h1>
           <p className="mt-1 text-sm font-semibold text-muted md:text-base">{formatDate(primaryTime)} · {sourceLabel(control.source)}</p>
-          {hasLocation ? <p className="mt-2 flex items-center gap-1.5 text-sm text-muted"><MapPin className="h-4 w-4 shrink-0" />{[control.location_name, control.cash_register_name].filter(Boolean).join(" · ")}</p> : <p className="mt-2 text-sm text-muted">Lokation og kasse blev ikke gemt ved dette replay</p>}
+          {hasLocation ? <p className="mt-2 flex items-center gap-1.5 text-sm font-bold text-ink"><MapPin className="h-4 w-4 shrink-0" />Bar: {displayedLocation}{control.location_mapping_status !== "mapped" ? " · Ikke mappet" : control.cash_register_name && control.cash_register_name !== control.location_name ? ` · OnlinePOS: ${control.cash_register_name}` : ""}</p> : <p className="mt-2 text-sm font-bold text-muted">Bar: Ukendt · Ikke mappet</p>}
         </div>
         <StatusPill tone={statusTone} className="self-start">{formatReceiptControlStatus(control.status)}</StatusPill>
       </div>
     </header>
 
     <section aria-label="Bonens nøgletal" className="mb-5 grid grid-cols-2 overflow-hidden rounded-2xl border border-line bg-macro shadow-sm md:grid-cols-4">
-      <Metric label="Køb" value={formatMoney(control.purchase_value)} />
-      <Metric label="Pant retur" value={formatMoney(control.deposit_return_value)} />
-      <Metric label="Bon i alt" value={formatMoney(control.final_total)} />
+      <Metric label="Køb inkl. moms" value={formatMoney(control.purchase_value)} />
+      <Metric label="Pant retur inkl. moms" value={formatMoney(control.deposit_return_value)} />
+      <Metric label="Bon i alt inkl. moms" value={formatMoney(control.final_total)} />
       <Metric label="Pant" value={`${formatNumber(control.deposit_return_quantity)} stk.`} />
     </section>
 
@@ -166,7 +169,7 @@ export default function ReceiptControlDetailPage() {
       </div>
       {saveMessage ? <Notice tone="danger" className="mt-3">{saveMessage}</Notice> : null}
       {control.handled_by_name && control.handled_at ? <p className="mt-4 text-sm text-muted">Senest behandlet af <strong className="text-ink">{control.handled_by_name}</strong> {formatDate(control.handled_at)}.</p> : null}
-      {audit.length ? <details className="mt-4 border-t border-line pt-3"><summary className="cursor-pointer text-sm font-bold text-pantone140">Vis behandlingshistorik ({audit.length})</summary><div className="mt-3 space-y-2">{audit.map((item) => <div key={item.id} className="rounded-xl bg-soft p-3 text-sm"><p className="font-bold text-ink">{formatReceiptControlStatus(item.status)} · {item.handled_by_name}</p><p className="text-muted">{formatDate(item.created_at)}</p>{item.internal_note ? <p className="mt-1 whitespace-pre-wrap text-ink">{item.internal_note}</p> : null}</div>)}</div></details> : null}
+      {audit.length ? <details className="mt-4 border-t border-line pt-3"><summary className="cursor-pointer text-sm font-bold text-pantone140">Vis behandlingshistorik ({audit.length})</summary><p className="mt-3 text-sm font-bold text-ink">Bar: {displayedLocation}{control.location_mapping_status !== "mapped" ? " · Ikke mappet" : ""}</p><div className="mt-3 space-y-2">{audit.map((item) => <div key={item.id} className="rounded-xl bg-soft p-3 text-sm"><p className="font-bold text-ink">{formatReceiptControlStatus(item.status)} · {item.handled_by_name}</p><p className="text-muted">{formatDate(item.created_at)}</p>{item.internal_note ? <p className="mt-1 whitespace-pre-wrap text-ink">{item.internal_note}</p> : null}</div>)}</div></details> : null}
     </Card> : null}
 
     <details className="group rounded-2xl border border-line bg-macro shadow-sm">

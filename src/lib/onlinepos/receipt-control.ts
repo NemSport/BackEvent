@@ -27,6 +27,9 @@ export type OnlinePosReceiptControlInput = {
   returnId?: string | null;
   refundId?: string | null;
   total?: number | null;
+  cashRegisterId?: string | null;
+  cashRegisterName?: string | null;
+  transactionDatetime?: string | null;
   lines: OnlinePosReceiptControlLine[];
 };
 
@@ -34,6 +37,9 @@ export type OnlinePosReceiptControlAnalysis = {
   receiptKey: string;
   transactionId: string | null;
   receiptNumber: string | null;
+  cashRegisterId: string | null;
+  cashRegisterName: string | null;
+  transactionDatetime: string | null;
   classification: OnlinePosReceiptClassification;
   classificationLabel: string;
   signals: string[];
@@ -105,6 +111,9 @@ export function analyzeOnlinePosReceipt(
     receiptKey: buildOnlinePosReceiptKey(input),
     transactionId: input.transactionId ?? null,
     receiptNumber: input.receiptNumber ?? null,
+    cashRegisterId: input.cashRegisterId ?? null,
+    cashRegisterName: input.cashRegisterName ?? null,
+    transactionDatetime: input.transactionDatetime ?? null,
     classification,
     classificationLabel: receiptClassificationLabel(classification),
     signals,

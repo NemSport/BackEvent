@@ -56,7 +56,7 @@ export async function GET(request: Request) {
   const receiptControlsResult = auth.canControl && (control === "open" || control === "history")
     ? await auth.supabase
       .from("backevent_onlinepos_receipt_controls")
-      .select("id,receipt_number,onlinepos_transaction_id,classification,control_types,deposit_return_quantity,deposit_breakdown,purchase_value,deposit_return_value,final_total,source,replay_run_id,status,handled_at,handled_by_name,internal_note,created_at,updated_at")
+      .select("id,receipt_number,onlinepos_transaction_id,classification,control_types,deposit_return_quantity,deposit_breakdown,purchase_value,deposit_return_value,final_total,source,replay_run_id,status,handled_at,handled_by_name,internal_note,created_at,updated_at,transaction_datetime,location_id,location_name,cash_register_id,cash_register_name,location_mapping_status")
       .in("status", control === "open" ? [...ACTIVE_RECEIPT_CONTROL_STATUSES] : [...CLOSED_RECEIPT_CONTROL_STATUSES])
       .order("created_at", { ascending: false })
       .limit(100)
@@ -95,6 +95,12 @@ export async function GET(request: Request) {
       updatedAt: row.updated_at,
       replayRunId: row.replay_run_id,
       createdAt: row.created_at,
+      transactionDatetime: row.transaction_datetime,
+      locationId: row.location_id,
+      locationName: row.location_name,
+      cashRegisterId: row.cash_register_id,
+      cashRegisterName: row.cash_register_name,
+      locationMappingStatus: row.location_mapping_status,
     })),
   });
 }

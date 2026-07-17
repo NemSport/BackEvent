@@ -22,6 +22,7 @@ import {
 import {
   getOnlinePosLocationMappings,
   recordOnlinePosLocationDiscoveries,
+  resolveOnlinePosLocation,
   type OnlinePosLocationDiagnostics,
   type OnlinePosLocationMapping,
 } from "./location-mappings.ts";
@@ -30,7 +31,7 @@ import {
   type OnlinePosReceiptControlAnalysis,
   type OnlinePosReceiptControlType,
 } from "./receipt-control.ts";
-import { persistReceiptControls } from "./returns.ts";
+import { persistReceiptControls, type ReceiptControlLocationContext } from "./returns.ts";
 
 export {
   buildReplayWindows,
@@ -210,7 +211,15 @@ export async function runHistoricalReplay({
   });
   let controlCount = 0;
   for (const audit of analysis.returns.filter((item) => item.controlTriggers.length > 0)) {
-    await persistReceiptControls(supabase, replayAuditToControlAnalysis(audit), { source: "historical_replay", replayRunId: input.replayRunId });
+    await persistReceiptControls(supabase, replayAuditToControlAnalysis(audit), {
+      source: "historical_replay",
+      replayRunId: input.replayRunId,
+      locationContext: {
+        locationId: audit.locationId,
+        locationName: audit.locationName,
+        mappingStatus: audit.locationMappingStatus,
+      },
+    });
     controlCount += 1;
   }
   return {
@@ -229,6 +238,9 @@ function replayAuditToControlAnalysis(audit: ReplayReturnAudit): OnlinePosReceip
     receiptKey: audit.replayKey.replace(/^onlinepos-replay:/, "onlinepos-receipt:"),
     transactionId: audit.transactionId,
     receiptNumber: audit.receiptNumber,
+    cashRegisterId: audit.cashRegisterId,
+    cashRegisterName: audit.cashRegisterName,
+    transactionDatetime: audit.datetime,
     classification: audit.classification === "Verificeret retur" ? "return_receipt" : audit.classification === "Usikker retur" ? "uncertain" : audit.classification === "Almindeligt salg med pantretur" ? "sale_with_deposit_return" : "sale",
     classificationLabel: audit.classification,
     signals: audit.signals,
@@ -352,7 +364,7 @@ async function analyzeHistoricalReplay({
     const summary = summarizeDecisions(uniqueDecisions, duplicateCount);
     const errorDetails = buildErrorDetails(window.label, uniqueDecisions, decisionLines, manualClassifications, input.venue ?? null);
     const ignoredDetails = buildIgnoredDetails(window.label, uniqueDecisions, decisionLines);
-    const returnAudits = buildReturnAudits(window.label, decisionLines, manualClassifications, input.venue ?? null);
+    const returnAudits = buildReturnAudits(window.label, decisionLines, manualClassifications, input.venue ?? null, latestLocationMappings, locations);
     const modifierAudits = buildModifierAudits(window.label, decisionLines, uniqueDecisions);
     const safeWindowDecisions = excludeUncertainReceiptDecisions(uniqueDecisions, returnAudits);
     const stockPreview = buildStockPreview(window.label, safeWindowDecisions, products, locations);
@@ -701,6 +713,11 @@ type ReplayReturnAudit = {
   receiptNumber: string | null;
   datetime: string | null;
   cashRegister: string | null;
+  cashRegisterId: string | null;
+  cashRegisterName: string | null;
+  locationId: string | null;
+  locationName: string | null;
+  locationMappingStatus: ReceiptControlLocationContext["mappingStatus"];
   total: number | null;
   type: string | null;
   status: string | null;
@@ -997,6 +1014,9 @@ export function analyzeReplayReceipt(lines: OnlinePosTransactionLine[]) {
     returnId: first?.returnId ?? null,
     refundId: first?.refundId ?? null,
     total: first?.transactionTotal ?? null,
+    cashRegisterId: first?.cashRegisterId ?? null,
+    cashRegisterName: first?.cashRegisterName ?? null,
+    transactionDatetime: first?.transactionDatetime ?? null,
     lines: lines.map((line) => ({
       productName: line.onlineposProductName,
       lineType: line.lineType,
@@ -1100,6 +1120,8 @@ function buildReturnAudits(
   lines: OnlinePosTransactionLine[],
   manualClassifications: Map<string, ManualReplayClassification>,
   venueId: string | null,
+  locationMappings: OnlinePosLocationMapping[] = [],
+  locations: Awaited<ReturnType<typeof getLocations>> = [],
 ) {
   const groups = groupLinesByTransaction(lines);
   const audits: ReplayReturnAudit[] = [];
@@ -1112,6 +1134,11 @@ function buildReturnAudits(
     });
     const manual = manualClassifications.get(replayKey) ?? null;
     const analysis = analyzeReplayReceipt(group);
+    const locationResolution = resolveOnlinePosLocation(
+      { venueId, cashRegisterId: first.cashRegisterId, cashRegisterName: first.cashRegisterName },
+      locationMappings,
+      locations,
+    );
     const signals = getReturnSignals(group, manual);
     const classification = replayReceiptClassification(analysis, manual);
     if (!classification && analysis.controlTypes.length === 0) continue;
@@ -1122,6 +1149,11 @@ function buildReturnAudits(
       receiptNumber: first.receiptNumber,
       datetime: first.transactionDatetime,
       cashRegister: first.cashRegisterName ?? first.cashRegisterId,
+      cashRegisterId: first.cashRegisterId,
+      cashRegisterName: first.cashRegisterName,
+      locationId: locationResolution.ok ? locationResolution.location.id : null,
+      locationName: locationResolution.ok ? locationResolution.location.name : null,
+      locationMappingStatus: locationResolution.ok ? "mapped" : "unmapped",
       total: first.transactionTotal,
       type: first.transactionType,
       status: first.transactionStatus,

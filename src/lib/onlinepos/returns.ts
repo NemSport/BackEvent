@@ -13,6 +13,7 @@ import {
   type OnlinePosReceiptControlAnalysis,
 } from "./receipt-control.ts";
 import { calculateOnlinePosInventoryConsumption } from "./inventory-unit-conversion.ts";
+import { getOnlinePosGrossAmount, getOnlinePosGrossTotal } from "./pricing.ts";
 
 export type ReturnHandling = "waste" | "return_to_stock" | "manual_review" | "no_stock_effect";
 export type ReturnEconomicDirection = "refund" | "charge" | "neutral";
@@ -88,6 +89,12 @@ export type ReturnRegistrationOptions = {
   skipFinanceNotification?: boolean;
 };
 
+export type ReceiptControlLocationContext = {
+  locationId: string | null;
+  locationName: string | null;
+  mappingStatus: "mapped" | "unmapped";
+};
+
 type TokenResponse = {
   access_token?: string;
 };
@@ -122,7 +129,7 @@ export async function runOnlinePosReturnSync({
     const context = await loadReturnContext(supabase);
     const venueId = process.env.ONLINEPOS_VENUE_ID ?? null;
     const locationResolver = createOnlinePosLocationResolver(
-      returns.map((item) => ({ venueId, cashRegisterId: item.cashRegisterId, cashRegisterName: item.cashRegisterName })),
+      receiptAnalyses.map((item) => ({ venueId, cashRegisterId: item.cashRegisterId, cashRegisterName: item.cashRegisterName })),
       context.locationMappings,
       context.locations,
     );
@@ -132,7 +139,14 @@ export async function runOnlinePosReturnSync({
     let duplicateCount = 0;
 
     for (const analysis of receiptAnalyses.filter((item) => item.controlTypes.length > 0)) {
-      await notifyFinanceAboutReceiptControls(supabase, analysis).catch(() => undefined);
+      const locationResolution = locationResolver.resolve({
+        venueId,
+        cashRegisterId: analysis.cashRegisterId,
+        cashRegisterName: analysis.cashRegisterName,
+      });
+      await notifyFinanceAboutReceiptControls(supabase, analysis, {
+        locationContext: buildReceiptControlLocationContext(locationResolution),
+      }).catch(() => undefined);
     }
 
     for (const parsedReturn of returns) {
@@ -214,7 +228,7 @@ export function parseOnlinePosReturn(transaction: Record<string, unknown>, trans
   const cashRegister = toSafeCashRegister(pickField(transaction, ["cash_register", "cashRegister"]));
   const cashRegisterId = cashRegister?.id ?? stringOrNull(pickField(transaction, ["cash_register_id", "cashRegisterId", "department_id", "departmentId"]));
   const cashRegisterName = cashRegister?.name ?? stringOrNull(pickField(transaction, ["cash_register_name", "cashRegisterName", "department", "department_name", "departmentName"]));
-  const rawTotalAmount = numberValue(pickField(transaction, ["total", "amount", "net_price", "netPrice", "price"]));
+  const rawTotalAmount = getOnlinePosGrossTotal(transaction, rawLines);
   const totalAmount = roundNumber(parsedLines.reduce((sum, line) => sum + line.lineAmount, 0));
   const depositAmount = roundNumber(parsedLines.filter((line) => line.isDeposit || line.isCup || line.isFee).reduce((sum, line) => sum + line.lineAmount, 0));
   const productAmount = roundNumber(totalAmount - depositAmount);
@@ -270,6 +284,7 @@ export function parseOnlinePosReturn(transaction: Record<string, unknown>, trans
 
 export function analyzeRawOnlinePosReceipt(transaction: Record<string, unknown>): OnlinePosReceiptControlAnalysis {
   const rawLines = findTransactionLines(transaction);
+  const cashRegister = toSafeCashRegister(pickField(transaction, ["cash_register", "cashRegister"]));
   return analyzeOnlinePosReceipt({
     venueId: process.env.ONLINEPOS_VENUE_ID ?? null,
     transactionId: stringOrNull(pickField(transaction, ["transaction_id", "transactionId", "id"])),
@@ -278,7 +293,10 @@ export function analyzeRawOnlinePosReceipt(transaction: Record<string, unknown>)
     transactionStatus: stringOrNull(pickField(transaction, ["status", "transaction_status", "transactionStatus"])),
     returnId: stringOrNull(pickField(transaction, ["return_id", "returnId"])),
     refundId: stringOrNull(pickField(transaction, ["refund_id", "refundId"])),
-    total: numberValue(pickField(transaction, ["total", "amount", "net_price", "netPrice", "price"])),
+    total: getOnlinePosGrossTotal(transaction, rawLines),
+    cashRegisterId: cashRegister?.id ?? stringOrNull(pickField(transaction, ["cash_register_id", "cashRegisterId", "department_id", "departmentId"])),
+    cashRegisterName: cashRegister?.name ?? stringOrNull(pickField(transaction, ["cash_register_name", "cashRegisterName", "department", "department_name", "departmentName"])),
+    transactionDatetime: stringOrNull(pickField(transaction, ["datetime", "created_at", "createdAt"])),
     lines: rawLines.map((line) => {
       const productName = stringOrNull(pickField(line, ["product_name", "productName", "productname", "name", "receipt_text", "receiptText"]));
       const productGroupName = stringOrNull(pickField(line, ["product_group_name", "productGroupName", "productgroupname"]));
@@ -286,7 +304,7 @@ export function analyzeRawOnlinePosReceipt(transaction: Record<string, unknown>)
         productName,
         lineType: classifyOnlinePosLine(productName, productGroupName).lineType,
         quantity: numberValue(pickField(line, ["quantity", "qty", "count", "amount"])) ?? 0,
-        amount: numberValue(pickField(line, ["net_price", "netPrice", "netprice", "price", "gross_price", "grossPrice"])) ?? 0,
+        amount: getOnlinePosGrossAmount(line),
       };
     }),
   });
@@ -729,7 +747,7 @@ type ReturnNotificationRecipient = { id: string; email: string | null };
 export async function persistReceiptControls(
   supabase: SupabaseClient,
   analysis: OnlinePosReceiptControlAnalysis,
-  options: { sendNotifications?: boolean; source?: "live" | "historical_replay"; replayRunId?: string | null } = {},
+  options: { sendNotifications?: boolean; source?: "live" | "historical_replay"; replayRunId?: string | null; locationContext?: ReceiptControlLocationContext } = {},
 ) {
   if (analysis.controlTypes.length === 0) return;
   const control = await getOrCreateReceiptControl(supabase, analysis, options);
@@ -772,8 +790,9 @@ const notifyFinanceAboutReceiptControls = persistReceiptControls;
 async function getOrCreateReceiptControl(
   supabase: SupabaseClient,
   analysis: OnlinePosReceiptControlAnalysis,
-  options: { source?: "live" | "historical_replay"; replayRunId?: string | null } = {},
+  options: { source?: "live" | "historical_replay"; replayRunId?: string | null; locationContext?: ReceiptControlLocationContext } = {},
 ) {
+  const locationContext = options.locationContext ?? { locationId: null, locationName: null, mappingStatus: "unmapped" as const };
   const row = {
     receipt_key: analysis.receiptKey,
     onlinepos_transaction_id: analysis.transactionId,
@@ -790,6 +809,12 @@ async function getOrCreateReceiptControl(
     final_total: analysis.finalTotal,
     source: options.source ?? "live",
     replay_run_id: options.replayRunId ?? null,
+    transaction_datetime: analysis.transactionDatetime,
+    location_id: locationContext.locationId,
+    location_name: locationContext.locationName,
+    cash_register_id: analysis.cashRegisterId,
+    cash_register_name: analysis.cashRegisterName,
+    location_mapping_status: locationContext.mappingStatus,
   };
   const inserted = await supabase.from("backevent_onlinepos_receipt_controls").insert(row).select("id").single();
   if (!inserted.error) return { id: String(inserted.data.id) };
@@ -800,6 +825,12 @@ async function getOrCreateReceiptControl(
     .eq("receipt_key", analysis.receiptKey)
     .maybeSingle();
   return existing.data ? { id: String(existing.data.id) } : null;
+}
+
+export function buildReceiptControlLocationContext(resolution: OnlinePosLocationResolution): ReceiptControlLocationContext {
+  return resolution.ok
+    ? { locationId: resolution.location.id, locationName: resolution.location.name, mappingStatus: "mapped" }
+    : { locationId: null, locationName: null, mappingStatus: "unmapped" };
 }
 
 async function notifyFinanceAboutReturn(supabase: SupabaseClient, returnId: string, parsedReturn: ParsedOnlinePosReturn, locationName: string | null) {
@@ -1326,7 +1357,7 @@ function toReturnLine(line: Record<string, unknown>, transactionId: string | nul
   const productDescription = stringOrNull(pickField(line, ["product_name", "productName", "productname", "name", "receipt_text", "receiptText"])) ?? "Ukendt vare";
   const productGroupName = stringOrNull(pickField(line, ["product_group_name", "productGroupName", "productgroupname"]));
   const quantity = Math.abs(numberValue(pickField(line, ["quantity", "qty", "count", "amount"])) ?? 0);
-  const lineAmount = numberValue(pickField(line, ["net_price", "netPrice", "netprice", "price", "gross_price", "grossPrice"])) ?? 0;
+  const lineAmount = getOnlinePosGrossAmount(line);
   const classification = classifyOnlinePosLine(productDescription, productGroupName);
   const normalizedName = productDescription.toLocaleUpperCase("da-DK");
   const isCup = normalizedName.includes("KRUS") || normalizedName.includes("KANDE");

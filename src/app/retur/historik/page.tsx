@@ -11,6 +11,7 @@ import { formatReceiptControlStatus } from "@/lib/backevent/return-control-contr
 type HistoryControl = {
   id: string; receiptNumber: string | null; transactionId: string | null; status: string;
   handledAt: string | null; handledByName: string | null; internalNote: string | null; createdAt: string;
+  locationName: string | null; cashRegisterName: string | null; cashRegisterId: string | null; locationMappingStatus: "mapped" | "unmapped";
 };
 
 export default function ReturnHistoryPage() {
@@ -31,7 +32,7 @@ export default function ReturnHistoryPage() {
 
   return <AppShell><BackButton href="/retur" /><section className="my-5 rounded-[1.5rem] bg-soft p-5 shadow-soft"><h1 className="text-3xl font-bold text-ink">Kontrolhistorik</h1><p className="mt-2 font-bold text-muted">Afsluttede bonkontroller bevares her.</p></section>
     {message ? <p className="rounded-2xl bg-soft p-4 text-sm font-bold text-muted">{message}</p> : null}
-    <div className="divide-y divide-line overflow-hidden rounded-[1.5rem] border border-line bg-macro shadow-soft">{items.map((item) => <Link key={item.id} href={`/retur/kontrol/${item.id}`} className="block p-4 hover:bg-soft/70"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-bold text-ink">Bon {item.receiptNumber ?? item.transactionId ?? "ukendt"}</p><p className="mt-1 text-sm text-muted">{item.handledByName ? `${item.handledByName} · ` : ""}{formatDate(item.handledAt ?? item.createdAt)}</p></div><StatusPill tone={item.status === "approved" ? "success" : "danger"}>{formatReceiptControlStatus(item.status)}</StatusPill></div>{item.internalNote ? <p className="mt-2 line-clamp-2 text-sm text-muted">{item.internalNote}</p> : null}</Link>)}{!message && items.length === 0 ? <p className="p-5 text-sm font-bold text-muted">Ingen afsluttede bonkontroller endnu.</p> : null}</div>
+    <div className="divide-y divide-line overflow-hidden rounded-[1.5rem] border border-line bg-macro shadow-soft">{items.map((item) => <Link key={item.id} href={`/retur/kontrol/${item.id}`} className="block p-4 hover:bg-soft/70"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-bold text-ink">Bon {item.receiptNumber ?? item.transactionId ?? "ukendt"}</p><p className="mt-1 text-sm font-bold text-ink">Bar: {item.locationName ?? item.cashRegisterName ?? item.cashRegisterId ?? "Ukendt"}{item.locationMappingStatus !== "mapped" ? " · Ikke mappet" : ""}</p><p className="mt-1 text-sm text-muted">{item.handledByName ? `${item.handledByName} · ` : ""}{formatDate(item.handledAt ?? item.createdAt)}</p></div><StatusPill tone={item.status === "approved" ? "success" : "danger"}>{formatReceiptControlStatus(item.status)}</StatusPill></div>{item.internalNote ? <p className="mt-2 line-clamp-2 text-sm text-muted">{item.internalNote}</p> : null}</Link>)}{!message && items.length === 0 ? <p className="p-5 text-sm font-bold text-muted">Ingen afsluttede bonkontroller endnu.</p> : null}</div>
   </AppShell>;
 }
 
