@@ -13,8 +13,12 @@ import {
   type OnlinePosReceiptControlAnalysis,
 } from "./receipt-control.ts";
 import { calculateOnlinePosInventoryConsumption } from "./inventory-unit-conversion.ts";
-import { getOnlinePosGrossAmount, getOnlinePosGrossTotal, hasOnlinePosGrossAmount } from "./pricing.ts";
-import { amountIncludingVat } from "../backevent/vat.ts";
+import {
+  getOnlinePosGrossAmount,
+  getOnlinePosGrossTotal,
+  getOnlinePosSourcedLineAmount,
+  getOnlinePosSourcedTotal,
+} from "./pricing.ts";
 
 export type ReturnHandling = "waste" | "return_to_stock" | "manual_review" | "no_stock_effect";
 export type ReturnEconomicDirection = "refund" | "charge" | "neutral";
@@ -286,6 +290,7 @@ export function parseOnlinePosReturn(transaction: Record<string, unknown>, trans
 export function analyzeRawOnlinePosReceipt(transaction: Record<string, unknown>): OnlinePosReceiptControlAnalysis {
   const rawLines = findTransactionLines(transaction);
   const cashRegister = toSafeCashRegister(pickField(transaction, ["cash_register", "cashRegister"]));
+  const total = getOnlinePosSourcedTotal(transaction, rawLines);
   return analyzeOnlinePosReceipt({
     venueId: process.env.ONLINEPOS_VENUE_ID ?? null,
     transactionId: stringOrNull(pickField(transaction, ["transaction_id", "transactionId", "id"])),
@@ -294,19 +299,24 @@ export function analyzeRawOnlinePosReceipt(transaction: Record<string, unknown>)
     transactionStatus: stringOrNull(pickField(transaction, ["status", "transaction_status", "transactionStatus"])),
     returnId: stringOrNull(pickField(transaction, ["return_id", "returnId"])),
     refundId: stringOrNull(pickField(transaction, ["refund_id", "refundId"])),
-    total: getOnlinePosGrossTotal(transaction, rawLines),
+    total: total.value,
+    totalIncludingVat: total.valueIncludingVat,
+    totalSource: total.sourceField,
     cashRegisterId: cashRegister?.id ?? stringOrNull(pickField(transaction, ["cash_register_id", "cashRegisterId", "department_id", "departmentId"])),
     cashRegisterName: cashRegister?.name ?? stringOrNull(pickField(transaction, ["cash_register_name", "cashRegisterName", "department", "department_name", "departmentName"])),
     transactionDatetime: stringOrNull(pickField(transaction, ["datetime", "created_at", "createdAt"])),
-    amountsIncludeVat: rawLines.length > 0 && rawLines.every(hasOnlinePosGrossAmount),
+    amountsIncludeVat: total.includesVat,
     lines: rawLines.map((line) => {
       const productName = stringOrNull(pickField(line, ["product_name", "productName", "productname", "name", "receipt_text", "receiptText"]));
       const productGroupName = stringOrNull(pickField(line, ["product_group_name", "productGroupName", "productgroupname"]));
+      const sourcedAmount = getOnlinePosSourcedLineAmount(line);
       return {
         productName,
         lineType: classifyOnlinePosLine(productName, productGroupName).lineType,
         quantity: numberValue(pickField(line, ["quantity", "qty", "count", "amount"])) ?? 0,
-        amount: getOnlinePosGrossAmount(line),
+        amount: sourcedAmount.value,
+        amountIncludingVat: sourcedAmount.valueIncludingVat,
+        amountSource: sourcedAmount.sourceField,
       };
     }),
   });
@@ -809,6 +819,10 @@ async function getOrCreateReceiptControl(
     purchase_value: analysis.purchaseValue,
     deposit_return_value: analysis.depositReturnValue,
     final_total: analysis.finalTotal,
+    purchase_value_including_vat: analysis.purchaseValueIncludingVat,
+    deposit_return_value_including_vat: analysis.depositReturnValueIncludingVat,
+    final_total_including_vat: analysis.finalTotalIncludingVat,
+    amount_source_details: analysis.amountSourceDetails,
     source: options.source ?? "live",
     replay_run_id: options.replayRunId ?? null,
     transaction_datetime: analysis.transactionDatetime,
@@ -1172,16 +1186,16 @@ export function buildReceiptControlNotificationText(
     );
   }
   if (analysis.controlTypes.includes("NEGATIVE_RECEIPT_TOTAL")) {
-    reasons.push(`Negativ total ${formatControlMoney(analysis.finalTotal, analysis.amountsIncludeVat)}`);
+    reasons.push(`Negativ total ${formatControlMoney(analysis.finalTotalIncludingVat)}`);
   }
   if (analysis.controlTypes.includes("MANUAL_REVIEW")) reasons.push("Kræver manuel kontrol");
   return [
     `Bon: ${analysis.receiptNumber ?? analysis.transactionId ?? "Mangler"}`,
     receiptControlNotificationLocation(analysis, locationContext),
     ...reasons.map((reason) => `Årsag: ${reason}`),
-    `Køb inkl. moms: ${formatControlMoney(analysis.purchaseValue, analysis.amountsIncludeVat)}`,
-    `Pantretur inkl. moms: ${formatControlMoney(analysis.depositReturnValue, analysis.amountsIncludeVat)}`,
-    `Sluttotal inkl. moms: ${formatControlMoney(analysis.finalTotal, analysis.amountsIncludeVat)}`,
+    `Køb inkl. moms: ${formatControlMoney(analysis.purchaseValueIncludingVat)}`,
+    `Pantretur inkl. moms: ${formatControlMoney(analysis.depositReturnValueIncludingVat)}`,
+    `Sluttotal inkl. moms: ${formatControlMoney(analysis.finalTotalIncludingVat)}`,
   ].join("\n");
 }
 
@@ -1196,8 +1210,8 @@ function receiptControlNotificationLocation(
   return onlinePosReference ? `Bar: ${onlinePosReference} · Ikke mappet` : "Bar: Ukendt · Ikke mappet";
 }
 
-function formatControlMoney(value: number, alreadyIncludesVat: boolean) {
-  return `${amountIncludingVat(value, alreadyIncludesVat).toLocaleString("da-DK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} kr.`;
+function formatControlMoney(value: number) {
+  return `${value.toLocaleString("da-DK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} kr.`;
 }
 
 function formatControlNumber(value: number) {

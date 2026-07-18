@@ -1,7 +1,10 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { ACTIVE_RECEIPT_CONTROL_STATUSES } from "./return-control-contract.ts";
+import {
+  ACTIVE_RECEIPT_CONTROL_STATUSES,
+  isReceiptControlReason,
+} from "./return-control-contract.ts";
 
-export const RECEIPT_CONTROL_SELECT = "id,receipt_number,onlinepos_transaction_id,classification,control_types,deposit_return_quantity,deposit_breakdown,purchase_value,deposit_return_value,final_total,amounts_include_vat,source,replay_run_id,status,handled_by,handled_at,handled_by_name,internal_note,created_at,updated_at,transaction_datetime,location_id,location_name,cash_register_id,cash_register_name,location_mapping_status";
+export const RECEIPT_CONTROL_SELECT = "id,receipt_number,onlinepos_transaction_id,classification,control_types,deposit_return_quantity,deposit_breakdown,purchase_value,deposit_return_value,final_total,purchase_value_including_vat,deposit_return_value_including_vat,final_total_including_vat,amount_source_details,source,replay_run_id,status,handled_by,handled_at,handled_by_name,internal_note,created_at,updated_at,transaction_datetime,location_id,location_name,cash_register_id,cash_register_name,location_mapping_status";
 
 export type ReceiptControlFilters = {
   status: string;
@@ -24,18 +27,29 @@ export type ReceiptControlListOptions = {
   currentUserId?: string | null;
 };
 
-export function parseReceiptControlFilters(searchParams: URLSearchParams): ReceiptControlFilters {
+export type ReceiptControlFilterParseResult =
+  | { ok: true; filters: ReceiptControlFilters }
+  | { ok: false; message: string };
+
+export function parseReceiptControlFilters(searchParams: URLSearchParams): ReceiptControlFilterParseResult {
+  const reason = clean(searchParams.get("reason")) ?? "all";
+  if (reason !== "all" && !isReceiptControlReason(reason)) {
+    return { ok: false, message: "Ugyldig kontrolårsag" };
+  }
   return {
-    status: clean(searchParams.get("status")) ?? "open",
-    location: clean(searchParams.get("location")) ?? "all",
-    reason: clean(searchParams.get("reason")) ?? "all",
-    dateFrom: dateValue(searchParams.get("from")),
-    dateTo: dateValue(searchParams.get("to")),
-    source: clean(searchParams.get("source")) ?? "all",
-    handler: clean(searchParams.get("handler")) ?? "all",
-    search: clean(searchParams.get("search")) ?? "",
-    sort: clean(searchParams.get("sort")) ?? "oldest",
-    quick: clean(searchParams.get("quick")) ?? "",
+    ok: true,
+    filters: {
+      status: clean(searchParams.get("status")) ?? "open",
+      location: clean(searchParams.get("location")) ?? "all",
+      reason,
+      dateFrom: dateValue(searchParams.get("from")),
+      dateTo: dateValue(searchParams.get("to")),
+      source: clean(searchParams.get("source")) ?? "all",
+      handler: clean(searchParams.get("handler")) ?? "all",
+      search: clean(searchParams.get("search")) ?? "",
+      sort: clean(searchParams.get("sort")) ?? "oldest",
+      quick: clean(searchParams.get("quick")) ?? "",
+    },
   };
 }
 
@@ -75,7 +89,11 @@ export async function fetchReceiptControls(
     query = query.eq("location_id", locationFilter);
   }
 
-  if (filters.reason !== "all") query = query.contains("control_types", [filters.reason]);
+  if (filters.reason !== "all") {
+    // control_types is jsonb. PostgREST expects a JSON array here; Supabase's
+    // .contains(column, array) serializes PostgreSQL array syntax instead.
+    query = query.filter("control_types", "cs", JSON.stringify([filters.reason]));
+  }
   if (filters.dateFrom) query = query.gte("effective_datetime", `${filters.dateFrom}T00:00:00.000Z`);
   if (filters.dateTo) query = query.lte("effective_datetime", `${filters.dateTo}T23:59:59.999Z`);
   if (filters.source !== "all") query = query.eq("source", filters.source);
@@ -136,7 +154,10 @@ export function mapReceiptControlRow(row: Record<string, unknown>) {
     purchaseValue: Number(row.purchase_value ?? 0),
     depositReturnValue: Number(row.deposit_return_value ?? 0),
     finalTotal: Number(row.final_total ?? 0),
-    amountsIncludeVat: row.amounts_include_vat === true,
+    purchaseValueIncludingVat: Number(row.purchase_value_including_vat ?? row.purchase_value ?? 0),
+    depositReturnValueIncludingVat: Number(row.deposit_return_value_including_vat ?? row.deposit_return_value ?? 0),
+    finalTotalIncludingVat: Number(row.final_total_including_vat ?? row.final_total ?? 0),
+    amountSourceDetails: row.amount_source_details ?? {},
     source: String(row.source ?? "live"),
     status: String(row.status ?? "open"),
     handledBy: stringOrNull(row.handled_by),

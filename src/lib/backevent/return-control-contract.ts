@@ -53,6 +53,19 @@ const RULE_LABELS: Record<string, string> = {
   MANUAL_REVIEW: "Manuel kontrol",
 };
 
+export const RECEIPT_CONTROL_REASONS = [
+  "NEGATIVE_RECEIPT_TOTAL",
+  "HIGH_DEPOSIT_RETURN",
+  "MANUAL_REVIEW",
+  "RETURN_RECEIPT",
+] as const;
+
+export type ReceiptControlReason = typeof RECEIPT_CONTROL_REASONS[number];
+
+export function isReceiptControlReason(value: string): value is ReceiptControlReason {
+  return (RECEIPT_CONTROL_REASONS as readonly string[]).includes(value);
+}
+
 export function formatReceiptControlStatus(value: string) {
   return STATUS_LABELS[value] ?? "Ukendt status";
 }

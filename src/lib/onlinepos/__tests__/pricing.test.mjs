@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getOnlinePosGrossAmount, getOnlinePosGrossTotal, hasOnlinePosGrossAmount } from "../pricing.ts";
+import {
+  getOnlinePosGrossAmount,
+  getOnlinePosGrossTotal,
+  getOnlinePosSourcedLineAmount,
+  getOnlinePosSourcedTotal,
+  hasOnlinePosGrossAmount,
+} from "../pricing.ts";
 
 test("bruttopris inkl. moms prioriteres over nettopris", () => {
   assert.equal(getOnlinePosGrossAmount({ gross_price: 125, net_price: 100 }), 125);
@@ -30,4 +36,27 @@ test("bontotal beregnes fra inkl. moms-linjer når header-totalen er ekskl. moms
     ),
     150,
   );
+});
+
+test("-15 inklusive moms forbliver -15", () => {
+  assert.deepEqual(getOnlinePosSourcedTotal({ total: -15 }, []), {
+    value: -15,
+    valueIncludingVat: -15,
+    includesVat: true,
+    sourceField: "total",
+  });
+});
+
+test("-15 eksklusive moms bliver -18,75", () => {
+  assert.deepEqual(getOnlinePosSourcedTotal({ net_total: -15 }, []), {
+    value: -15,
+    valueIncludingVat: -18.75,
+    includesVat: false,
+    sourceField: "net_total",
+  });
+});
+
+test("brutto- og generisk pris dobbeltomregnes ikke", () => {
+  assert.equal(getOnlinePosSourcedLineAmount({ gross_price: -15 }).valueIncludingVat, -15);
+  assert.equal(getOnlinePosSourcedLineAmount({ price: -15 }).valueIncludingVat, -15);
 });

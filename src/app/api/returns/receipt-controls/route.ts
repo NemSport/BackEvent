@@ -10,10 +10,14 @@ export async function GET(request: Request) {
   const auth = await requireReturnAccess(request);
   if (!auth.ok) return NextResponse.json({ ok: false, message: auth.message }, { status: auth.status });
   if (!auth.canControl) return NextResponse.json({ ok: false, message: "Du har ikke adgang til bonkontroller" }, { status: 403 });
-  if (!auth.supabase) return NextResponse.json({ ok: true, items: [], total: 0, page: 1, pageSize: 25, locations: [], handlers: [] });
 
   const url = new URL(request.url);
-  const filters = parseReceiptControlFilters(url.searchParams);
+  const parsedFilters = parseReceiptControlFilters(url.searchParams);
+  if (!parsedFilters.ok) {
+    return NextResponse.json({ ok: false, message: parsedFilters.message }, { status: 400 });
+  }
+  const filters = parsedFilters.filters;
+  if (!auth.supabase) return NextResponse.json({ ok: true, items: [], total: 0, page: 1, pageSize: 25, locations: [], handlers: [] });
   const page = positiveInteger(url.searchParams.get("page"), 1);
   const pageSize = positiveInteger(url.searchParams.get("pageSize"), 25);
   const [result, locationsResult, handlersResult] = await Promise.all([

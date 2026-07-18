@@ -11,7 +11,6 @@ import {
   formatReceiptControlRule,
   formatReceiptControlStatus,
 } from "@/lib/backevent/return-control-contract";
-import { amountIncludingVat } from "@/lib/backevent/vat";
 import { formatReceiptControlLocation } from "@/lib/onlinepos/receipt-control-location";
 
 type ReceiptControl = {
@@ -22,7 +21,7 @@ type ReceiptControl = {
   depositReturnQuantity: number;
   depositReturnValue: number;
   finalTotal: number;
-  amountsIncludeVat: boolean;
+  finalTotalIncludingVat: number;
   source: string;
   status: string;
   createdAt: string;
@@ -233,7 +232,7 @@ function ReturKontrolContent() {
               <Link href={`/retur/kontrol/${item.id}?${detailParams}`} className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div><p className="font-bold text-ink">Bon {item.receiptNumber ?? item.transactionId ?? "ukendt"}</p><p className="mt-1 text-sm font-bold text-ink">{formatReceiptControlLocation(item)}</p><p className="mt-1 text-sm text-muted">{formatDate(item.transactionDatetime ?? item.createdAt)} · {sourceLabel(item.source)}</p></div>
-                  <div className="text-right"><StatusPill tone={item.status === "approved" ? "success" : item.status === "confirmed_error" ? "danger" : "pending"}>{formatReceiptControlStatus(item.status)}</StatusPill><p className="mt-2 font-bold text-ink">{formatMoney(item.finalTotal, item.amountsIncludeVat)}</p></div>
+                  <div className="text-right"><StatusPill tone={item.status === "approved" ? "success" : item.status === "confirmed_error" ? "danger" : "pending"}>{formatReceiptControlStatus(item.status)}</StatusPill><p className="mt-2 font-bold text-ink">{formatMoney(item.finalTotalIncludingVat)}</p></div>
                 </div>
                 <p className="mt-2 text-sm font-bold text-warmRed">{item.controlTypes.map(formatReceiptControlRule).join(" · ")}</p>
                 {item.internalNote ? <p className="mt-1 line-clamp-1 text-sm text-muted">{item.internalNote}</p> : null}
@@ -261,5 +260,5 @@ function Quick({ active, onClick, children }: { active: boolean; onClick: () => 
 }
 function positive(value: string | null, fallback: number) { const number = Number(value); return Number.isInteger(number) && number > 0 ? number : fallback; }
 function formatDate(value: string | null) { return value ? new Date(value).toLocaleString("da-DK", { dateStyle: "short", timeStyle: "short" }) : "ukendt"; }
-function formatMoney(value: number, alreadyIncludesVat: boolean) { return `${amountIncludingVat(value, alreadyIncludesVat).toLocaleString("da-DK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} kr.`; }
+function formatMoney(value: number) { return `${value.toLocaleString("da-DK", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} kr.`; }
 function sourceLabel(value: string) { return value === "historical_replay" ? "Replay" : value === "test" ? "Test-run" : "Live sync"; }

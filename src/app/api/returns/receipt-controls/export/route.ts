@@ -11,11 +11,15 @@ export async function GET(request: Request) {
   const auth = await requireReturnAccess(request);
   if (!auth.ok) return NextResponse.json({ ok: false, message: auth.message }, { status: auth.status });
   if (!auth.canControl) return NextResponse.json({ ok: false, message: "Du har ikke adgang til eksport" }, { status: 403 });
-  if (!auth.supabase) return NextResponse.json({ ok: false, message: "Ingen data at eksportere" }, { status: 404 });
 
   const url = new URL(request.url);
   const scope = url.searchParams.get("scope") ?? "filtered";
-  const filters = parseReceiptControlFilters(scope === "all" ? new URLSearchParams({ status: "all" }) : url.searchParams);
+  const parsedFilters = parseReceiptControlFilters(scope === "all" ? new URLSearchParams({ status: "all" }) : url.searchParams);
+  if (!parsedFilters.ok) {
+    return NextResponse.json({ ok: false, message: parsedFilters.message }, { status: 400 });
+  }
+  const filters = parsedFilters.filters;
+  if (!auth.supabase) return NextResponse.json({ ok: false, message: "Ingen data at eksportere" }, { status: 404 });
   const selectedIds = scope === "selected"
     ? (url.searchParams.get("ids") ?? "").split(",").filter(isUuid).slice(0, 1000)
     : undefined;

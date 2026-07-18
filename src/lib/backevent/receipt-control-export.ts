@@ -1,6 +1,5 @@
 import ExcelJS from "exceljs";
 import { formatReceiptControlRule, formatReceiptControlStatus } from "./return-control-contract.ts";
-import { amountIncludingVat } from "./vat.ts";
 
 type ExportControl = {
   receiptNumber: string | null;
@@ -15,7 +14,9 @@ type ExportControl = {
   purchaseValue: number;
   depositReturnValue: number;
   finalTotal: number;
-  amountsIncludeVat: boolean;
+  purchaseValueIncludingVat: number;
+  depositReturnValueIncludingVat: number;
+  finalTotalIncludingVat: number;
   depositReturnQuantity: number;
   controlTypes: string[];
   status: string;
@@ -66,9 +67,9 @@ export async function buildReceiptControlWorkbook(items: ExportControl[]) {
       cashRegisterName: item.cashRegisterName ?? "",
       locationName: item.locationName ?? "",
       mappingStatus: item.locationMappingStatus === "mapped" ? "Mappet" : item.cashRegisterId || item.cashRegisterName ? "Ikke mappet" : "Ukendt",
-      purchaseValue: amountIncludingVat(item.purchaseValue, item.amountsIncludeVat),
-      depositReturnValue: amountIncludingVat(item.depositReturnValue, item.amountsIncludeVat),
-      finalTotal: amountIncludingVat(item.finalTotal, item.amountsIncludeVat),
+      purchaseValue: item.purchaseValueIncludingVat,
+      depositReturnValue: item.depositReturnValueIncludingVat,
+      finalTotal: item.finalTotalIncludingVat,
       depositQuantity: item.depositReturnQuantity,
       reasons: item.controlTypes.map(formatReceiptControlRule).join(" · "),
       status: formatReceiptControlStatus(item.status),
@@ -90,8 +91,8 @@ export async function buildReceiptControlWorkbook(items: ExportControl[]) {
   const statusCounts = countBy(items, (item) => formatReceiptControlStatus(item.status));
   const locationCounts = countBy(items, (item) => item.locationName ?? (item.cashRegisterName ? `${item.cashRegisterName} (ikke mappet)` : "Ukendt"));
   summary.addRow({ label: "Antal boner", value: items.length });
-  summary.addRow({ label: "Samlet negativ total", value: items.filter((item) => item.finalTotal < 0).reduce((sum, item) => sum + Math.abs(amountIncludingVat(item.finalTotal, item.amountsIncludeVat)), 0) });
-  summary.addRow({ label: "Samlet pant retur", value: items.reduce((sum, item) => sum + amountIncludingVat(item.depositReturnValue, item.amountsIncludeVat), 0) });
+  summary.addRow({ label: "Samlet negativ total", value: items.filter((item) => item.finalTotal < 0).reduce((sum, item) => sum + Math.abs(item.finalTotalIncludingVat), 0) });
+  summary.addRow({ label: "Samlet pant retur", value: items.reduce((sum, item) => sum + item.depositReturnValueIncludingVat, 0) });
   summary.addRow({ label: "Antal ikke mappede barer", value: items.filter((item) => item.locationMappingStatus !== "mapped").length });
   for (const [status, count] of statusCounts) summary.addRow({ label: `Status: ${status}`, value: count });
   for (const [location, count] of locationCounts) summary.addRow({ label: `Lokation: ${location}`, value: count });

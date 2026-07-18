@@ -91,8 +91,12 @@ test("22 kander og 71 krus giver 93 pant og to samlede kontrolårsager", () => {
 test("økonominotifikation omregner ekskl. moms-beløb til inkl. moms", () => {
   const analysis = analyzeOnlinePosReceipt(receipt({
     total: -20,
+    totalIncludingVat: -25,
     amountsIncludeVat: false,
-    lines: [product("Almindelige køb", 1, 100), deposit("RETUR - Krus", 12, -120)],
+    lines: [
+      { ...product("Almindelige køb", 1, 100), amountIncludingVat: 125, amountSource: "net_price" },
+      { ...deposit("RETUR - Krus", 12, -120), amountIncludingVat: -150, amountSource: "net_price" },
+    ],
   }));
   const message = buildReceiptControlNotificationText(analysis);
   assert.match(message, /Køb inkl\. moms: 125,00 kr\./);

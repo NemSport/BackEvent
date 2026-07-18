@@ -69,7 +69,7 @@ test("bonkontrol bruger OnlinePOS-bruttopris inkl. moms før nettopris", () => {
   assert.deepEqual(analysis.controlTypes, ["MANUAL_REVIEW"]);
 });
 
-test("generisk OnlinePOS-pris behandles som ekskl. moms indtil andet er dokumenteret", () => {
+test("generisk OnlinePOS-pris er et dokumenteret bonbeløb inkl. moms", () => {
   const analysis = analyzeRawOnlinePosReceipt({
     transaction_id: "tx-net-price",
     receipt_number: "CTRL-NET",
@@ -78,7 +78,22 @@ test("generisk OnlinePOS-pris behandles som ekskl. moms indtil andet er dokument
   });
 
   assert.equal(analysis.finalTotal, -100);
-  assert.equal(analysis.amountsIncludeVat, false);
+  assert.equal(analysis.finalTotalIncludingVat, -100);
+  assert.equal(analysis.amountsIncludeVat, true);
+});
+
+test("bon 493 bevarer dokumenteret total uden dobbelt momsomregning", () => {
+  const analysis = analyzeRawOnlinePosReceipt({
+    transaction_id: "1137156001",
+    receipt_number: "493",
+    total: -15,
+    lines: [{ product_name: "UDLIGNING", quantity: -1, price: -15 }],
+  });
+
+  assert.equal(analysis.finalTotal, -15);
+  assert.equal(analysis.finalTotalIncludingVat, -15);
+  assert.equal(analysis.amountSourceDetails.finalTotal, "total");
+  assert.deepEqual(analysis.controlTypes, ["MANUAL_REVIEW"]);
 });
 
 test("sikkert lokationsmatch gemmes, mens usikkert match forbliver umappet", () => {

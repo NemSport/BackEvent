@@ -16,6 +16,8 @@ export type OnlinePosReceiptControlLine = {
   lineType: string;
   quantity: number;
   amount: number;
+  amountIncludingVat?: number;
+  amountSource?: string;
 };
 
 export type OnlinePosReceiptControlInput = {
@@ -27,6 +29,8 @@ export type OnlinePosReceiptControlInput = {
   returnId?: string | null;
   refundId?: string | null;
   total?: number | null;
+  totalIncludingVat?: number | null;
+  totalSource?: string | null;
   cashRegisterId?: string | null;
   cashRegisterName?: string | null;
   transactionDatetime?: string | null;
@@ -42,6 +46,11 @@ export type OnlinePosReceiptControlAnalysis = {
   cashRegisterName: string | null;
   transactionDatetime: string | null;
   amountsIncludeVat: boolean;
+  amountSourceDetails: {
+    purchase: string[];
+    depositReturn: string[];
+    finalTotal: string;
+  };
   classification: OnlinePosReceiptClassification;
   classificationLabel: string;
   signals: string[];
@@ -51,6 +60,9 @@ export type OnlinePosReceiptControlAnalysis = {
   purchaseValue: number;
   depositReturnValue: number;
   finalTotal: number;
+  purchaseValueIncludingVat: number;
+  depositReturnValueIncludingVat: number;
+  finalTotalIncludingVat: number;
 };
 
 export const onlinePosDepositControlThreshold = 10;
@@ -78,14 +90,20 @@ export function analyzeOnlinePosReceipt(
     { cups: 0, pitchers: 0, other: 0 },
   );
   const depositReturnQuantity = roundNumber(depositBreakdown.cups + depositBreakdown.pitchers + depositBreakdown.other);
-  const purchaseValue = roundNumber(input.lines
-    .filter((line) => line.lineType !== "deposit_return" && line.lineType !== "deposit_fee" && line.amount > 0)
-    .reduce((sum, line) => sum + line.amount, 0));
-  const depositReturnValue = roundNumber(depositLines
-    .filter((line) => line.amount < 0)
-    .reduce((sum, line) => sum + Math.abs(line.amount), 0));
+  const purchaseLines = input.lines
+    .filter((line) => line.lineType !== "deposit_return" && line.lineType !== "deposit_fee" && line.amount > 0);
+  const returnedDepositLines = depositLines.filter((line) => line.amount < 0);
+  const purchaseValue = roundNumber(purchaseLines.reduce((sum, line) => sum + line.amount, 0));
+  const depositReturnValue = roundNumber(returnedDepositLines.reduce((sum, line) => sum + Math.abs(line.amount), 0));
   const calculatedTotal = roundNumber(input.lines.reduce((sum, line) => sum + line.amount, 0));
   const finalTotal = roundNumber(input.total ?? calculatedTotal);
+  const purchaseValueIncludingVat = roundNumber(purchaseLines
+    .reduce((sum, line) => sum + (line.amountIncludingVat ?? line.amount), 0));
+  const depositReturnValueIncludingVat = roundNumber(returnedDepositLines
+    .reduce((sum, line) => sum + Math.abs(line.amountIncludingVat ?? line.amount), 0));
+  const calculatedTotalIncludingVat = roundNumber(input.lines
+    .reduce((sum, line) => sum + (line.amountIncludingVat ?? line.amount), 0));
+  const finalTotalIncludingVat = roundNumber(input.totalIncludingVat ?? input.total ?? calculatedTotalIncludingVat);
 
   let classification: OnlinePosReceiptClassification;
   if (voidSignal) classification = "void";
@@ -117,6 +135,11 @@ export function analyzeOnlinePosReceipt(
     cashRegisterName: input.cashRegisterName ?? null,
     transactionDatetime: input.transactionDatetime ?? null,
     amountsIncludeVat: input.amountsIncludeVat ?? true,
+    amountSourceDetails: {
+      purchase: uniqueSources(purchaseLines),
+      depositReturn: uniqueSources(returnedDepositLines),
+      finalTotal: input.totalSource ?? (input.total === null || input.total === undefined ? "calculated_from_lines" : "input_total"),
+    },
     classification,
     classificationLabel: receiptClassificationLabel(classification),
     signals,
@@ -126,6 +149,9 @@ export function analyzeOnlinePosReceipt(
     purchaseValue,
     depositReturnValue,
     finalTotal,
+    purchaseValueIncludingVat,
+    depositReturnValueIncludingVat,
+    finalTotalIncludingVat,
   };
 }
 
@@ -152,6 +178,10 @@ export function receiptClassificationLabel(classification: OnlinePosReceiptClass
 
 function normalizeKeyPart(value: string | null | undefined) {
   return value?.trim().toLocaleLowerCase("da-DK").replace(/[^a-z0-9æøå._-]+/g, "-").replace(/^-|-$/g, "") || null;
+}
+
+function uniqueSources(lines: OnlinePosReceiptControlLine[]) {
+  return [...new Set(lines.map((line) => line.amountSource ?? "input_line"))];
 }
 
 function roundNumber(value: number) {

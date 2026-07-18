@@ -241,7 +241,12 @@ function replayAuditToControlAnalysis(audit: ReplayReturnAudit): OnlinePosReceip
     cashRegisterId: audit.cashRegisterId,
     cashRegisterName: audit.cashRegisterName,
     transactionDatetime: audit.datetime,
-    amountsIncludeVat: false,
+    amountsIncludeVat: true,
+    amountSourceDetails: {
+      purchase: ["historical_replay_documented_amount"],
+      depositReturn: ["historical_replay_documented_amount"],
+      finalTotal: "historical_replay_documented_amount",
+    },
     classification: audit.classification === "Verificeret retur" ? "return_receipt" : audit.classification === "Usikker retur" ? "uncertain" : audit.classification === "Almindeligt salg med pantretur" ? "sale_with_deposit_return" : "sale",
     classificationLabel: audit.classification,
     signals: audit.signals,
@@ -251,6 +256,9 @@ function replayAuditToControlAnalysis(audit: ReplayReturnAudit): OnlinePosReceip
     purchaseValue: audit.purchaseValue,
     depositReturnValue: audit.depositReturnValue,
     finalTotal: audit.finalTotal,
+    purchaseValueIncludingVat: audit.purchaseValue,
+    depositReturnValueIncludingVat: audit.depositReturnValue,
+    finalTotalIncludingVat: audit.finalTotal,
   };
 }
 
