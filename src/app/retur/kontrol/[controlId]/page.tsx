@@ -19,6 +19,7 @@ import {
   buildReceiptControlQueueState,
   type ReceiptControlQueueState,
 } from "@/lib/backevent/receipt-control-queue";
+import { amountIncludingVat } from "@/lib/backevent/vat";
 
 type Control = Record<string, unknown> & {
   id: string;
@@ -33,6 +34,7 @@ type Control = Record<string, unknown> & {
   purchase_value: number;
   deposit_return_value: number;
   final_total: number;
+  amounts_include_vat?: boolean;
   source: string;
   replay_run_id: string | null;
   status: string;
@@ -154,9 +156,9 @@ export default function ReceiptControlDetailPage() {
     </header>
 
     <section aria-label="Bonens nøgletal" className="mb-5 grid grid-cols-2 overflow-hidden rounded-2xl border border-line bg-macro shadow-sm md:grid-cols-4">
-      <Metric label="Køb inkl. moms" value={formatMoney(control.purchase_value)} />
-      <Metric label="Pant retur inkl. moms" value={formatMoney(control.deposit_return_value)} />
-      <Metric label="Bon i alt inkl. moms" value={formatMoney(control.final_total)} />
+      <Metric label="Køb inkl. moms" value={formatMoney(control.purchase_value, control.amounts_include_vat === true)} />
+      <Metric label="Pant retur inkl. moms" value={formatMoney(control.deposit_return_value, control.amounts_include_vat === true)} />
+      <Metric label="Bon i alt inkl. moms" value={formatMoney(control.final_total, control.amounts_include_vat === true)} />
       <Metric label="Pant" value={`${formatNumber(control.deposit_return_quantity)} stk.`} />
     </section>
 
@@ -238,7 +240,7 @@ function TechnicalRow({ label, value }: { label: string; value: string }) { retu
 function sourceLabel(value: string) { return value === "historical_replay" ? "Historisk replay" : value === "test" ? "Testkørsel" : "Live sync"; }
 function formatDate(value: string) { return new Date(value).toLocaleString("da-DK", { dateStyle: "long", timeStyle: "short" }); }
 function formatNumber(value: number) { return Number(value).toLocaleString("da-DK", { maximumFractionDigits: 2 }); }
-function formatMoney(value: number) { return `${formatNumber(value)} kr.`; }
+function formatMoney(value: number, alreadyIncludesVat: boolean) { return `${formatNumber(amountIncludingVat(value, alreadyIncludesVat))} kr.`; }
 function notificationSummary(items: Notification[], sent: number, failed: number) { if (items.length === 0) return "Ingen notifikation sendt"; if (failed > 0 && sent === 0) return "Push kunne ikke sendes"; if (sent > 0) return sent === 1 ? "Push sendt" : `${sent} pushbeskeder sendt`; return "Permanent besked oprettet"; }
 function pushStatusLabel(value: string) { return ({ sent: "Push sendt", pending: "Afventer push", skipped: "Push ikke sendt", failed: "Push fejlede" } as Record<string, string>)[value] ?? "Ukendt pushstatus"; }
 

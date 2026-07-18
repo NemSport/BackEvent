@@ -69,6 +69,9 @@ test("Excel-eksport er en gyldig xlsx med filtre og danske kolonner", async () =
   assert.ok(sheet);
   assert.equal(sheet.getCell("A1").value, "Bonnummer");
   assert.equal(sheet.getCell("A2").value, "375");
+  assert.equal(sheet.getCell("J2").value, 125);
+  assert.equal(sheet.getCell("K2").value, 156.25);
+  assert.equal(sheet.getCell("L2").value, -31.25);
   assert.ok(sheet.autoFilter);
   assert.equal(sheet.views[0].state, "frozen");
   assert.ok(workbook.getWorksheet("Opsummering"));
@@ -91,6 +94,13 @@ test("server-query understøtter ikke-mappet, status, dato og bonnummersøgning"
   assert.match(source, /receipt_number\.ilike/);
 });
 
+test("momsbasis-migration bevarer beløb og markerer eksisterende kontroller som ekskl. moms", async () => {
+  const source = await readFile(new URL("../../../../supabase/migrations/202607180001_receipt_control_vat_basis.sql", import.meta.url), "utf8");
+  assert.match(source, /amounts_include_vat boolean not null default false/i);
+  assert.doesNotMatch(source, /\bupdate\b/i);
+  assert.doesNotMatch(source, /\b(purchase_value|deposit_return_value|final_total)\s*=/i);
+});
+
 function sampleControl() {
   return {
     receiptNumber: "375",
@@ -105,6 +115,7 @@ function sampleControl() {
     purchaseValue: 100,
     depositReturnValue: 125,
     finalTotal: -25,
+    amountsIncludeVat: false,
     depositReturnQuantity: 12,
     controlTypes: ["HIGH_DEPOSIT_RETURN", "NEGATIVE_RECEIPT_TOTAL"],
     status: "open",

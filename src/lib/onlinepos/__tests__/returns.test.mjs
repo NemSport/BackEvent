@@ -65,7 +65,20 @@ test("bonkontrol bruger OnlinePOS-bruttopris inkl. moms før nettopris", () => {
   });
 
   assert.equal(analysis.finalTotal, -50);
+  assert.equal(analysis.amountsIncludeVat, true);
   assert.deepEqual(analysis.controlTypes, ["MANUAL_REVIEW"]);
+});
+
+test("generisk OnlinePOS-pris behandles som ekskl. moms indtil andet er dokumenteret", () => {
+  const analysis = analyzeRawOnlinePosReceipt({
+    transaction_id: "tx-net-price",
+    receipt_number: "CTRL-NET",
+    total: -100,
+    lines: [{ product_name: "Kildevand", quantity: -1, price: -100 }],
+  });
+
+  assert.equal(analysis.finalTotal, -100);
+  assert.equal(analysis.amountsIncludeVat, false);
 });
 
 test("sikkert lokationsmatch gemmes, mens usikkert match forbliver umappet", () => {

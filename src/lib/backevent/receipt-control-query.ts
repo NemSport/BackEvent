@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { ACTIVE_RECEIPT_CONTROL_STATUSES } from "./return-control-contract.ts";
 
-export const RECEIPT_CONTROL_SELECT = "id,receipt_number,onlinepos_transaction_id,classification,control_types,deposit_return_quantity,deposit_breakdown,purchase_value,deposit_return_value,final_total,source,replay_run_id,status,handled_by,handled_at,handled_by_name,internal_note,created_at,updated_at,transaction_datetime,location_id,location_name,cash_register_id,cash_register_name,location_mapping_status";
+export const RECEIPT_CONTROL_SELECT = "id,receipt_number,onlinepos_transaction_id,classification,control_types,deposit_return_quantity,deposit_breakdown,purchase_value,deposit_return_value,final_total,amounts_include_vat,source,replay_run_id,status,handled_by,handled_at,handled_by_name,internal_note,created_at,updated_at,transaction_datetime,location_id,location_name,cash_register_id,cash_register_name,location_mapping_status";
 
 export type ReceiptControlFilters = {
   status: string;
@@ -136,6 +136,7 @@ export function mapReceiptControlRow(row: Record<string, unknown>) {
     purchaseValue: Number(row.purchase_value ?? 0),
     depositReturnValue: Number(row.deposit_return_value ?? 0),
     finalTotal: Number(row.final_total ?? 0),
+    amountsIncludeVat: row.amounts_include_vat === true,
     source: String(row.source ?? "live"),
     status: String(row.status ?? "open"),
     handledBy: stringOrNull(row.handled_by),

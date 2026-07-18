@@ -84,8 +84,20 @@ test("22 kander og 71 krus giver 93 pant og to samlede kontrolårsager", () => {
   const message = buildReceiptControlNotificationText(analysis);
   assert.match(message, /93 pant-enheder/);
   assert.match(message, /Negativ total -5,00 kr\./);
-  assert.match(message, /Køb: 1\.145,00 kr\./);
-  assert.match(message, /Pantretur: 1\.150,00 kr\./);
+  assert.match(message, /Køb inkl\. moms: 1\.145,00 kr\./);
+  assert.match(message, /Pantretur inkl\. moms: 1\.150,00 kr\./);
+});
+
+test("økonominotifikation omregner ekskl. moms-beløb til inkl. moms", () => {
+  const analysis = analyzeOnlinePosReceipt(receipt({
+    total: -20,
+    amountsIncludeVat: false,
+    lines: [product("Almindelige køb", 1, 100), deposit("RETUR - Krus", 12, -120)],
+  }));
+  const message = buildReceiptControlNotificationText(analysis);
+  assert.match(message, /Køb inkl\. moms: 125,00 kr\./);
+  assert.match(message, /Pantretur inkl\. moms: 150,00 kr\./);
+  assert.match(message, /Sluttotal inkl\. moms: -25,00 kr\./);
 });
 
 test("økonominotifikation viser den mappede BackEvent-bar", () => {

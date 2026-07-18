@@ -56,7 +56,7 @@ export async function GET(request: Request) {
   const receiptControlsResult = auth.canControl && (control === "open" || control === "history")
     ? await auth.supabase
       .from("backevent_onlinepos_receipt_controls")
-      .select("id,receipt_number,onlinepos_transaction_id,classification,control_types,deposit_return_quantity,deposit_breakdown,purchase_value,deposit_return_value,final_total,source,replay_run_id,status,handled_at,handled_by_name,internal_note,created_at,updated_at,transaction_datetime,location_id,location_name,cash_register_id,cash_register_name,location_mapping_status")
+      .select("id,receipt_number,onlinepos_transaction_id,classification,control_types,deposit_return_quantity,deposit_breakdown,purchase_value,deposit_return_value,final_total,amounts_include_vat,source,replay_run_id,status,handled_at,handled_by_name,internal_note,created_at,updated_at,transaction_datetime,location_id,location_name,cash_register_id,cash_register_name,location_mapping_status")
       .in("status", control === "open" ? [...ACTIVE_RECEIPT_CONTROL_STATUSES] : [...CLOSED_RECEIPT_CONTROL_STATUSES])
       .order("created_at", { ascending: false })
       .limit(100)
@@ -87,6 +87,7 @@ export async function GET(request: Request) {
       purchaseValue: Number(row.purchase_value ?? 0),
       depositReturnValue: Number(row.deposit_return_value ?? 0),
       finalTotal: Number(row.final_total ?? 0),
+      amountsIncludeVat: row.amounts_include_vat === true,
       source: row.source,
       status: row.status,
       handledAt: row.handled_at,

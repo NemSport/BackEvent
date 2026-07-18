@@ -30,6 +30,7 @@ export type OnlinePosReceiptControlInput = {
   cashRegisterId?: string | null;
   cashRegisterName?: string | null;
   transactionDatetime?: string | null;
+  amountsIncludeVat?: boolean;
   lines: OnlinePosReceiptControlLine[];
 };
 
@@ -40,6 +41,7 @@ export type OnlinePosReceiptControlAnalysis = {
   cashRegisterId: string | null;
   cashRegisterName: string | null;
   transactionDatetime: string | null;
+  amountsIncludeVat: boolean;
   classification: OnlinePosReceiptClassification;
   classificationLabel: string;
   signals: string[];
@@ -114,6 +116,7 @@ export function analyzeOnlinePosReceipt(
     cashRegisterId: input.cashRegisterId ?? null,
     cashRegisterName: input.cashRegisterName ?? null,
     transactionDatetime: input.transactionDatetime ?? null,
+    amountsIncludeVat: input.amountsIncludeVat ?? true,
     classification,
     classificationLabel: receiptClassificationLabel(classification),
     signals,

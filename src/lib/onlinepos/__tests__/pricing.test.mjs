@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getOnlinePosGrossAmount, getOnlinePosGrossTotal } from "../pricing.ts";
+import { getOnlinePosGrossAmount, getOnlinePosGrossTotal, hasOnlinePosGrossAmount } from "../pricing.ts";
 
 test("bruttopris inkl. moms prioriteres over nettopris", () => {
   assert.equal(getOnlinePosGrossAmount({ gross_price: 125, net_price: 100 }), 125);
@@ -10,6 +10,13 @@ test("bruttopris inkl. moms prioriteres over nettopris", () => {
 test("nettopris bruges kun som fallback når bruttopris mangler", () => {
   assert.equal(getOnlinePosGrossAmount({ net_price: 100 }), 100);
   assert.equal(getOnlinePosGrossAmount({}), 0);
+});
+
+test("kun eksplicitte bruttoprisfelter markerer beløbet som inkl. moms", () => {
+  assert.equal(hasOnlinePosGrossAmount({ gross_price: 125 }), true);
+  assert.equal(hasOnlinePosGrossAmount({ grossPrice: 125 }), true);
+  assert.equal(hasOnlinePosGrossAmount({ price: 100 }), false);
+  assert.equal(hasOnlinePosGrossAmount({ net_price: 100 }), false);
 });
 
 test("bontotal beregnes fra inkl. moms-linjer når header-totalen er ekskl. moms", () => {

@@ -241,6 +241,7 @@ function replayAuditToControlAnalysis(audit: ReplayReturnAudit): OnlinePosReceip
     cashRegisterId: audit.cashRegisterId,
     cashRegisterName: audit.cashRegisterName,
     transactionDatetime: audit.datetime,
+    amountsIncludeVat: false,
     classification: audit.classification === "Verificeret retur" ? "return_receipt" : audit.classification === "Usikker retur" ? "uncertain" : audit.classification === "Almindeligt salg med pantretur" ? "sale_with_deposit_return" : "sale",
     classificationLabel: audit.classification,
     signals: audit.signals,

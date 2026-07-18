@@ -24,7 +24,7 @@ export function getOnlinePosGrossTotal(
 }
 
 export function hasOnlinePosGrossAmount(record: Record<string, unknown>) {
-  return numberValue(pickField(record, ["gross_price", "grossPrice", "price"])) !== null;
+  return numberValue(pickField(record, ["gross_price", "grossPrice"])) !== null;
 }
 
 function pickField(record: Record<string, unknown>, keys: string[]) {
