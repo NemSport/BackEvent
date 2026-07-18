@@ -1,7 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Bell, ChevronDown, ClipboardCheck, Info, MapPin } from "lucide-react";
 import { AppShell } from "@/components/backevent/app-shell";
 import { BackButton } from "@/components/backevent/buttons";
@@ -13,6 +14,11 @@ import {
   formatReceiptControlRule,
   formatReceiptControlStatus,
 } from "@/lib/backevent/return-control-contract";
+import { formatReceiptControlLocation } from "@/lib/onlinepos/receipt-control-location";
+import {
+  buildReceiptControlQueueState,
+  type ReceiptControlQueueState,
+} from "@/lib/backevent/receipt-control-queue";
 
 type Control = Record<string, unknown> & {
   id: string;
@@ -41,9 +47,14 @@ type Control = Record<string, unknown> & {
 };
 type Notification = { id: string; status: string; error_message: string | null; created_at: string; recipient?: { full_name?: string | null; email?: string | null } | null };
 type AuditItem = { id: string; previous_status: string; status: string; internal_note: string | null; handled_by_name: string; created_at: string };
+type QueueItem = { id: string };
+type QueueResponse = { ok?: boolean; items?: QueueItem[]; total?: number; page?: number; pageSize?: number };
 
 export default function ReceiptControlDetailPage() {
   const { controlId } = useParams<{ controlId: string }>();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const queryString = searchParams.toString();
   const [control, setControl] = useState<Control | null>(null);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [audit, setAudit] = useState<AuditItem[]>([]);
@@ -52,12 +63,16 @@ export default function ReceiptControlDetailPage() {
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [message, setMessage] = useState("Henter bonkontrol...");
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [queue, setQueue] = useState<ReceiptControlQueueState>({ previousHref: null, nextHref: null, position: 0, total: 0 });
+  const [finished, setFinished] = useState(false);
 
   useEffect(() => {
     let mounted = true;
     (async () => {
       const token = await getBrowserAccessToken();
-      const response = await fetch(`/api/returns/receipt-controls/${controlId}`, { headers: token ? { Authorization: `Bearer ${token}` } : undefined });
+      const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+      const response = await fetch(`/api/returns/receipt-controls/${controlId}`, { headers });
       const json = await response.json().catch(() => null) as { ok?: boolean; message?: string; control?: Control; notifications?: Notification[]; audit?: AuditItem[]; canControl?: boolean } | null;
       if (!mounted) return;
       if (!response.ok || !json?.ok || !json.control) {
@@ -70,9 +85,10 @@ export default function ReceiptControlDetailPage() {
       setCanControl(Boolean(json.canControl));
       setNote(json.control.internal_note ?? "");
       setMessage("");
+      setQueue(await loadQueueContext(controlId, searchParams, headers));
     })();
     return () => { mounted = false; };
-  }, [controlId]);
+  }, [controlId, queryString, searchParams]);
 
   async function handle(action: "approve" | "follow_up" | "confirm_error" | "save_note") {
     if (!control || saving) return;
@@ -84,35 +100,54 @@ export default function ReceiptControlDetailPage() {
       headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify({ action, note, expectedUpdatedAt: control.updated_at }),
     });
-    const json = await response.json().catch(() => null) as { ok?: boolean; message?: string; conflict?: boolean } | null;
+    const json = await response.json().catch(() => null) as { ok?: boolean; message?: string; conflict?: boolean; control?: Control } | null;
     if (!response.ok || !json?.ok) {
       setSaveMessage(json?.message ?? "Behandlingen kunne ikke gemmes");
       setSaving(false);
       if (json?.conflict) window.setTimeout(() => window.location.reload(), 900);
       return;
     }
-    window.location.reload();
+    if (action === "save_note") {
+      setSuccessMessage("Bemærkningen er gemt");
+      if (json.control) setControl(json.control);
+      setSaving(false);
+      return;
+    }
+    setSuccessMessage(action === "approve" ? "Bonen er godkendt" : action === "follow_up" ? "Bonen er markeret til opfølgning" : "Fejlen er bekræftet");
+    if (queue.nextHref) {
+      window.setTimeout(() => router.replace(queue.nextHref!), 450);
+      return;
+    }
+    setFinished(true);
+    setSaving(false);
   }
 
-  if (!control) return <AppShell><div className="mx-auto max-w-5xl"><BackButton href="/retur/kontrol" /><Card className="my-5"><h1 className="text-2xl font-bold text-ink">Bonkontrol</h1><p className="mt-2 font-bold text-warmRed">{message}</p></Card></div></AppShell>;
+  const listHref = queryString ? `/retur/kontrol?${withoutQueueIndex(searchParams)}` : "/retur/kontrol";
+  if (!control) return <AppShell><div className="mx-auto max-w-5xl"><BackButton href={listHref} /><Card className="my-5"><h1 className="text-2xl font-bold text-ink">Bonkontrol</h1><p className="mt-2 font-bold text-warmRed">{message}</p></Card></div></AppShell>;
 
   const primaryTime = control.transaction_datetime ?? control.created_at;
-  const hasLocation = Boolean(control.location_name || control.cash_register_name || control.cash_register_id);
-  const displayedLocation = control.location_name ?? control.cash_register_name ?? control.cash_register_id ?? "Ukendt";
+  const locationLabel = formatReceiptControlLocation({
+    locationName: control.location_name,
+    cashRegisterName: control.cash_register_name,
+    cashRegisterId: control.cash_register_id,
+  });
   const rules = control.control_types ?? [];
   const sentCount = notifications.filter((item) => item.status === "sent").length;
   const failedCount = notifications.filter((item) => item.status === "failed" || item.status === "skipped").length;
   const statusTone = control.status === "approved" || control.status === "resolved" ? "success" : control.status === "confirmed_error" || control.status === "dismissed" ? "danger" : control.status === "test" ? "info" : "pending";
 
-  return <AppShell><main className="mx-auto w-full max-w-5xl pb-8">
-    <BackButton href="/retur/kontrol" />
+  if (finished) return <AppShell><main className="mx-auto w-full max-w-3xl pb-12"><BackButton href={listHref} /><Card className="my-8 text-center"><h1 className="text-3xl font-bold text-ink">Alle boner i denne visning er behandlet</h1><p className="mt-3 text-muted">Der er ikke flere boner i den aktuelle filtrerede kø.</p><Link href={listHref} className="mt-5 inline-flex rounded-xl bg-pantone139 px-5 py-3 font-bold text-ink">Tilbage til bonlisten</Link></Card></main></AppShell>;
+
+  return <AppShell><main className="mx-auto w-full max-w-5xl pb-72">
+    <BackButton href={listHref} />
 
     <header className="my-5 border-b border-line pb-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <h1 className="text-3xl font-bold leading-tight text-ink md:text-4xl">Bon {control.receipt_number ?? control.onlinepos_transaction_id ?? "ukendt"}</h1>
           <p className="mt-1 text-sm font-semibold text-muted md:text-base">{formatDate(primaryTime)} · {sourceLabel(control.source)}</p>
-          {hasLocation ? <p className="mt-2 flex items-center gap-1.5 text-sm font-bold text-ink"><MapPin className="h-4 w-4 shrink-0" />Bar: {displayedLocation}{control.location_mapping_status !== "mapped" ? " · Ikke mappet" : control.cash_register_name && control.cash_register_name !== control.location_name ? ` · OnlinePOS: ${control.cash_register_name}` : ""}</p> : <p className="mt-2 text-sm font-bold text-muted">Bar: Ukendt · Ikke mappet</p>}
+          <p className="mt-2 flex items-center gap-1.5 text-sm font-bold text-ink"><MapPin className="h-4 w-4 shrink-0" />{locationLabel}</p>
+          {queue.total ? <p className="mt-2 text-sm font-bold text-pantone140">Bon {queue.position} af {queue.total}</p> : null}
         </div>
         <StatusPill tone={statusTone} className="self-start">{formatReceiptControlStatus(control.status)}</StatusPill>
       </div>
@@ -157,20 +192,7 @@ export default function ReceiptControlDetailPage() {
       </Card>
     </div>
 
-    {canControl ? <Card className="mb-5">
-      <h2 className="text-lg font-bold text-ink">Behandl kontrol</h2>
-      <label htmlFor="internal-note" className="mt-4 block text-sm font-bold text-ink">Intern bemærkning</label>
-      <textarea id="internal-note" value={note} onChange={(event) => setNote(event.target.value)} rows={4} maxLength={4000} placeholder="Skriv hvad du har kontrolleret eller hvad der skal følges op på..." className="mt-2 w-full rounded-xl border border-line bg-macro px-3 py-3 text-ink outline-none focus:border-pantone139 focus:ring-2 focus:ring-pantone140/20" />
-      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-        <Button type="button" tone="success" disabled={saving} onClick={() => handle("approve")}>Godkend bon</Button>
-        <Button type="button" tone="primary" disabled={saving} onClick={() => handle("follow_up")}>Kræver opfølgning</Button>
-        <Button type="button" tone="danger" disabled={saving} onClick={() => handle("confirm_error")}>Bekræft fejl</Button>
-        <Button type="button" tone="secondary" disabled={saving} onClick={() => handle("save_note")}>Gem bemærkning</Button>
-      </div>
-      {saveMessage ? <Notice tone="danger" className="mt-3">{saveMessage}</Notice> : null}
-      {control.handled_by_name && control.handled_at ? <p className="mt-4 text-sm text-muted">Senest behandlet af <strong className="text-ink">{control.handled_by_name}</strong> {formatDate(control.handled_at)}.</p> : null}
-      {audit.length ? <details className="mt-4 border-t border-line pt-3"><summary className="cursor-pointer text-sm font-bold text-pantone140">Vis behandlingshistorik ({audit.length})</summary><p className="mt-3 text-sm font-bold text-ink">Bar: {displayedLocation}{control.location_mapping_status !== "mapped" ? " · Ikke mappet" : ""}</p><div className="mt-3 space-y-2">{audit.map((item) => <div key={item.id} className="rounded-xl bg-soft p-3 text-sm"><p className="font-bold text-ink">{formatReceiptControlStatus(item.status)} · {item.handled_by_name}</p><p className="text-muted">{formatDate(item.created_at)}</p>{item.internal_note ? <p className="mt-1 whitespace-pre-wrap text-ink">{item.internal_note}</p> : null}</div>)}</div></details> : null}
-    </Card> : null}
+    {audit.length ? <Card className="mb-5"><details><summary className="cursor-pointer text-sm font-bold text-pantone140">Vis behandlingshistorik ({audit.length})</summary><p className="mt-3 text-sm font-bold text-ink">{locationLabel}</p><div className="mt-3 space-y-2">{audit.map((item) => <div key={item.id} className="rounded-xl bg-soft p-3 text-sm"><p className="font-bold text-ink">{formatReceiptControlStatus(item.status)} · {item.handled_by_name}</p><p className="text-muted">{formatDate(item.created_at)}</p>{item.internal_note ? <p className="mt-1 whitespace-pre-wrap text-ink">{item.internal_note}</p> : null}</div>)}</div></details></Card> : null}
 
     <details className="group rounded-2xl border border-line bg-macro shadow-sm">
       <summary className="flex min-h-14 cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 font-bold text-ink focus:outline-none focus:ring-2 focus:ring-inset focus:ring-pantone140/35 md:px-5">
@@ -188,6 +210,25 @@ export default function ReceiptControlDetailPage() {
         <div className="mt-5 space-y-2"><h3 className="font-bold text-ink">Push og modtagere</h3>{notifications.map((item) => <div key={item.id} className="rounded-xl bg-soft p-3 text-sm"><p className="font-bold text-ink">{item.recipient?.full_name ?? item.recipient?.email ?? "Ukendt modtager"} · {pushStatusLabel(item.status)}</p>{item.error_message ? <p className="mt-1 break-words text-warmRed">{item.error_message}</p> : null}</div>)}{notifications.length === 0 ? <p className="text-sm text-muted">Ingen notifikationsforsøg registreret.</p> : null}</div>
       </div>
     </details>
+
+    {canControl ? <Card className="sticky bottom-3 z-20 mt-5 max-h-[70vh] overflow-y-auto border-2 border-pantone139 bg-macro/95 shadow-xl backdrop-blur">
+      <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-lg font-bold text-ink">Behandl kontrol</h2>{queue.total ? <span className="text-sm font-bold text-muted">Bon {queue.position} af {queue.total}</span> : null}</div>
+      <label htmlFor="internal-note" className="mt-2 block text-sm font-bold text-ink">Intern bemærkning</label>
+      <textarea id="internal-note" value={note} onChange={(event) => setNote(event.target.value)} rows={2} maxLength={4000} placeholder="Skriv hvad du har kontrolleret..." className="mt-1 w-full rounded-xl border border-line bg-macro px-3 py-2 text-ink outline-none focus:border-pantone139 focus:ring-2 focus:ring-pantone140/20" />
+      <div className="mt-2 grid grid-cols-2 gap-2 lg:grid-cols-4">
+        <Button type="button" tone="success" disabled={saving} onClick={() => handle("approve")}>{saving ? "Gemmer..." : "Godkend bon"}</Button>
+        <Button type="button" tone="primary" disabled={saving} onClick={() => handle("follow_up")}>Kræver opfølgning</Button>
+        <Button type="button" tone="danger" disabled={saving} onClick={() => handle("confirm_error")}>Bekræft fejl</Button>
+        <Button type="button" tone="secondary" disabled={saving} onClick={() => handle("save_note")}>Gem bemærkning</Button>
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        <Button type="button" tone="secondary" disabled={!queue.previousHref || saving} onClick={() => queue.previousHref && router.push(queue.previousHref)}>Forrige bon</Button>
+        <Button type="button" tone="secondary" disabled={!queue.nextHref || saving} onClick={() => queue.nextHref && router.push(queue.nextHref)}>Næste bon</Button>
+      </div>
+      {successMessage ? <Notice tone="success" className="mt-2">{successMessage}</Notice> : null}
+      {saveMessage ? <Notice tone="danger" className="mt-2">{saveMessage}</Notice> : null}
+      {control.handled_by_name && control.handled_at ? <p className="mt-2 text-xs text-muted">Senest behandlet af <strong>{control.handled_by_name}</strong> {formatDate(control.handled_at)}.</p> : null}
+    </Card> : null}
   </main></AppShell>;
 }
 
@@ -200,3 +241,60 @@ function formatNumber(value: number) { return Number(value).toLocaleString("da-D
 function formatMoney(value: number) { return `${formatNumber(value)} kr.`; }
 function notificationSummary(items: Notification[], sent: number, failed: number) { if (items.length === 0) return "Ingen notifikation sendt"; if (failed > 0 && sent === 0) return "Push kunne ikke sendes"; if (sent > 0) return sent === 1 ? "Push sendt" : `${sent} pushbeskeder sendt`; return "Permanent besked oprettet"; }
 function pushStatusLabel(value: string) { return ({ sent: "Push sendt", pending: "Afventer push", skipped: "Push ikke sendt", failed: "Push fejlede" } as Record<string, string>)[value] ?? "Ukendt pushstatus"; }
+
+async function loadQueueContext(
+  currentId: string,
+  searchParams: { toString(): string },
+  headers?: HeadersInit,
+): Promise<ReceiptControlQueueState> {
+  const base = new URLSearchParams(searchParams.toString());
+  base.delete("queueIndex");
+  const page = positiveInteger(base.get("page"), 1);
+  const pageSize = positiveInteger(base.get("pageSize"), 25);
+
+  async function fetchPage(targetPage: number) {
+    const params = new URLSearchParams(base);
+    params.set("page", String(targetPage));
+    const response = await fetch(`/api/returns/receipt-controls?${params}`, { headers });
+    return response.ok ? await response.json() as QueueResponse : null;
+  }
+
+  const currentPage = await fetchPage(page);
+  const items = currentPage?.items ?? [];
+  const index = items.findIndex((item) => item.id === currentId);
+  if (index < 0) return { previousHref: null, nextHref: null, position: 0, total: currentPage?.total ?? 0 };
+
+  let previousPageLastId: string | null = null;
+  let nextPageFirstId: string | null = null;
+  if (index === 0 && page > 1) {
+    const previousPage = await fetchPage(page - 1);
+    const previousItems = previousPage?.items ?? [];
+    previousPageLastId = previousItems.at(-1)?.id ?? null;
+  }
+  if (index === items.length - 1 && page * pageSize < (currentPage?.total ?? 0)) {
+    const nextPage = await fetchPage(page + 1);
+    const nextItems = nextPage?.items ?? [];
+    nextPageFirstId = nextItems[0]?.id ?? null;
+  }
+  return buildReceiptControlQueueState({
+    currentId,
+    items: items.map((item) => item.id),
+    page,
+    pageSize,
+    total: currentPage?.total ?? 0,
+    baseQuery: base.toString(),
+    previousPageLastId,
+    nextPageFirstId,
+  });
+}
+
+function withoutQueueIndex(searchParams: { toString(): string }) {
+  const params = new URLSearchParams(searchParams.toString());
+  params.delete("queueIndex");
+  return params.toString();
+}
+
+function positiveInteger(value: string | null, fallback: number) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}

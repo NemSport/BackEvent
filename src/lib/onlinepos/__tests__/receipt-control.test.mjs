@@ -88,6 +88,36 @@ test("22 kander og 71 krus giver 93 pant og to samlede kontrolårsager", () => {
   assert.match(message, /Pantretur: 1\.150,00 kr\./);
 });
 
+test("økonominotifikation viser den mappede BackEvent-bar", () => {
+  const analysis = analyzeOnlinePosReceipt(receipt({
+    receiptNumber: "375",
+    cashRegisterId: "29305",
+    cashRegisterName: "OnlinePOS Pub",
+    total: -5,
+    lines: [product("Almindelige køb", -1, -5)],
+  }));
+  const message = buildReceiptControlNotificationText(analysis, {
+    locationId: "location-pub",
+    locationName: "Pubben",
+    mappingStatus: "mapped",
+  });
+  assert.match(message, /^Bon: 375\nBar: Pubben\n/m);
+});
+
+test("økonominotifikation bevarer originalt OnlinePOS-navn uden mapping", () => {
+  const analysis = analyzeOnlinePosReceipt(receipt({
+    cashRegisterName: "Beer Bar",
+    total: -5,
+    lines: [product("Almindelige køb", -1, -5)],
+  }));
+  const message = buildReceiptControlNotificationText(analysis, {
+    locationId: null,
+    locationName: null,
+    mappingStatus: "unmapped",
+  });
+  assert.match(message, /Bar: Beer Bar · Ikke mappet/);
+});
+
 test("eksplicit returbon-signal klassificeres som returbon", () => {
   const analysis = analyzeOnlinePosReceipt(receipt({
     transactionType: "refund",

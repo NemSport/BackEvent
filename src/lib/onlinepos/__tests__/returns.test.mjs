@@ -10,6 +10,7 @@ import {
   getSeriousReturnControlReasons,
   parseOnlinePosReturn,
   returnLineNeedsStockSource,
+  receiptControlLocationUpdate,
 } from "../returns.ts";
 
 test("almindeligt salg bliver ikke behandlet som retur", () => {
@@ -79,6 +80,23 @@ test("sikkert lokationsmatch gemmes, mens usikkert match forbliver umappet", () 
 
   assert.deepEqual(mapped, { locationId: "location-1", locationName: "Blåbar", mappingStatus: "mapped" });
   assert.deepEqual(unmapped, { locationId: null, locationName: null, mappingStatus: "unmapped" });
+});
+
+test("eksisterende bonkontrol får lokation ved sikker genkørsel", () => {
+  assert.deepEqual(
+    receiptControlLocationUpdate(
+      { cashRegisterId: "29305", cashRegisterName: "Pubben", transactionDatetime: "2026-07-17T14:01:00Z" },
+      { locationId: "location-pub", locationName: "Pubben", mappingStatus: "mapped" },
+    ),
+    {
+      cash_register_id: "29305",
+      cash_register_name: "Pubben",
+      transaction_datetime: "2026-07-17T14:01:00Z",
+      location_id: "location-pub",
+      location_name: "Pubben",
+      location_mapping_status: "mapped",
+    },
+  );
 });
 
 test("pant og krus markeres uden normal lagerpåvirkning", () => {

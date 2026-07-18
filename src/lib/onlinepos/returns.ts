@@ -768,7 +768,7 @@ export async function persistReceiptControls(
   if (members.length === 0) return control;
 
   const title = analysis.controlTypes.length > 1 ? "Bon kræver økonomikontrol" : "Økonomikontrol af bon";
-  const body = buildReceiptControlNotificationText(analysis);
+  const body = buildReceiptControlNotificationText(analysis, options.locationContext);
   for (const member of members) {
     try {
       await dispatchReceiptControlNotification(supabase, {
@@ -824,13 +824,39 @@ async function getOrCreateReceiptControl(
     .select("id")
     .eq("receipt_key", analysis.receiptKey)
     .maybeSingle();
-  return existing.data ? { id: String(existing.data.id) } : null;
+  if (!existing.data) return null;
+
+  const update = receiptControlLocationUpdate(analysis, locationContext);
+  if (Object.keys(update).length > 0) {
+    const updated = await supabase
+      .from("backevent_onlinepos_receipt_controls")
+      .update(update)
+      .eq("id", existing.data.id);
+    if (updated.error) throw updated.error;
+  }
+  return { id: String(existing.data.id) };
 }
 
 export function buildReceiptControlLocationContext(resolution: OnlinePosLocationResolution): ReceiptControlLocationContext {
   return resolution.ok
     ? { locationId: resolution.location.id, locationName: resolution.location.name, mappingStatus: "mapped" }
     : { locationId: null, locationName: null, mappingStatus: "unmapped" };
+}
+
+export function receiptControlLocationUpdate(
+  analysis: Pick<OnlinePosReceiptControlAnalysis, "cashRegisterId" | "cashRegisterName" | "transactionDatetime">,
+  context: ReceiptControlLocationContext,
+) {
+  const update: Record<string, string | null> = {};
+  if (analysis.cashRegisterId) update.cash_register_id = analysis.cashRegisterId;
+  if (analysis.cashRegisterName) update.cash_register_name = analysis.cashRegisterName;
+  if (analysis.transactionDatetime) update.transaction_datetime = analysis.transactionDatetime;
+  if (context.mappingStatus === "mapped" && context.locationId && context.locationName) {
+    update.location_id = context.locationId;
+    update.location_name = context.locationName;
+    update.location_mapping_status = "mapped";
+  }
+  return update;
 }
 
 async function notifyFinanceAboutReturn(supabase: SupabaseClient, returnId: string, parsedReturn: ParsedOnlinePosReturn, locationName: string | null) {
@@ -1130,7 +1156,10 @@ export function buildReceiptControlNotificationDedupeKey(receiptKey: string, use
   return `${receiptKey}:finance-notification:${userId}`;
 }
 
-export function buildReceiptControlNotificationText(analysis: OnlinePosReceiptControlAnalysis) {
+export function buildReceiptControlNotificationText(
+  analysis: OnlinePosReceiptControlAnalysis,
+  locationContext?: ReceiptControlLocationContext,
+) {
   const reasons: string[] = [];
   if (analysis.controlTypes.includes("RETURN_RECEIPT")) reasons.push("Egentlig returbon");
   if (analysis.controlTypes.includes("HIGH_DEPOSIT_RETURN")) {
@@ -1145,11 +1174,23 @@ export function buildReceiptControlNotificationText(analysis: OnlinePosReceiptCo
   if (analysis.controlTypes.includes("MANUAL_REVIEW")) reasons.push("Kræver manuel kontrol");
   return [
     `Bon: ${analysis.receiptNumber ?? analysis.transactionId ?? "Mangler"}`,
+    receiptControlNotificationLocation(analysis, locationContext),
     ...reasons.map((reason) => `Årsag: ${reason}`),
     `Køb: ${formatControlMoney(analysis.purchaseValue)}`,
     `Pantretur: ${formatControlMoney(analysis.depositReturnValue)}`,
     `Sluttotal: ${formatControlMoney(analysis.finalTotal)}`,
   ].join("\n");
+}
+
+function receiptControlNotificationLocation(
+  analysis: Pick<OnlinePosReceiptControlAnalysis, "cashRegisterId" | "cashRegisterName">,
+  locationContext?: ReceiptControlLocationContext,
+) {
+  if (locationContext?.mappingStatus === "mapped" && locationContext.locationName) {
+    return `Bar: ${locationContext.locationName}`;
+  }
+  const onlinePosReference = analysis.cashRegisterName ?? analysis.cashRegisterId;
+  return onlinePosReference ? `Bar: ${onlinePosReference} · Ikke mappet` : "Bar: Ukendt · Ikke mappet";
 }
 
 function formatControlMoney(value: number) {
